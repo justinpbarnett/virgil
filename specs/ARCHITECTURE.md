@@ -190,104 +190,21 @@ This is the same relationship as Unix programs and shell scripts. A shell script
 
 **Rationale:** The router self-healing loop (decision #9) works because the feedback signal is tight and the improvements land in configuration. The same architecture applies to any pipe. A builder pipe that consistently fails verification on a certain class of task has a measurable problem with a concrete improvement path — a prompt amendment, a context addition, a provider change. Making metrics infrastructure means every pipe gets this loop for free, without opting in.
 
-#### What the runtime tracks
+**What the runtime tracks:**
 
-When an envelope transitions between pipes, the runtime records an **outcome signal** — how the downstream consumer received the output. These signals accumulate into per-pipe KPIs.
+The runtime captures three categories of signal at every envelope transition:
 
-The runtime captures three categories of signal:
+- **Downstream pipe signals** (automatic) — did the next pipe succeed or fail? Did a verify/review pipe accept or reject? How many loop iterations before acceptance?
+- **User signals** (from explicit actions) — did the user modify, reject, or accept without changes? Did they override a flag or provider?
+- **System signals** (from envelope metadata) — execution duration, error rate, provider latency and cost, retry depth within loops.
 
-**Downstream pipe signals** — automatic, no configuration required:
-- Did the next pipe in the chain succeed or fail?
-- Did a verify/review pipe accept or reject the output?
-- How many loop iterations were needed before acceptance?
-- Did the output require transformation by an intermediate pipe before the next pipe could use it?
+**KPI configuration:**
 
-**User signals** — captured from explicit user actions:
-- Did the user modify the output before accepting? (modification rate)
-- Did the user reject the output entirely? (rejection rate)
-- Did the user accept without changes? (clean acceptance rate)
-- Did the user override a flag or provider for this pipe? (configuration miss)
+Every pipe declares its KPIs in configuration. The runtime provides defaults (acceptance rate, error rate, duration). Pipes can override or extend with domain-specific KPIs. Each KPI specifies a measurement, a time window, and thresholds for warning and degradation.
 
-**System signals** — derived from execution metadata already in the envelope:
-- Execution duration (per-pipe and trending over time)
-- Error rate
-- Provider latency and cost (for non-deterministic pipes)
-- Retry depth within loops
+**The improvement loop:**
 
-#### How KPIs are defined
-
-Every pipe declares its KPIs in configuration. The runtime provides defaults that cover common cases — most pipes care about acceptance rate, error rate, and duration. Pipes can override or extend with domain-specific KPIs.
-
-```yaml
-# Default KPIs applied to all pipes unless overridden
-defaults:
-  metrics:
-    - name: acceptance_rate
-      signal: downstream_accept / downstream_total
-      window: 7d
-      threshold:
-        warn: 0.85
-        degrade: 0.70
-
-    - name: error_rate
-      signal: error_count / invocation_count
-      window: 7d
-      threshold:
-        warn: 0.05
-        degrade: 0.15
-
-    - name: duration_p95
-      signal: duration.p95
-      window: 7d
-      # No threshold — informational by default, pipe overrides if latency matters
-
-# Per-pipe overrides
-pipes:
-  builder:
-    metrics:
-      - name: first_pass_verify_rate
-        signal: verify_pass_first_attempt / verify_total
-        window: 7d
-        threshold:
-          warn: 0.60
-          degrade: 0.40
-
-      - name: human_modification_rate
-        signal: user_modified / user_reviewed
-        window: 7d
-        threshold:
-          warn: 0.40    # user changes output >40% of the time
-          degrade: 0.60
-
-      - name: fix_loop_depth
-        signal: avg(loop_iterations)
-        window: 7d
-        threshold:
-          warn: 3
-          degrade: 5
-
-  draft:
-    metrics:
-      - name: edit_rate
-        signal: user_modified / user_reviewed
-        window: 7d
-        threshold:
-          warn: 0.30
-          degrade: 0.50
-
-  router:
-    metrics:
-      - name: miss_rate
-        signal: ai_fallback_count / total_routes
-        window: 7d
-        threshold:
-          warn: 0.20
-          degrade: 0.35
-```
-
-#### The improvement loop
-
-When a KPI crosses a threshold, the system generates a signal — the same kind of signal that drives every other action in Virgil. The improvement is itself a pipeline:
+When a KPI crosses a threshold, it generates a signal — the same kind that drives every other action in Virgil:
 
 ```
 Signal:   pipe.builder.first_pass_verify_rate < 0.60 (warn)
@@ -298,119 +215,20 @@ Plan:     metrics.retrieve(pipe=builder, window=7d)
 Output:   proposed configuration change + summary
 ```
 
-The analyze step examines the failure envelopes — the actual content of what went wrong. It clusters failures by pattern. "Builder consistently mishandles database migration files" is a concrete finding that produces a concrete prompt amendment: add migration-specific context to the builder's prompt when the task involves schema changes.
-
 Proposed improvements fall into two categories:
 
-**Auto-apply** — changes that are safe, narrow, and reversible:
-- Adding context to a prompt template
-- Adjusting a flag default
-- Adding a keyword to the router index
-- Updating a trigger phrase
+- **Auto-apply** — safe, narrow, reversible changes: prompt context additions, flag defaults, keyword additions, trigger phrases. Applied automatically, measured, rolled back if KPIs degrade.
+- **Advisory** — changes requiring judgment: provider swaps, pipeline restructuring, new pipe creation, trust boundary adjustments. Surfaced as proposals for user review.
 
-These are applied automatically and logged. The next improvement cycle measures whether the KPI improved. If it didn't, or if it degraded another KPI, the change is rolled back.
+The boundary between auto-apply and advisory is configurable — the trust gradient the user applies to self-improvement.
 
-**Advisory** — changes that require judgment:
-- Switching a pipe's AI provider
-- Restructuring a pipeline's execution order
-- Creating a new pipe to handle a class of tasks the existing pipe struggles with
-- Adjusting trust boundaries (auto-merge thresholds, review requirements)
+**Rollback:**
 
-These are surfaced as proposals. The user reviews and approves or dismisses.
+Every auto-applied change is versioned. The system tracks which configuration was active when each KPI measurement was taken. If a KPI degrades after a change, the system correlates the degradation with the specific change and proposes (or auto-executes) a rollback.
 
-The boundary between auto-apply and advisory is itself configurable — the trust gradient applied to self-improvement. A user who wants full control sets everything to advisory. A user who trusts the system loosens the leash on specific categories.
+**Goodhart's law protection:**
 
-#### Rollback
-
-Every auto-applied change is versioned. The system tracks which configuration was active when each KPI measurement was taken. If a KPI degrades after a change, the system can correlate the degradation with the specific change and propose a rollback — or auto-rollback if configured to do so.
-
-```
-Change applied:  builder prompt amendment (migration context)  — v47
-KPI before:      first_pass_verify_rate = 0.58
-KPI after (3d):  first_pass_verify_rate = 0.62  ✓ improvement
-KPI after (3d):  duration_p95 = +400ms           ⚠ regression (prompt is longer)
-```
-
-The system sees both effects. The improvement worked but introduced a latency cost. It surfaces both findings. The user decides whether the tradeoff is acceptable.
-
-#### Goodhart's law protection
-
-A pipe optimizing toward a single metric can degrade in ways the metric doesn't capture. The primary defense is the multi-KPI design — a pipe is never evaluated on one number. The builder doesn't just track first-pass verify rate. It also tracks human modification rate, fix loop depth, and duration. A change that games the verify step (writing overly defensive code that passes tests but is unmaintainable) will show up as an increase in human modification rate when the user starts editing the output more.
-
-The secondary defense is the advisory boundary. Structural changes — the kind most likely to produce Goodhart effects — require human approval. Only narrow, additive changes (prompt amendments, keyword additions) are auto-applied.
-
-The tertiary defense is periodic user review. The system can generate a metrics summary on request or on schedule. "Here's how each pipe is performing this week. Here's what changed. Here's what I'd propose next." The user stays in the loop without needing to monitor continuously.
-
-#### Hierarchical summarization
-
-The metrics storage strategy is hierarchical summarization — a compression strategy. The raw events are the leaves, and each level up the tree trades granularity for searchability.
-
-The raw JSONL stays as-is — append-only, one line per event. But periodically, a summarization step runs and produces a higher-level record that captures the patterns without the individual events.
-
-```
-Raw events (JSONL)
-    │  every hour
-    ▼
-Hourly summaries
-    │  every day
-    ▼
-Daily summaries
-    │  every week
-    ▼
-Weekly summaries
-    │  every month
-    ▼
-Monthly summaries
-```
-
-An hourly summary for the builder pipe might look like:
-
-```jsonl
-{"level":"hour","pipe":"builder","window":"2026-03-01T14:00:00Z/PT1H","invocations":3,"verify_first_pass":2,"verify_failures":1,"avg_fix_loops":1.3,"user_accepted":2,"user_modified":1,"categories":["camp-registration","payment-flow"],"notable":"payment-flow task failed verify 3x on stripe webhook handling"}
-```
-
-The `notable` field is the key insight. At the raw level, you have dozens of individual events. The hourly summary collapses them into counts and rates. But it also captures *what was interesting* — the outliers, the repeated failures, the patterns that a flat aggregation would hide. That notable field is what the improvement pipeline's analyze step actually cares about. It doesn't need to see that the builder ran 3 times. It needs to know that Stripe webhook handling failed repeatedly.
-
-Each level up compresses further. The daily summary aggregates the hourly summaries. The weekly summary aggregates the dailies. By the time you're at the monthly level, you have something like:
-
-```jsonl
-{"level":"month","pipe":"builder","window":"2026-03-01T00:00:00Z/P1M","invocations":847,"first_pass_rate":0.72,"modification_rate":0.18,"trending":"improving","notable":["stripe integration remains weakest category","migration tasks improved after prompt amendment v52","provider swap on mar-15 improved code quality but added ~200ms latency"]}
-```
-
-That monthly summary is a paragraph's worth of structured insight about the builder's performance across hundreds of invocations. An AI analyzing it doesn't need to scan 847 raw events. It reads one record and has the full picture.
-
-The tree structure is what makes this searchable at scale. When the improvement pipeline fires, it doesn't start at the raw events. It starts at the highest relevant level:
-
-"How's the builder doing?" → read the latest weekly summary. Done.
-
-"The builder's verify rate dropped this week — what happened?" → read this week's daily summaries. Find the day it dropped. Read that day's hourly summaries. Find the hour. Now, and only then, read the raw events for that hour.
-
-It's the same layered resolution strategy as the router. Start broad, narrow only when needed. Most improvement analysis never touches the raw events. It works from summaries. Only when it needs to understand a specific failure pattern does it drill down.
-
-The summarization step itself is a pipeline — and here's where it gets interesting. The hourly and daily summaries can be purely deterministic. They're counts, rates, percentiles — just math over the raw events. No AI needed. But the `notable` field at higher levels — weekly, monthly — benefits from AI. Detecting that "Stripe integration is the weakest category" from a week of daily summaries is a synthesis task. So the summarization pipeline uses deterministic aggregation for the numbers and an AI call for the narrative. The AI surface area is small and bounded — one call per summary level per period.
-
-And the summaries are themselves JSONL. Same format, same tooling, same rotation policy. You just have multiple files:
-
-```
-metrics/
-  raw/
-    2026-03-01.jsonl
-    2026-03-02.jsonl
-  hourly/
-    2026-03-01.jsonl    # 24 summary lines
-  daily/
-    2026-03.jsonl       # ~30 lines for the month
-  weekly/
-    2026.jsonl          # ~52 lines for the year
-  monthly/
-    all.jsonl           # one line per month, forever
-```
-
-Raw files rotate out after the retention window — 30 days, 90 days, whatever. But the summaries are tiny and can stay forever. The entire system's performance history for a year fits in a few hundred kilobytes of summary JSONL. The raw events are ephemeral. The summaries are the institutional memory.
-
-This also solves the Goodhart problem more elegantly. When the improvement pipeline analyzes a KPI degradation, it doesn't just see the number drop. It reads the summary tree and gets narrative context about *what changed around the time it dropped*. "First pass verify rate declined from 0.74 to 0.61 during the week of March 8. Coincides with prompt amendment v52 being applied on March 7. The amendment targeted migration tasks specifically, which improved, but non-migration tasks showed increased failure rates." That's a rollback recommendation with reasoning, derived entirely from the summary tree.
-
-The retention strategy is naturally proportional too. Maximum detail for the recent past (where you're most likely to need it for debugging), moderate detail for the medium term (where you need it for trend detection), and compressed insight for the long term (where you need it for strategic assessment of how the system evolves). Exactly how a human memory works — vivid detail about yesterday, general patterns about last month, broad strokes about last year.
+Multi-KPI design is the primary defense — a pipe is never evaluated on one number. A builder that games the verify step by writing overly defensive code will show up as increased human modification rate. Structural changes require human approval (advisory boundary). Periodic metrics summaries keep the user in the loop without requiring continuous monitoring.
 
 ---
 
@@ -420,33 +238,19 @@ The retention strategy is naturally proportional too. Maximum detail for the rec
 
 **Rationale:** The internal self-improvement loop (decision #18) optimizes how Virgil uses its current capabilities. The external upgrade cycle tracks whether better capabilities exist. These are complementary but distinct: one tightens the feedback loops, the other expands the frontier.
 
-#### What it monitors
+**What it monitors** (configured, not hardcoded):
 
-Sources are configured, not hardcoded. The default set covers:
+- Provider changelogs — new model releases, API changes, deprecation notices
+- Benchmark results — public model comparisons relevant to tasks Virgil performs
+- Dependency updates — CLI tool versions, API client libraries
+- User-configured feeds — specific researchers, arxiv feeds, blog aggregators
 
-- **Provider changelogs** — Anthropic, OpenAI, Google, and any other configured providers. New model releases, API changes, deprecation notices.
-- **Benchmark results** — public model comparisons relevant to tasks Virgil performs (code generation, summarization, research).
-- **Dependency updates** — Go modules, CLI tool versions, API client libraries.
+**Findings are classified by actionability:**
 
-Additional sources (specific researchers, arxiv feeds, blog aggregators) are user-configured.
+- **Auto-apply** — CLI tool update with no breaking changes, deprecated API endpoint replacement, new model benchmarked and outperforming current default
+- **Advisory** — significant model improvements worth evaluating, relevant research techniques, breaking changes requiring code-level updates
 
-#### What it does with findings
-
-Findings are classified by actionability:
-
-**Auto-apply:**
-- A configured CLI tool released a new version with no breaking changes → update and verify
-- A provider deprecated an API endpoint Virgil uses → update the endpoint in configuration
-- A new model is available from an already-configured provider → benchmark against current default on a representative task suite, propose swap if it outperforms
-
-**Advisory:**
-- A new model significantly outperforms the current default on a task category → "Anthropic released Claude X. It benchmarks 30% better on code tasks. Want me to run a comparison against your builder pipe's current provider?"
-- A research paper describes a technique relevant to Virgil's architecture → summary + assessment of where it applies + what integration would look like
-- A breaking API change requires code-level updates → notification with details
-
-#### Schedule and notification
-
-The upgrade pipeline runs on a configurable schedule (default: nightly). Results are stored and surfaced in the morning summary or on request:
+**Schedule:** Configurable, default nightly. Results surfaced in morning summary or on request:
 
 ```
 "Overnight: applied 2 dependency updates, both passing. Anthropic
@@ -467,6 +271,117 @@ Plan:     sources.fetch(configured_feeds)
           | summarize(type=voice)
 Output:   applied changes log + advisory proposals + voice summary
 ```
+
+---
+
+### 20. Metrics storage uses append-only logs with hierarchical summarization
+
+**Decision:** Raw metric events are stored as append-only log files, one event per line, rotated daily. A summarization pipeline periodically compresses raw events into higher-level summaries — hourly, daily, weekly, monthly — forming a tree that trades granularity for searchability at each level.
+
+**Rationale:** Metrics are append-heavy and read-infrequently. An append-only log is the simplest possible storage — no database, no schema, no connection overhead. Standard Unix tools work on the files directly. The problem with flat logs at scale is querying. Hierarchical summarization solves this without introducing a database.
+
+**The summary tree:**
+
+```
+Raw events (append-only, one per envelope transition)
+    │  every hour → deterministic aggregation
+    ▼
+Hourly summaries
+    │  every day → deterministic aggregation
+    ▼
+Daily summaries
+    │  every week → deterministic aggregation + AI for narrative
+    ▼
+Weekly summaries
+    │  every month → deterministic aggregation + AI for narrative
+    ▼
+Monthly summaries
+```
+
+Hourly and daily summaries are purely deterministic — counts, rates, percentiles. No AI needed. Weekly and monthly summaries add a small AI call to synthesize narrative insight ("Stripe integration remains the weakest category", "provider swap on March 15 improved quality but added latency"). The AI surface area is bounded — one call per summary level per period.
+
+**Layered resolution** (same pattern as the router):
+
+1. "How's the builder doing?" → read the latest weekly summary. Done.
+2. "The verify rate dropped — what happened?" → read daily summaries. Find the day.
+3. "What went wrong Tuesday?" → read Tuesday's hourly summaries. Find the hour.
+4. "Show me the failures." → now, and only then, read the raw events.
+
+Most analysis never touches raw events. It works from summaries.
+
+**Retention:**
+
+- Raw events: 30 days (configurable). Maximum detail for the recent past.
+- Hourly summaries: 90 days.
+- Daily and above: kept indefinitely. A year of daily summaries for all pipes fits in kilobytes.
+
+The system remembers its own performance history at the daily level forever, while keeping storage bounded. Old raw files are deleted on rotation. Summaries persist.
+
+**Summarization is a pipeline** — expressed in the standard signal → classify → plan → execute loop. The hourly, daily, weekly, and monthly pipelines each read from the level below. Not a special case.
+
+---
+
+### 21. Single continuous stream UX, stateless invocations behind the scenes
+
+**Decision:** The user sees one continuous conversation — a single scrolling stream of inputs and responses. Behind the scenes, every message is a fresh, stateless invocation. There is no conversation state passed between messages. Continuity comes from memory retrieval, not from chat history.
+
+**Rationale:** The stream UX feels like talking to one person. No "chats" to create, no sessions to manage, no context windows to worry about. But making each invocation stateless keeps the architecture clean — the server doesn't maintain conversation threads, doesn't manage session state, doesn't deal with stale context. Memory is the single source of truth for continuity. This also means context isn't bound to a client: close the TUI, open Virgil on your phone, pick up where you left off.
+
+When the user says "make it shorter," the router classifies it as a refinement signal, retrieves working context from memory, and produces a plan like `memory.retrieve(working_context) | draft(type=revise, instruction="shorter")`. Fresh invocation with full context.
+
+---
+
+### 22. Unified memory with hierarchical summarization, no separate working memory
+
+**Decision:** Memory is one system. There is no distinct "working memory" and "long-term memory." Recent interactions are stored in full detail. Over time, hierarchical summarization condenses older context into higher-level summaries. The system can drill back into raw history when needed, but most retrievals work from summaries.
+
+**Rationale:** A separate working memory concept would require managing lifecycle (when does working memory expire? who decides?), synchronization (what if working memory contradicts long-term memory?), and a routing decision (which memory do I check?). A single memory system with natural decay via summarization handles the full spectrum: what you said thirty seconds ago, the spec you've been refining this week, and the fact that you prefer TDD. Summarization is already established infrastructure (decision #20). Applying it to interaction memory is the same pattern.
+
+---
+
+### 23. Stream and detail panel for pipeline visibility
+
+**Decision:** The primary interface has two regions. The stream is the main conversation — all inputs, responses, and pipeline start/finish notifications appear here in order. The detail panel shows the internals of a running or completed pipeline — individual stages, loop iterations, review findings. Multiple parallel pipelines are switchable in the detail panel.
+
+**Rationale:** The stream must stay conversational. The user should keep talking to Virgil while background pipelines run. But complex pipelines have rich internal state the user may want to inspect or intervene in. The detail panel provides depth without cluttering the conversation. It's optional for simple interactions and essential for complex ones.
+
+Pipeline progress appears in the stream as brief interleaved status lines — enough for awareness, not enough to drown the conversation. Full stage-by-stage detail lives in the panel.
+
+---
+
+### 24. Context is assembled per-invocation, not accumulated
+
+**Decision:** Each invocation starts with an empty context window and fills it with exactly what it needs from memory. There is no conversation buffer, no chat history passed between messages, and nothing to compact. A fixed context budget acts as a ceiling. The planner fills it according to a retrieval strategy determined by the signal type.
+
+**Rationale:** The compaction problem in traditional chat UIs exists because context accumulates until it overflows, then gets lossily compressed. The user feels the degradation — the AI forgets details, loses nuance. Virgil avoids this entirely by pulling context fresh each time. You never accumulate irrelevant context. You never hit a wall. The budget is a ceiling, not a constraint you grow into.
+
+---
+
+### 25. Hybrid context assembly — planner fills base, pipes can pull more
+
+**Decision:** The planner assembles a base context using a strategy appropriate to the signal type. The router classification determines the retrieval pattern:
+
+- **One-shot factual** → signal only, maybe user prefs. Minimal retrieval.
+- **Refinement** → signal + working state. That's it.
+- **Creative/generative** → signal + topical memory + user prefs.
+- **Complex pipeline** → signal + working state + topical memory. Heavy retrieval.
+- **Ambient signal** → time/location context + calendar state. No working state.
+
+If a pipe needs something the planner didn't include, it can query memory directly, drawing from remaining budget headroom.
+
+**Rationale:** Four approaches were evaluated. Fixed priority layers (approach A) are too rigid — the same order for every signal type is a bad fit. Pure pipe-driven retrieval (approach C) pushes too much responsibility onto individual pipes. Router-driven strategies (approach B) adapt to signal type but can't handle edge cases within a pipe's execution. The hybrid (approach D) handles 90% of context needs through the planner's upfront assembly and gives pipes an escape hatch for the other 10%.
+
+Context strategy misclassification is a failure mode. If the router picks the wrong strategy, the pipe gets the wrong context. The self-healing loop covers this — mismatches between strategy and outcome are a measurable signal that can improve the strategy selection over time.
+
+---
+
+### 26. Memory writes are hybrid — automatic for working state, explicit for long-term facts
+
+**Decision:** The runtime automatically saves working state after every invocation that produces or modifies an artifact. The signal, plan, and output are recorded as infrastructure. Long-term facts ("I prefer session tokens over JWTs") are saved only when the user or a pipe explicitly requests it.
+
+**Rationale:** Working state is high-churn — many entries, rapidly updating, mostly relevant only during the current task. Auto-saving ensures continuity between invocations without requiring the user to think about persistence. Explicit saves for long-term facts prevent memory from filling with noise. The distinction also affects retention: automatic working state can be pruned more aggressively since the raw interaction history is still available within its retention window.
+
+Memory uses the same hierarchical summarization as metrics (decision #20): raw entries for recent detail, daily/weekly/monthly summaries for older context. Most retrieval reads from summaries. Specific detail drills into raw entries only when the signal demands it.
 
 ---
 
@@ -492,7 +407,21 @@ Output:   applied changes log + advisory proposals + voice summary
 2. **SQLite from day one** — skip the filesystem stage. SQLite is still a single file, still local, still simple. FTS5 gives real search immediately.
 3. **Something else** — a different storage model entirely.
 
-**Considerations:** Filesystem markdown is the simplest possible start and is human-readable. But it caps out quickly on search. SQLite FTS5 is barely more complex to implement and dramatically better at retrieval. The question is whether the filesystem stage has enough value to justify the later migration.
+**Considerations:** Filesystem markdown is the simplest possible start and is human-readable. But it caps out quickly on search. SQLite FTS5 is barely more complex to implement and dramatically better at retrieval. The question is whether the filesystem stage has enough value to justify the later migration. Context assembly (decisions #24-26) relies on fast, relevance-based retrieval — memory needs to return the right entries quickly based on topic, recency, and type.
+
+---
+
+### H. Working state and long-term memory — same store or separate?
+
+**Context:** Decision #26 establishes that working state (auto-saved, high-churn) and long-term facts (explicit, low-churn) have different write patterns and retention characteristics. The question is whether they share storage or live in separate stores.
+
+**Options:**
+
+1. **One store** — simplest. Tags or metadata distinguish working state from long-term facts. One query interface, one retention system, one storage engine.
+2. **Separate stores, unified retrieval** — different retention rules and storage characteristics, but the planner queries both through a single interface. Working state could be faster/more volatile storage. Long-term facts could be more durable.
+3. **Decide when storage is chosen** — the answer depends on what storage engine is picked (open question B). If it's SQLite, separate tables in the same database. If it's filesystem, separate directories. Defer until then.
+
+**Leaning:** Option 3. The decision is coupled to the storage engine choice.
 
 ---
 
@@ -536,28 +465,14 @@ Output:   applied changes log + advisory proposals + voice summary
 
 ---
 
-### G. Metrics storage and retention
+### G. KPI definition language
 
-**Context:** Per-pipe KPIs need historical data to compute trends, detect degradation, and correlate changes with outcomes. The volume depends on how many pipes exist and how granular the tracking is.
-
-**Options:**
-
-1. **Extend the existing storage choice (see question B)** — metrics go wherever memory goes. If that's SQLite, metrics are a table. Simple, one storage system to manage.
-2. **Separate time-series storage** — metrics have different access patterns than memory (append-heavy, range queries, aggregations). A purpose-built store (even just a separate SQLite database) might be cleaner.
-3. **Flat log files with periodic aggregation** — raw signals go to append-only logs. A periodic job aggregates them into KPI summaries. Simple to start, but querying raw logs for correlation is slow.
-
-**Considerations:** The volume is low in early stages (few pipes, few invocations per day). Any of these options work at first. The question is which one will still work when there are 50+ pipes running hundreds of invocations daily with 90 days of history.
-
----
-
-### H. KPI definition language
-
-**Context:** The `signal` field in KPI definitions (e.g., `downstream_accept / downstream_total`) needs a small expression language. It doesn't need to be Turing-complete — it needs arithmetic over named counters, basic aggregations (avg, p95, count), and time windowing.
+**Context:** KPI definitions need a way to express measurements (e.g., `downstream_accept / downstream_total`). This needs arithmetic over named counters, basic aggregations (avg, p95, count), and time windowing. It doesn't need to be Turing-complete.
 
 **Options:**
 
 1. **Custom DSL** — minimal expression parser. Clean syntax, easy to validate, but another thing to build and maintain.
-2. **Go expressions evaluated at runtime** — powerful but potentially dangerous and hard to sandbox.
-3. **Predefined KPI types with parameters** — instead of a language, offer a fixed set of KPI computations (`ratio`, `average`, `percentile`, `count`) with configurable inputs. Less flexible but zero parsing.
+2. **Predefined KPI types with parameters** — instead of a language, offer a fixed set of KPI computations (`ratio`, `average`, `percentile`, `count`) with configurable inputs. Less flexible but zero parsing.
+3. **Decide later** — hardcode the common KPIs, add configurability when the patterns stabilize.
 
-**Leaning:** Option 3 for v0.1.0. The KPI patterns are predictable enough that parameterized types cover the common cases. A DSL can come later if the fixed types prove too limiting.
+**Leaning:** Option 2 for v0.1.0. The KPI patterns are predictable enough that parameterized types cover the common cases. A DSL can come later if the fixed types prove too limiting.

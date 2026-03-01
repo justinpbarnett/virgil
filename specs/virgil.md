@@ -323,6 +323,51 @@ Query → miss → log → accumulate → threshold → analyze → upgrade → 
 
 Over time, the AI fallback fires less and less. The system gets faster. The common case gets cheaper. The deterministic layers absorb what the AI taught them. AI is the teacher, not the engine.
 
+### Generalized to All Pipes
+
+The router's self-healing loop is not unique to the router. It is a pattern that applies to every pipe.
+
+The runtime tracks metrics at every envelope transition — how was this pipe's output received? Did the downstream pipe succeed or fail? Did the user accept the output without changes, or edit it? How many retry loops were needed? These signals accumulate into per-pipe KPIs the same way router misses accumulate into upgrade triggers.
+
+A builder pipe that consistently fails verification on database migrations has a measurable problem with a concrete improvement path — a prompt amendment, a context addition, a provider change. A draft pipe whose output the user edits 60% of the time has a quality signal. A research pipe that takes 10 seconds when it should take 3 has a performance signal.
+
+When any pipe's KPIs cross a threshold, the system generates a signal:
+
+```
+Signal:  pipe.builder.first_pass_verify_rate < 0.60
+Intent:  self-improve(pipe=builder)
+Plan:    metrics.retrieve(pipe=builder, window=7d)
+         | analyze(type=failure_patterns)
+         | improve.propose(target=builder.config)
+Output:  proposed configuration change + summary
+```
+
+Improvements fall into two categories. **Auto-apply** changes are safe, narrow, and reversible — adding context to a prompt, adjusting a flag default, adding a router keyword. They are applied automatically, measured, and rolled back if KPIs degrade. **Advisory** changes require human judgment — switching providers, restructuring a pipeline, creating a new pipe. They are surfaced as proposals for the user to review.
+
+Every auto-applied change is versioned. The system tracks which configuration was active when each KPI was measured. If performance degrades after a change, the system can correlate and propose a rollback. The user never has to wonder "what changed."
+
+### External Intelligence
+
+The internal improvement loop optimizes how Virgil uses its current capabilities. A separate scheduled pipeline tracks whether better capabilities exist.
+
+On a configurable schedule (default nightly), Virgil monitors external sources — provider changelogs, model releases, benchmark results, dependency updates — and produces a summary with actionable proposals. Safe configuration changes (updated API endpoints, new CLI tool versions) can be auto-applied. Larger changes (new model worth evaluating, breaking API changes) are advisory.
+
+```
+Signal:  schedule.nightly (ambient signal)
+Intent:  self-upgrade
+Plan:    sources.fetch(configured_feeds)
+         | analyze(type=relevance, context=current_config)
+         | parallel:
+             auto_apply(safe_changes)
+             propose(advisory_changes)
+         | summarize(type=voice)
+Output:  "Overnight: applied 2 dependency updates, both passing.
+          Anthropic shipped a new model — benchmarks suggest it's
+          stronger for code review. Want me to run a comparison?"
+```
+
+This is the same system all the way down. A scheduled ambient signal, routed through the same planner, executing the same pipes, producing the same envelopes. The system that processes your requests, the system that improves itself, and the system that watches for better tools are all the same system.
+
 ---
 
 ## Observability
@@ -355,9 +400,17 @@ At **debug**, the runtime additionally records: the full input and output envelo
 
 At **trace**, the runtime additionally records: the full prompt content sent to AI models, the raw model response, and any internal pipe state. This level exists for debugging non-deterministic pipes when their output is wrong and you need to see exactly what they were asked.
 
-### Distinction from the Miss Log
+### Distinction from the Miss Log and Metrics
 
-The router's miss log is not general logging. General logging is observability — it tells you what happened. The miss log is a learning signal — it tells Virgil what to improve. They happen to both write to files, but they serve different functions. The miss log feeds the self-healing loop. General logs feed the person debugging a problem.
+The router's miss log, general logging, and pipe metrics are three different things.
+
+**General logging** is observability — it tells you what happened during a specific pipeline execution. It serves the person debugging a problem right now.
+
+**The miss log** is a learning signal — it tells the router what to improve. It feeds the self-healing loop that makes deterministic routing smarter over time.
+
+**Metrics** are performance signals — they tell each pipe how well it's doing over time. They feed the generalized improvement loop that makes every pipe better. Metrics are tracked automatically at every envelope transition, stored as append-only logs, and compressed into hierarchical summaries (hourly → daily → weekly → monthly) that trade granularity for searchability.
+
+All three are infrastructure. All three are automatic. None is a pipe.
 
 ---
 
@@ -390,169 +443,98 @@ Multiple clients can be connected simultaneously. Virgil speaking a voice alert 
 
 ---
 
-## Metrics
+## Interaction Model
 
-Metrics are infrastructure, not a pipe. The runtime tracks per-pipe performance automatically — the same way it tracks logging. Every pipe has KPIs derived from how its output is received by downstream pipes and by the user.
+To the user, Virgil feels like one continuous conversation. You talk, it responds, you refine, it adjusts. There are no "chats" to create, no sessions to manage. It looks like talking to one person who knows you.
 
-The self-healing pattern — already established for the router — generalizes to all pipes. A builder pipe that consistently fails verification on a certain class of task has a measurable problem with a concrete improvement path: a prompt amendment, a context addition, a provider change. Making metrics infrastructure means every pipe gets this loop for free, without opting in.
+Behind the scenes, every message is a brand new invocation. There is no conversation state. No chat history is passed from one message to the next. Each signal hits the router fresh, gets classified, planned, and executed independently. The continuity the user experiences comes from memory, not from a conversation buffer.
 
-### What Gets Tracked
+### Memory Replaces Chat History
 
-When an envelope transitions between pipes, the runtime records an **outcome signal** — how the downstream consumer received the output. These signals accumulate into per-pipe KPIs.
+When you say "make it shorter," Virgil doesn't look at the previous message in a thread. It retrieves context from memory: the current draft, what you've asked for so far, the direction you're heading. The plan becomes something like `memory.retrieve(working_context) | draft(type=revise, instruction="shorter")`. Fresh invocation, but it has everything it needs.
 
-The runtime captures three categories of signal:
+When you say "okay, build it" after iterating on a spec for an hour, Virgil retrieves the spec from memory and routes to the dev-feature pipeline. The transition from conversation to execution is seamless because memory bridges them.
 
-**Downstream pipe signals** — automatic, no configuration required:
-- Did the next pipe in the chain succeed or fail?
-- Did a verify/review pipe accept or reject the output?
-- How many loop iterations were needed before acceptance?
-- Did the output require transformation by an intermediate pipe before the next pipe could use it?
+This also means context is not bound to a client. You can close the TUI, open Virgil on your phone, say "how's that spec looking?" and get the right answer. The context lives in memory on the server, not in any client's display buffer.
 
-**User signals** — captured from explicit user actions:
-- Did the user modify the output before accepting? (modification rate)
-- Did the user reject the output entirely? (rejection rate)
-- Did the user accept without changes? (clean acceptance rate)
-- Did the user override a flag or provider for this pipe? (configuration miss)
+### Context Assembly
 
-**System signals** — derived from execution metadata already in the envelope:
-- Execution duration (per-pipe and trending over time)
-- Error rate
-- Provider latency and cost (for non-deterministic pipes)
-- Retry depth within loops
+Each invocation starts with an empty context window and fills it with exactly what it needs. There is nothing to compact because nothing accumulates. Context is assembled, not accumulated.
 
-### KPIs
-
-Every pipe declares its KPIs in configuration. The runtime provides defaults that cover common cases — most pipes care about acceptance rate, error rate, and duration. Pipes can override or extend with domain-specific KPIs.
-
-A builder pipe might track first-pass verify rate, human modification rate, and fix loop depth. A draft pipe might track edit rate. The router tracks miss rate. Each pipe's KPIs reflect what matters for that pipe's job.
-
-### The Improvement Loop
-
-When a KPI crosses a threshold, the system generates a signal — the same kind of signal that drives every other action in Virgil. The improvement is itself a pipeline:
+The planner assembles a base context using a strategy appropriate to the signal type. The router classification determines the retrieval pattern — different signal types need different kinds of context:
 
 ```
-Signal:   pipe.builder.first_pass_verify_rate < 0.60 (warn)
-Intent:   self-improve(pipe=builder)
-Plan:     metrics.retrieve(pipe=builder, window=7d)
-          | analyze(type=failure_patterns, group_by=task_category)
-          | improve.propose(target=builder.config)
-Output:   proposed configuration change + summary
+one-shot factual    →  signal only, maybe user prefs. Minimal retrieval.
+refinement          →  signal + working state. That's it.
+creative/generative →  signal + topical memory + user prefs.
+complex pipeline    →  signal + working state + topical memory. Heavy retrieval.
+ambient signal      →  time/location context + calendar state. No working state.
 ```
 
-The analyze step examines the failure envelopes — the actual content of what went wrong. It clusters failures by pattern. "Builder consistently mishandles database migration files" is a concrete finding that produces a concrete prompt amendment.
+A fixed context budget acts as a ceiling. The planner fills it according to the strategy — what to retrieve and in what proportion. "What's on my calendar" doesn't waste budget on topical memory. "Make it shorter" doesn't waste budget on user preferences. Each invocation gets a context shaped for its task.
 
-Proposed improvements fall into two categories:
-
-**Auto-apply** — changes that are safe, narrow, and reversible: adding context to a prompt template, adjusting a flag default, adding a keyword to the router index, updating a trigger phrase. These are applied automatically and logged. If the KPI doesn't improve, or if another KPI degrades, the change is rolled back.
-
-**Advisory** — changes that require judgment: switching a pipe's AI provider, restructuring a pipeline's execution order, creating a new pipe. These are surfaced as proposals. The user reviews and approves or dismisses.
-
-The boundary between auto-apply and advisory is configurable — the trust gradient applied to self-improvement.
-
-### Rollback
-
-Every auto-applied change is versioned. The system tracks which configuration was active when each KPI measurement was taken. If a KPI degrades after a change, the system correlates the degradation with the specific change and proposes a rollback — or auto-rollbacks if configured to do so.
-
-### Goodhart's Law Protection
-
-A pipe optimizing toward a single metric can degrade in ways the metric doesn't capture. The primary defense is multi-KPI design — a pipe is never evaluated on one number. A change that games the verify step will show up as an increase in human modification rate. The secondary defense is the advisory boundary — structural changes require human approval. The tertiary defense is periodic user review — a metrics summary on request or on schedule.
-
-### Hierarchical Summarization
-
-The metrics storage strategy is hierarchical summarization — a compression strategy. The raw events are the leaves, and each level up the tree trades granularity for searchability.
-
-The raw JSONL stays as-is — append-only, one line per event. Periodically, a summarization step runs and produces a higher-level record that captures the patterns without the individual events.
+If a pipe needs something the planner didn't include, it can query memory directly, drawing from the remaining budget headroom. This is the escape hatch — the planner handles 90% of context needs, and pipes handle the other 10%.
 
 ```
-Raw events (JSONL)
-    │  every hour
-    ▼
-Hourly summaries
-    │  every day
-    ▼
-Daily summaries
-    │  every week
-    ▼
-Weekly summaries
-    │  every month
-    ▼
-Monthly summaries
+planner assembles:  signal + working state + topical memory  (5,000 of 8,000 tokens)
+draft pipe runs, needs writing style prefs
+draft calls:        memory.retrieve(topic="writing style")    (300 tokens, within headroom)
 ```
 
-An hourly summary collapses dozens of events into counts and rates. But it also captures *what was interesting* — the outliers, the repeated failures, the patterns that a flat aggregation would hide. A `notable` field carries the insight the improvement pipeline actually cares about. It doesn't need to see that the builder ran 3 times. It needs to know that Stripe webhook handling failed repeatedly.
+This is why Virgil never has the compaction problem. There is no growing conversation buffer that eventually overflows. Each invocation pulls exactly what it needs from memory into a fresh context. If memory has more relevant entries than fit in the budget, the strategy determines what gets included — and everything else stays in memory for a future invocation that needs it.
 
-Each level up compresses further. By the monthly level, a single record contains a paragraph's worth of structured insight about a pipe's performance across hundreds of invocations. An AI analyzing it reads one record and has the full picture.
+### Memory Writes
 
-The tree structure makes this searchable at scale. When the improvement pipeline fires, it starts at the highest relevant level:
+Memory writes are hybrid — some automatic, some explicit.
 
-"How's the builder doing?" → read the latest weekly summary. Done.
+**Automatic writes:** The runtime saves working state after every invocation that produces or modifies an artifact. If you're iterating on a spec, each version is saved automatically. The signal, the plan, and the output are all recorded. This is infrastructure — no pipe opts in.
 
-"The builder's verify rate dropped this week — what happened?" → read daily summaries. Find the day it dropped. Read hourly summaries. Find the hour. Now, and only then, read the raw events for that hour.
+**Explicit writes:** Long-term facts are saved when the user or a pipe explicitly asks. "Remember that I prefer session tokens over JWTs" is an explicit memory write. So is a pipe that stores research findings for later retrieval. These are deliberate, not automatic.
 
-It's the same layered resolution strategy as the router. Start broad, narrow only when needed. Most improvement analysis never touches the raw events.
+The distinction matters for retention. Working state is high-churn — many entries, rapidly updating, most of it only relevant for the current task. Explicit memories are low-churn and long-lived. Both live in the same storage system, but the automatic writes can be pruned more aggressively because they're recoverable from context (the raw interaction history is still there within its retention window).
 
-The summarization step itself is a pipeline. Hourly and daily summaries are purely deterministic — counts, rates, percentiles, just math. But the `notable` field at higher levels — weekly, monthly — benefits from AI. Detecting that "Stripe integration is the weakest category" from a week of daily summaries is a synthesis task. Deterministic aggregation for the numbers, an AI call for the narrative. The AI surface area is small and bounded.
+### Memory Summarization
 
-```
-metrics/
-  raw/
-    2026-03-01.jsonl
-    2026-03-02.jsonl
-  hourly/
-    2026-03-01.jsonl    # 24 summary lines
-  daily/
-    2026-03.jsonl       # ~30 lines for the month
-  weekly/
-    2026.jsonl          # ~52 lines for the year
-  monthly/
-    all.jsonl           # one line per month, forever
-```
-
-Raw files rotate out after the retention window. The summaries are tiny and stay forever. The entire system's performance history for a year fits in a few hundred kilobytes of summary JSONL. The raw events are ephemeral. The summaries are the institutional memory.
-
-This also strengthens the Goodhart protection. When the improvement pipeline analyzes a KPI degradation, it reads the summary tree and gets narrative context about *what changed around the time it dropped*. That's a rollback recommendation with reasoning, derived entirely from the summary tree.
-
-The retention strategy is naturally proportional. Maximum detail for the recent past (debugging), moderate detail for the medium term (trend detection), compressed insight for the long term (strategic assessment). Exactly how a human memory works — vivid detail about yesterday, general patterns about last month, broad strokes about last year.
-
----
-
-## Nightly Upgrade
-
-The internal improvement loop optimizes how Virgil uses its current capabilities. The nightly upgrade cycle tracks whether better capabilities exist. These are complementary but distinct: one tightens the feedback loops, the other expands the frontier.
-
-Virgil runs a scheduled pipeline that monitors external sources — provider changelogs, model releases, dependency updates, relevant research — and produces a summary of findings with actionable proposals.
-
-**Auto-apply** — configuration-level changes that are safe and verifiable:
-- A CLI tool released a new version with no breaking changes → update and verify
-- A provider deprecated an API endpoint → update the endpoint in configuration
-- A new model is available → benchmark against current default, propose swap if it outperforms
-
-**Advisory** — changes that require judgment:
-- A new model significantly outperforms the current default on a task category
-- A research paper describes a relevant technique
-- A breaking API change requires code-level updates
-
-Results are stored and surfaced in the morning summary or on request:
+Memory uses the same hierarchical summarization pattern as metrics. Recent interactions are stored in full detail. Over time, older entries are condensed into summaries — daily, weekly, monthly — that trade granularity for density.
 
 ```
-"Overnight: applied 2 dependency updates, both passing. Anthropic
- shipped a new model — benchmarks suggest it's stronger for code
- review. Want me to run a comparison?"
+Raw entries:     every interaction, full detail (retained 30 days)
+Daily summaries: topics worked on, artifacts produced, decisions made
+Weekly:          narrative context ("iterated on OAuth spec, settled on session tokens")
+Monthly:         high-level project and preference evolution
 ```
 
-The pipeline is the same system all the way down:
+Most context retrieval reads from summaries. Only when the signal needs specific detail — "what was the JWT approach again?" — does it drill into raw entries. The planner's context strategy determines which level to read from.
+
+### The Stream and the Side Panel
+
+The primary interface has two regions: the stream and the detail panel.
+
+**The stream** is the main conversation. Every input you type and every response Virgil gives appears here, in order. One-shot queries ("what's on my calendar"), iterative refinement ("make it shorter"), and pipeline kickoffs ("build it") all live in the same flow. When a long-running pipeline starts, the stream shows a notification. When it finishes, the stream shows the result.
 
 ```
-Signal:   schedule.nightly (ambient signal)
-Intent:   self-upgrade
-Plan:     sources.fetch(configured_feeds)
-          | analyze(type=relevance, context=current_config)
-          | parallel:
-              auto_apply(safe_changes)
-              propose(advisory_changes)
-          | summarize(type=voice)
-Output:   applied changes log + advisory proposals + voice summary
+you ❯ add OAuth login to the Keep app
+
+  ▸ Starting dev-feature pipeline...
+
+you ❯ what's on my calendar today
+
+  You have three meetings — 10am standup, 1pm design review, 3pm 1:1 with Sarah.
+
+  ▸ dev-feature: cycle 1 complete, review found 2 issues, cycling...
+
+you ❯ remind me to pick up groceries after my last meeting
+
+  Done — reminder set for 3:45 PM.
+
+  ▸ dev-feature: complete. PR #47 ready for review.
 ```
+
+The stream stays conversational. You keep talking to Virgil while background work runs. Pipeline progress is interleaved as brief status lines — enough to stay aware, not enough to drown the conversation.
+
+**The detail panel** shows the internals of a running (or completed) pipeline. When `dev-feature` is running, you can open the detail panel to see each stage: what the builder is doing, the verify/fix loop iterations, review findings. If multiple pipelines are running in parallel, the panel lets you switch between them.
+
+The detail panel is optional. For simple interactions it stays closed. For complex pipelines it's where you go when you want to understand what's happening inside the machine, intervene, or inspect output from a specific stage.
 
 ---
 
@@ -560,7 +542,7 @@ Output:   applied changes log + advisory proposals + voice summary
 
 **Deterministic first, AI as fallback.** The common case should never require an AI call. AI is expensive, slow, and non-deterministic. Use it where it's needed — creative work, ambiguous classification, synthesis — and keep it away from routing, retrieval, and orchestration.
 
-**The system improves deterministically.** When AI teaches the system something, that knowledge becomes a configuration change. The next time, the system doesn't need AI. Over time, the AI surface area shrinks.
+**The system improves deterministically.** When AI teaches the system something, that knowledge becomes a configuration change. The next time, the system doesn't need AI. Over time, the AI surface area shrinks. This applies to routing, to individual pipe quality, and to staying current with external capabilities.
 
 **Pipes do one thing. Pipelines compose them.** Every capability is atomic. Complex behavior comes from composing pipes into pipelines — graphs with parallel branches, retry loops, and cycles. A pipeline is itself a pipe from the outside: envelope in, envelope out. Composition is recursive.
 
