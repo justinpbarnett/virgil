@@ -390,6 +390,172 @@ Multiple clients can be connected simultaneously. Virgil speaking a voice alert 
 
 ---
 
+## Metrics
+
+Metrics are infrastructure, not a pipe. The runtime tracks per-pipe performance automatically — the same way it tracks logging. Every pipe has KPIs derived from how its output is received by downstream pipes and by the user.
+
+The self-healing pattern — already established for the router — generalizes to all pipes. A builder pipe that consistently fails verification on a certain class of task has a measurable problem with a concrete improvement path: a prompt amendment, a context addition, a provider change. Making metrics infrastructure means every pipe gets this loop for free, without opting in.
+
+### What Gets Tracked
+
+When an envelope transitions between pipes, the runtime records an **outcome signal** — how the downstream consumer received the output. These signals accumulate into per-pipe KPIs.
+
+The runtime captures three categories of signal:
+
+**Downstream pipe signals** — automatic, no configuration required:
+- Did the next pipe in the chain succeed or fail?
+- Did a verify/review pipe accept or reject the output?
+- How many loop iterations were needed before acceptance?
+- Did the output require transformation by an intermediate pipe before the next pipe could use it?
+
+**User signals** — captured from explicit user actions:
+- Did the user modify the output before accepting? (modification rate)
+- Did the user reject the output entirely? (rejection rate)
+- Did the user accept without changes? (clean acceptance rate)
+- Did the user override a flag or provider for this pipe? (configuration miss)
+
+**System signals** — derived from execution metadata already in the envelope:
+- Execution duration (per-pipe and trending over time)
+- Error rate
+- Provider latency and cost (for non-deterministic pipes)
+- Retry depth within loops
+
+### KPIs
+
+Every pipe declares its KPIs in configuration. The runtime provides defaults that cover common cases — most pipes care about acceptance rate, error rate, and duration. Pipes can override or extend with domain-specific KPIs.
+
+A builder pipe might track first-pass verify rate, human modification rate, and fix loop depth. A draft pipe might track edit rate. The router tracks miss rate. Each pipe's KPIs reflect what matters for that pipe's job.
+
+### The Improvement Loop
+
+When a KPI crosses a threshold, the system generates a signal — the same kind of signal that drives every other action in Virgil. The improvement is itself a pipeline:
+
+```
+Signal:   pipe.builder.first_pass_verify_rate < 0.60 (warn)
+Intent:   self-improve(pipe=builder)
+Plan:     metrics.retrieve(pipe=builder, window=7d)
+          | analyze(type=failure_patterns, group_by=task_category)
+          | improve.propose(target=builder.config)
+Output:   proposed configuration change + summary
+```
+
+The analyze step examines the failure envelopes — the actual content of what went wrong. It clusters failures by pattern. "Builder consistently mishandles database migration files" is a concrete finding that produces a concrete prompt amendment.
+
+Proposed improvements fall into two categories:
+
+**Auto-apply** — changes that are safe, narrow, and reversible: adding context to a prompt template, adjusting a flag default, adding a keyword to the router index, updating a trigger phrase. These are applied automatically and logged. If the KPI doesn't improve, or if another KPI degrades, the change is rolled back.
+
+**Advisory** — changes that require judgment: switching a pipe's AI provider, restructuring a pipeline's execution order, creating a new pipe. These are surfaced as proposals. The user reviews and approves or dismisses.
+
+The boundary between auto-apply and advisory is configurable — the trust gradient applied to self-improvement.
+
+### Rollback
+
+Every auto-applied change is versioned. The system tracks which configuration was active when each KPI measurement was taken. If a KPI degrades after a change, the system correlates the degradation with the specific change and proposes a rollback — or auto-rollbacks if configured to do so.
+
+### Goodhart's Law Protection
+
+A pipe optimizing toward a single metric can degrade in ways the metric doesn't capture. The primary defense is multi-KPI design — a pipe is never evaluated on one number. A change that games the verify step will show up as an increase in human modification rate. The secondary defense is the advisory boundary — structural changes require human approval. The tertiary defense is periodic user review — a metrics summary on request or on schedule.
+
+### Hierarchical Summarization
+
+The metrics storage strategy is hierarchical summarization — a compression strategy. The raw events are the leaves, and each level up the tree trades granularity for searchability.
+
+The raw JSONL stays as-is — append-only, one line per event. Periodically, a summarization step runs and produces a higher-level record that captures the patterns without the individual events.
+
+```
+Raw events (JSONL)
+    │  every hour
+    ▼
+Hourly summaries
+    │  every day
+    ▼
+Daily summaries
+    │  every week
+    ▼
+Weekly summaries
+    │  every month
+    ▼
+Monthly summaries
+```
+
+An hourly summary collapses dozens of events into counts and rates. But it also captures *what was interesting* — the outliers, the repeated failures, the patterns that a flat aggregation would hide. A `notable` field carries the insight the improvement pipeline actually cares about. It doesn't need to see that the builder ran 3 times. It needs to know that Stripe webhook handling failed repeatedly.
+
+Each level up compresses further. By the monthly level, a single record contains a paragraph's worth of structured insight about a pipe's performance across hundreds of invocations. An AI analyzing it reads one record and has the full picture.
+
+The tree structure makes this searchable at scale. When the improvement pipeline fires, it starts at the highest relevant level:
+
+"How's the builder doing?" → read the latest weekly summary. Done.
+
+"The builder's verify rate dropped this week — what happened?" → read daily summaries. Find the day it dropped. Read hourly summaries. Find the hour. Now, and only then, read the raw events for that hour.
+
+It's the same layered resolution strategy as the router. Start broad, narrow only when needed. Most improvement analysis never touches the raw events.
+
+The summarization step itself is a pipeline. Hourly and daily summaries are purely deterministic — counts, rates, percentiles, just math. But the `notable` field at higher levels — weekly, monthly — benefits from AI. Detecting that "Stripe integration is the weakest category" from a week of daily summaries is a synthesis task. Deterministic aggregation for the numbers, an AI call for the narrative. The AI surface area is small and bounded.
+
+```
+metrics/
+  raw/
+    2026-03-01.jsonl
+    2026-03-02.jsonl
+  hourly/
+    2026-03-01.jsonl    # 24 summary lines
+  daily/
+    2026-03.jsonl       # ~30 lines for the month
+  weekly/
+    2026.jsonl          # ~52 lines for the year
+  monthly/
+    all.jsonl           # one line per month, forever
+```
+
+Raw files rotate out after the retention window. The summaries are tiny and stay forever. The entire system's performance history for a year fits in a few hundred kilobytes of summary JSONL. The raw events are ephemeral. The summaries are the institutional memory.
+
+This also strengthens the Goodhart protection. When the improvement pipeline analyzes a KPI degradation, it reads the summary tree and gets narrative context about *what changed around the time it dropped*. That's a rollback recommendation with reasoning, derived entirely from the summary tree.
+
+The retention strategy is naturally proportional. Maximum detail for the recent past (debugging), moderate detail for the medium term (trend detection), compressed insight for the long term (strategic assessment). Exactly how a human memory works — vivid detail about yesterday, general patterns about last month, broad strokes about last year.
+
+---
+
+## Nightly Upgrade
+
+The internal improvement loop optimizes how Virgil uses its current capabilities. The nightly upgrade cycle tracks whether better capabilities exist. These are complementary but distinct: one tightens the feedback loops, the other expands the frontier.
+
+Virgil runs a scheduled pipeline that monitors external sources — provider changelogs, model releases, dependency updates, relevant research — and produces a summary of findings with actionable proposals.
+
+**Auto-apply** — configuration-level changes that are safe and verifiable:
+- A CLI tool released a new version with no breaking changes → update and verify
+- A provider deprecated an API endpoint → update the endpoint in configuration
+- A new model is available → benchmark against current default, propose swap if it outperforms
+
+**Advisory** — changes that require judgment:
+- A new model significantly outperforms the current default on a task category
+- A research paper describes a relevant technique
+- A breaking API change requires code-level updates
+
+Results are stored and surfaced in the morning summary or on request:
+
+```
+"Overnight: applied 2 dependency updates, both passing. Anthropic
+ shipped a new model — benchmarks suggest it's stronger for code
+ review. Want me to run a comparison?"
+```
+
+The pipeline is the same system all the way down:
+
+```
+Signal:   schedule.nightly (ambient signal)
+Intent:   self-upgrade
+Plan:     sources.fetch(configured_feeds)
+          | analyze(type=relevance, context=current_config)
+          | parallel:
+              auto_apply(safe_changes)
+              propose(advisory_changes)
+          | summarize(type=voice)
+Output:   applied changes log + advisory proposals + voice summary
+```
+
+---
+
 ## Principles
 
 **Deterministic first, AI as fallback.** The common case should never require an AI call. AI is expensive, slow, and non-deterministic. Use it where it's needed — creative work, ambiguous classification, synthesis — and keep it away from routing, retrieval, and orchestration.
