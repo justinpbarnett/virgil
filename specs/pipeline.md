@@ -2,7 +2,7 @@
 
 This document defines what a pipeline is, what it must provide, and how to build one. It is the reference standard for anyone creating a new pipeline for Virgil.
 
-For the philosophy behind pipelines, see `virgil.md`. For architectural decisions, see `ARCHITECTURE.md`. For the atomic units that pipelines compose, see `PIPE_SPEC.md`.
+For the philosophy behind pipelines, see `virgil.md`. For architectural decisions, see `ARCHITECTURE.md`. For the atomic units that pipelines compose, see `pipe.md`.
 
 ---
 
@@ -220,7 +220,7 @@ content_type: structured
 
 Errors in pipelines are handled at two levels: the pipe level and the pipeline level.
 
-**Pipe-level errors** are reported through the envelope (see `PIPE_SPEC.md`). The runtime reads the error and decides what to do based on the pipeline's configuration and the execution context.
+**Pipe-level errors** are reported through the envelope (see `pipe.md`). The runtime reads the error and decides what to do based on the pipeline's configuration and the execution context.
 
 **Pipeline-level error behavior:**
 
