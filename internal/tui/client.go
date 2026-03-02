@@ -86,6 +86,12 @@ func openSSEStream(ctx context.Context, serverAddr, text string) (*sseReader, er
 		return nil, fmt.Errorf("server error (%d): %s", resp.StatusCode, string(data))
 	}
 
+	ct := resp.Header.Get("Content-Type")
+	if !strings.HasPrefix(ct, envelope.SSEContentType) {
+		resp.Body.Close()
+		return nil, fmt.Errorf("server does not support streaming (got %s)", ct)
+	}
+
 	scanner := bufio.NewScanner(resp.Body)
 	scanner.Buffer(make([]byte, 4096), 1024*1024) // 1 MB max line for large envelopes
 	return &sseReader{

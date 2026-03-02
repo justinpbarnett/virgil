@@ -7,28 +7,56 @@ import (
 	"strings"
 	"time"
 
-	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 	"github.com/justinpbarnett/virgil/internal/envelope"
 )
 
+// Layout mode based on terminal width.
+type layoutMode int
+
+const (
+	layoutFull   layoutMode = iota // 120+ cols, panel side-by-side
+	layoutMedium                   // 80-119, compressed panel
+	layoutNarrow                   // <80, panel as overlay
+)
+
+const (
+	escapeWindow   = 400 * time.Millisecond
+	minPanelWidth  = 30
+	panelFraction  = 3 // panel gets 1/panelFraction of width
+	minWidthWarn   = 60
+	minHeightWarn  = 15
+)
+
 type model struct {
-	textInput      textinput.Model
-	messages       []string
+	stream    Stream
+	input     Input
+	panel     Panel
+	theme     Theme
+	cmds      *CommandRegistry
+	completer *Completer
+
 	serverAddr     string
-	err            error
+	width          int
+	height         int
+	layout         layoutMode
+	ghost          string // autocomplete ghost text
+	keysShown      bool   // ctrl+k debounce
+
+	// Streaming state
 	pending        strings.Builder
 	waiting        bool
 	dotPhase       int
 	activeStreamID int
 	cancelFn       context.CancelFunc
 	lastEscTime    time.Time
-}
 
-const (
-	maxMessages  = 200
-	escapeWindow = 400 * time.Millisecond
-)
+	// Reconnection state
+	connected      bool
+	reconnecting   bool
+	inputQueue     []string
+}
 
 type tickMsg struct{}
 
@@ -44,46 +72,168 @@ type streamDoneMsg struct {
 	err      error
 }
 
-func (m *model) appendMessage(msg string) {
-	m.messages = append(m.messages, msg)
-	if len(m.messages) > maxMessages {
-		m.messages = m.messages[len(m.messages)-maxMessages:]
-	}
+type reconnectMsg struct {
+	ok  bool
+	err error
 }
 
-func RunSession(serverAddr string) error {
-	ti := textinput.New()
-	ti.Placeholder = "Ask Virgil something..."
-	ti.Focus()
+type pipesLoadedMsg struct{}
 
+func RunSession(serverAddr string) error {
+	theme := NewTheme("dark")
+	cmds := NewCommandRegistry()
+	comp := NewCompleter(cmds.List())
 	m := model{
-		textInput:  ti,
+		stream:     NewStream(&theme),
+		input:      NewInput(&theme),
+		panel:      NewPanel(&theme),
+		theme:      theme,
+		cmds:       cmds,
+		completer:  comp,
 		serverAddr: serverAddr,
+		connected:  true,
 	}
 
-	p := tea.NewProgram(m)
+	p := tea.NewProgram(m, tea.WithAltScreen())
 	_, err := p.Run()
 	return err
 }
 
 func (m model) Init() tea.Cmd {
-	return textinput.Blink
+	return tea.Batch(
+		m.input.Focus(),
+		m.loadPipes(),
+	)
+}
+
+func (m model) loadPipes() tea.Cmd {
+	return func() tea.Msg {
+		m.completer.LoadPipes(m.serverAddr)
+		return pipesLoadedMsg{}
+	}
 }
 
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
-	case tea.KeyMsg:
-		if msg.Type != tea.KeyEsc {
-			m.lastEscTime = time.Time{}
-		}
+	case tea.WindowSizeMsg:
+		return m.handleResize(msg)
 
-		switch msg.Type {
-		case tea.KeyCtrlC:
-			return m, tea.Quit
-		case tea.KeyEsc:
-			if m.cancelFn == nil {
-				break
-			}
+	case tea.KeyMsg:
+		return m.handleKey(msg)
+
+	case tickMsg:
+		if m.waiting {
+			m.dotPhase = (m.dotPhase + 1) % 4
+			return m, tickCmd()
+		}
+		return m, nil
+
+	case streamChunkMsg:
+		return m.handleStreamChunk(msg)
+
+	case streamDoneMsg:
+		return m.handleStreamDone(msg)
+
+	case reconnectMsg:
+		return m.handleReconnect(msg)
+
+	case pipesLoadedMsg:
+		return m, nil
+
+	case serverCmdMsg:
+		if msg.err != nil {
+			m.stream.Append(KindError, fmt.Sprintf("error: %v", msg.err))
+		} else {
+			m.stream.Append(KindNotification, msg.output)
+		}
+		return m, nil
+	}
+
+	// Delegate to sub-models
+	var cmds []tea.Cmd
+	var cmd tea.Cmd
+
+	m.stream, cmd = m.stream.Update(msg)
+	if cmd != nil {
+		cmds = append(cmds, cmd)
+	}
+
+	m.input, cmd = m.input.Update(msg)
+	if cmd != nil {
+		cmds = append(cmds, cmd)
+	}
+
+	m.panel, cmd = m.panel.Update(msg)
+	if cmd != nil {
+		cmds = append(cmds, cmd)
+	}
+
+	return m, tea.Batch(cmds...)
+}
+
+func (m model) handleResize(msg tea.WindowSizeMsg) (tea.Model, tea.Cmd) {
+	m.width = msg.Width
+	m.height = msg.Height
+
+	switch {
+	case m.width >= 120:
+		m.layout = layoutFull
+	case m.width >= 80:
+		m.layout = layoutMedium
+	default:
+		m.layout = layoutNarrow
+	}
+
+	m.updateLayout()
+	return m, nil
+}
+
+func (m *model) updateLayout() {
+	inputHeight := 3 // textarea height + some padding
+	streamHeight := m.height - inputHeight
+	if streamHeight < 1 {
+		streamHeight = 1
+	}
+
+	if m.panel.IsOpen() && m.layout != layoutNarrow {
+		panelWidth := m.width / panelFraction
+		if panelWidth < minPanelWidth {
+			panelWidth = minPanelWidth
+		}
+		streamWidth := m.width - panelWidth - 1 // -1 for border
+		if streamWidth < 20 {
+			streamWidth = 20
+		}
+		m.stream.SetSize(streamWidth, streamHeight)
+		m.panel.SetSize(panelWidth, streamHeight)
+		m.input.SetWidth(streamWidth)
+	} else {
+		m.stream.SetSize(m.width, streamHeight)
+		m.panel.SetSize(m.width, streamHeight)
+		m.input.SetWidth(m.width)
+	}
+}
+
+func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	// Reset escape timer on non-escape keys
+	if msg.Type != tea.KeyEsc {
+		m.lastEscTime = time.Time{}
+	}
+
+	switch msg.Type {
+	case tea.KeyCtrlC:
+		v := m.input.Value()
+		if strings.TrimSpace(v) != "" {
+			m.input.textarea.SetValue("")
+			return m, nil
+		}
+		return m, tea.Quit
+
+	case tea.KeyCtrlD:
+		return m, tea.Quit
+
+	case tea.KeyEsc:
+		if m.cancelFn != nil {
 			now := time.Now()
 			if m.lastEscTime.IsZero() || now.Sub(m.lastEscTime) > escapeWindow {
 				m.lastEscTime = now
@@ -95,98 +245,310 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.pending.Reset()
 			m.cancelFn = nil
 			m.lastEscTime = time.Time{}
-			m.appendMessage("virgil > [cancelled]")
-			m.appendMessage("")
+			m.stream.Append(KindNotification, SymPrompt+" [cancelled]")
 			return m, nil
-		case tea.KeyEnter:
-			input := m.textInput.Value()
-			if strings.TrimSpace(input) == "" {
-				return m, nil
+		}
+		// Clear input when idle
+		m.input.textarea.SetValue("")
+		return m, nil
+
+	case tea.KeyTab:
+		text := strings.TrimSpace(m.input.Value())
+		if text != "" {
+			completed, ghost := m.completer.Complete(text)
+			if ghost != "" {
+				m.ghost = ghost
+				m.input.textarea.SetValue(completed)
 			}
-			m.appendMessage("you > " + input)
-			m.textInput.SetValue("")
-			m.waiting = true
-			m.pending.Reset()
-			m.dotPhase = 0
+		}
+		return m, nil
+
+	case tea.KeyUp:
+		m.input.HistoryUp()
+		return m, nil
+
+	case tea.KeyDown:
+		m.input.HistoryDown()
+		return m, nil
+
+	case tea.KeyEnter:
+		if msg.Alt {
+			// Alt+Enter (or Shift+Enter in kitty-protocol terminals) → newline
+			m.input.textarea.InsertRune('\n')
+			return m, nil
+		}
+		return m.handleSubmit()
+
+	case tea.KeyCtrlJ:
+		if m.panel.IsOpen() {
+			m.panel.ScrollDown(3)
+			return m, nil
+		}
+
+	case tea.KeyCtrlK:
+		if !m.keysShown {
+			m.stream.Append(KindNotification, keybindingSummary())
+			m.keysShown = true
+		}
+		return m, nil
+
+	case tea.KeyCtrlP:
+		m.panel.Toggle()
+		m.updateLayout()
+		return m, nil
+	}
+
+	// Any other key dismisses ghost text and resets completer
+	m.ghost = ""
+	m.completer.Reset()
+
+	// Forward to textarea for typing
+	var cmd tea.Cmd
+	m.input, cmd = m.input.Update(msg)
+	return m, cmd
+}
+
+func (m model) handleSubmit() (tea.Model, tea.Cmd) {
+	value := m.input.Submit()
+	if value == "" {
+		return m, nil
+	}
+
+	// Check for colon commands
+	if strings.HasPrefix(value, ":") {
+		return m.handleCommand(value)
+	}
+
+	// Queue input if disconnected
+	if !m.connected {
+		m.inputQueue = append(m.inputQueue, value)
+		m.stream.Append(KindNotification, "queued (reconnecting...)")
+		return m, nil
+	}
+
+	return m.sendSignal(value)
+}
+
+type serverCmdMsg struct {
+	output string
+	err    error
+}
+
+func (m model) handleCommand(input string) (tea.Model, tea.Cmd) {
+	m.keysShown = false
+	name, _ := ParseCommand(input)
+
+	// Server-fetching commands handled async
+	switch name {
+	case "pipes":
+		return m, m.fetchPipes()
+	case "status":
+		return m, m.fetchStatus()
+	}
+
+	result, found := m.cmds.Execute(input)
+	if !found {
+		if name == "" {
+			// Bare ":" — show command list
+			allCmds := append(m.cmds.List(), "pipes", "status")
+			result = CommandResult{Output: "commands: " + strings.Join(allCmds, ", ")}
+		} else {
+			m.stream.Append(KindError, "unknown command: :"+name)
+			return m, nil
+		}
+	}
+
+	if result.Quit {
+		return m, tea.Quit
+	}
+
+	switch result.Output {
+	case "panel":
+		m.panel.Toggle()
+		m.updateLayout()
+	case "":
+		// :clear — reset stream
+		m.stream.Clear()
+	default:
+		m.stream.Append(KindNotification, result.Output)
+	}
+
+	return m, nil
+}
+
+func (m model) fetchPipes() tea.Cmd {
+	return func() tea.Msg {
+		resp, err := signalClient.Get(fmt.Sprintf("http://%s/pipes", m.serverAddr))
+		if err != nil {
+			return serverCmdMsg{err: err}
+		}
+		defer resp.Body.Close()
+		var defs []struct {
+			Name        string `json:"name"`
+			Description string `json:"description"`
+			Category    string `json:"category"`
+		}
+		if err := json.NewDecoder(resp.Body).Decode(&defs); err != nil {
+			return serverCmdMsg{err: err}
+		}
+		var b strings.Builder
+		b.WriteString("available pipes:\n")
+		for _, d := range defs {
+			b.WriteString(fmt.Sprintf("  %s — %s\n", d.Name, d.Description))
+		}
+		return serverCmdMsg{output: b.String()}
+	}
+}
+
+func (m model) fetchStatus() tea.Cmd {
+	return func() tea.Msg {
+		resp, err := signalClient.Get(fmt.Sprintf("http://%s/status", m.serverAddr))
+		if err != nil {
+			return serverCmdMsg{err: err}
+		}
+		defer resp.Body.Close()
+		var status map[string]any
+		if err := json.NewDecoder(resp.Body).Decode(&status); err != nil {
+			return serverCmdMsg{err: err}
+		}
+		var b strings.Builder
+		b.WriteString("server status:\n")
+		for k, v := range status {
+			b.WriteString(fmt.Sprintf("  %s: %v\n", k, v))
+		}
+		return serverCmdMsg{output: b.String()}
+	}
+}
+
+func (m model) sendSignal(text string) (tea.Model, tea.Cmd) {
+	m.keysShown = false
+	m.stream.Append(KindInput, SymPrompt+" "+text)
+	m.waiting = true
+	m.pending.Reset()
+	m.dotPhase = 0
+	m.activeStreamID++
+	streamID := m.activeStreamID
+	ctx, cancel := context.WithCancel(context.Background())
+	m.cancelFn = cancel
+	return m, tea.Batch(
+		startStream(ctx, m.serverAddr, text, streamID),
+		tickCmd(),
+	)
+}
+
+func (m model) handleStreamChunk(msg streamChunkMsg) (tea.Model, tea.Cmd) {
+	if msg.streamID != m.activeStreamID {
+		msg.reader.Close()
+		return m, nil
+	}
+	m.pending.WriteString(msg.text)
+	m.waiting = false
+	return m, readNextEvent(msg.reader, msg.streamID)
+}
+
+func (m model) handleStreamDone(msg streamDoneMsg) (tea.Model, tea.Cmd) {
+	if msg.streamID != m.activeStreamID {
+		return m, nil
+	}
+	m.waiting = false
+	m.cancelFn = nil
+	m.lastEscTime = time.Time{}
+	m.keysShown = false
+
+	if msg.err != nil {
+		m.stream.Append(KindError, fmt.Sprintf("error: %v", msg.err))
+	} else if m.pending.Len() > 0 {
+		m.stream.Append(KindResponse, m.pending.String())
+	} else {
+		content := envelope.ContentToText(msg.env.Content, msg.env.ContentType)
+		if content != "" {
+			m.stream.Append(KindResponse, content)
+		}
+	}
+	m.pending.Reset()
+	return m, nil
+}
+
+func (m model) handleReconnect(msg reconnectMsg) (tea.Model, tea.Cmd) {
+	if msg.ok {
+		m.connected = true
+		m.reconnecting = false
+		m.stream.Append(KindNotification, SymCheck+" Reconnected")
+
+		// Flush queued inputs
+		var cmds []tea.Cmd
+		for _, queued := range m.inputQueue {
+			m.stream.Append(KindInput, SymPrompt+" "+queued)
 			m.activeStreamID++
 			streamID := m.activeStreamID
 			ctx, cancel := context.WithCancel(context.Background())
 			m.cancelFn = cancel
-			return m, tea.Batch(
-				startStream(ctx, m.serverAddr, input, streamID),
-				tickCmd(),
-			)
+			m.waiting = true
+			m.pending.Reset()
+			cmds = append(cmds, startStream(ctx, m.serverAddr, queued, streamID))
 		}
-
-	case tickMsg:
-		if m.waiting {
-			m.dotPhase = (m.dotPhase + 1) % 4
-			return m, tickCmd()
+		m.inputQueue = nil
+		if len(cmds) > 0 {
+			cmds = append(cmds, tickCmd())
 		}
-		return m, nil
-
-	case streamChunkMsg:
-		if msg.streamID != m.activeStreamID {
-			msg.reader.Close()
-			return m, nil
-		}
-		m.pending.WriteString(msg.text)
-		m.waiting = false
-		return m, readNextEvent(msg.reader, msg.streamID)
-
-	case streamDoneMsg:
-		if msg.streamID != m.activeStreamID {
-			return m, nil
-		}
-		m.waiting = false
-		m.cancelFn = nil
-		m.lastEscTime = time.Time{}
-		if msg.err != nil {
-			m.appendMessage(fmt.Sprintf("error: %v", msg.err))
-		} else if m.pending.Len() > 0 {
-			m.appendMessage("virgil > " + m.pending.String())
-		} else {
-			content := envelope.ContentToText(msg.env.Content, msg.env.ContentType)
-			if content != "" {
-				m.appendMessage("virgil > " + content)
-			}
-		}
-		m.appendMessage("")
-		m.pending.Reset()
-		return m, nil
-
+		return m, tea.Batch(cmds...)
 	}
 
-	var cmd tea.Cmd
-	m.textInput, cmd = m.textInput.Update(msg)
-	return m, cmd
+	// Still reconnecting
+	return m, tryReconnect(m.serverAddr)
 }
 
 func (m model) View() string {
-	var b strings.Builder
-
-	for _, msg := range m.messages {
-		b.WriteString(msg)
-		b.WriteString("\n")
+	if m.width == 0 {
+		return ""
 	}
 
+	// Size warning
+	if m.width < minWidthWarn || m.height < minHeightWarn {
+		return m.theme.Error.Render(fmt.Sprintf(
+			"Terminal too small (%dx%d). Minimum %dx%d.\nTry one-shot mode: virgil <signal>",
+			m.width, m.height, minWidthWarn, minHeightWarn,
+		))
+	}
+
+	// Build stream view with waiting indicator
+	streamView := m.stream.View()
+
+	// Append waiting indicator below stream
+	var statusLine string
 	if m.waiting {
 		dots := strings.Repeat(".", m.dotPhase)
-		b.WriteString("virgil > " + dots)
-		b.WriteString("\n")
-	} else if m.pending.Len() > 0 {
-		b.WriteString("virgil > " + m.pending.String())
-		b.WriteString("\n")
+		statusLine = m.theme.Dim.Render(SymEllipsis + " thinking" + dots)
+	} else if !m.lastEscTime.IsZero() {
+		statusLine = m.theme.Notification.Render("press Esc again to cancel")
+	} else if !m.connected {
+		statusLine = m.theme.Error.Render(SymCross + " disconnected — reconnecting" + SymEllipsis)
 	}
 
-	if !m.lastEscTime.IsZero() {
-		b.WriteString("press Esc again to cancel\n")
+	sep := m.theme.Separator.Render(strings.Repeat(SymSeparator, m.width))
+	inputView := m.input.View()
+	if m.ghost != "" {
+		inputView += m.theme.Dim.Render(m.ghost)
 	}
 
-	b.WriteString(m.textInput.View())
-	b.WriteString("\n")
+	// Compose layout
+	var mainColumn string
+	if statusLine != "" {
+		mainColumn = lipgloss.JoinVertical(lipgloss.Left, streamView, statusLine, sep, inputView)
+	} else {
+		mainColumn = lipgloss.JoinVertical(lipgloss.Left, streamView, sep, inputView)
+	}
 
-	return b.String()
+	// Panel
+	if m.panel.IsOpen() {
+		if m.layout == layoutNarrow {
+			// Overlay: panel replaces stream
+			return lipgloss.JoinVertical(lipgloss.Left, m.panel.View(), sep, inputView)
+		}
+		return lipgloss.JoinHorizontal(lipgloss.Top, mainColumn, m.panel.View())
+	}
+
+	return mainColumn
 }
 
 func tickCmd() tea.Cmd {
@@ -246,3 +608,21 @@ func readNextEventSync(reader *sseReader, streamID int) tea.Msg {
 	}
 }
 
+func keybindingSummary() string {
+	return "" +
+		"enter send   alt+enter newline   esc clear   ctrl+c clear/exit\n" +
+		"↑/↓ history   tab complete   ctrl+p panel   ctrl+d exit\n" +
+		":help commands   :clear stream   :log server log   :quit exit"
+}
+
+func tryReconnect(serverAddr string) tea.Cmd {
+	return func() tea.Msg {
+		time.Sleep(time.Second)
+		resp, err := signalClient.Get(fmt.Sprintf("http://%s/health", serverAddr))
+		if err != nil {
+			return reconnectMsg{ok: false, err: err}
+		}
+		resp.Body.Close()
+		return reconnectMsg{ok: true}
+	}
+}

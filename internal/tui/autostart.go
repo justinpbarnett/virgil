@@ -39,15 +39,23 @@ func EnsureServer(binary string, serverAddr string) error {
 		return nil
 	}
 
-	// Start server
+	// Start server — send output to log file, not the terminal
+	logPath := ServerLogPath()
+	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	if err != nil {
+		return fmt.Errorf("opening server log: %w", err)
+	}
+
 	cmd := exec.Command(binary, "--server")
-	cmd.Stdout = os.Stderr
-	cmd.Stderr = os.Stderr
+	cmd.Stdout = logFile
+	cmd.Stderr = logFile
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 
 	if err := cmd.Start(); err != nil {
+		logFile.Close()
 		return fmt.Errorf("starting server: %w", err)
 	}
+	logFile.Close() // subprocess inherited the FD; parent can close its copy
 
 	// Wait for server to be healthy
 	deadline := time.Now().Add(5 * time.Second)
@@ -63,6 +71,11 @@ func EnsureServer(binary string, serverAddr string) error {
 	}
 
 	return fmt.Errorf("server failed to start within 5 seconds")
+}
+
+// ServerLogPath returns the path to the server log file.
+func ServerLogPath() string {
+	return filepath.Join(config.DataDir(), "virgil.log")
 }
 
 func isServerRunning(pidPath, serverAddr string) bool {
