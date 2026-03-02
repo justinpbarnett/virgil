@@ -124,18 +124,20 @@ type ProviderConfig struct {
 }
 
 type PipeConfig struct {
-	Name        string                `yaml:"name"`
-	Description string                `yaml:"description"`
-	Category    string                `yaml:"category"`
-	Streaming   bool                  `yaml:"streaming"`
-	Timeout     string                `yaml:"timeout"`
-	PipeLogLevel LogLevel             `yaml:"log_level"`
-	Triggers    pipe.Triggers        `yaml:"triggers"`
-	Flags       map[string]pipe.Flag `yaml:"flags"`
-	Prompts     PromptsConfig         `yaml:"prompts"`
-	Vocabulary  VocabularyConfig      `yaml:"vocabulary"`
-	Templates   TemplateContrib       `yaml:"templates"`
-	Dir         string                `yaml:"-"`
+	Name         string                `yaml:"name"`
+	Description  string                `yaml:"description"`
+	Category     string                `yaml:"category"`
+	Streaming    bool                  `yaml:"streaming"`
+	Timeout      string                `yaml:"timeout"`
+	Model        string                `yaml:"model"`
+	MaxTurns     *int                  `yaml:"max_turns"`
+	PipeLogLevel LogLevel              `yaml:"log_level"`
+	Triggers     pipe.Triggers         `yaml:"triggers"`
+	Flags        map[string]pipe.Flag  `yaml:"flags"`
+	Prompts      PromptsConfig         `yaml:"prompts"`
+	Vocabulary   VocabularyConfig      `yaml:"vocabulary"`
+	Templates    TemplateContrib       `yaml:"templates"`
+	Dir          string                `yaml:"-"`
 }
 
 // EffectiveLogLevel returns the pipe's log level if set, otherwise the global default.
@@ -144,6 +146,22 @@ func (pc PipeConfig) EffectiveLogLevel(globalDefault LogLevel) LogLevel {
 		return pc.PipeLogLevel
 	}
 	return globalDefault
+}
+
+// EffectiveModel returns the pipe's model if set, otherwise the global default.
+func (pc PipeConfig) EffectiveModel(globalDefault string) string {
+	if pc.Model != "" {
+		return pc.Model
+	}
+	return globalDefault
+}
+
+// EffectiveMaxTurns returns the pipe's max_turns if set, otherwise 1.
+func (pc PipeConfig) EffectiveMaxTurns() int {
+	if pc.MaxTurns != nil {
+		return *pc.MaxTurns
+	}
+	return 1
 }
 
 type PromptsConfig struct {

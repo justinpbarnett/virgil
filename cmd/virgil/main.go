@@ -68,6 +68,16 @@ func main() {
 		logger.Warn("auto-start failed, attempting inline", "error", err)
 	}
 
+	// Pipe mode: stdin is not a terminal
+	if tui.IsPiped() {
+		signal := strings.Join(args, " ")
+		if err := tui.RunPipe(signal, serverAddr); err != nil {
+			fmt.Fprintf(os.Stderr, "error: %v\n", err)
+			os.Exit(1)
+		}
+		return
+	}
+
 	if len(args) > 0 {
 		// One-shot mode
 		signal := strings.Join(args, " ")
@@ -116,7 +126,11 @@ func runServer(cfgDir string, logger *slog.Logger) error {
 			continue
 		}
 		pipeLogLevel := pc.EffectiveLogLevel(cfg.LogLevel)
-		env := append(baseEnv, pipehost.EnvLogLevel+"="+pipeLogLevel.String())
+		env := append(baseEnv,
+			pipehost.EnvLogLevel+"="+pipeLogLevel.String(),
+			pipehost.EnvModel+"="+pc.EffectiveModel(cfg.Provider.Model),
+			pipehost.EnvMaxTurns+"="+strconv.Itoa(pc.EffectiveMaxTurns()),
+		)
 		sc := pipe.SubprocessConfig{
 			Name:       name,
 			Executable: handlerPath,
@@ -172,7 +186,6 @@ func pipeEnv(cfg *config.Config, cfgDir string) []string {
 		pipehost.EnvConfigDir+"="+cfgDir,
 		pipehost.EnvUserDir+"="+config.UserDir(),
 		pipehost.EnvProvider+"="+cfg.Provider.Name,
-		pipehost.EnvModel+"="+cfg.Provider.Model,
 		pipehost.EnvProviderBinary+"="+cfg.Provider.Binary,
 	)
 	return env

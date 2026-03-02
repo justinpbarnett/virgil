@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strconv"
 
 	"github.com/justinpbarnett/virgil/internal/bridge"
 	"github.com/justinpbarnett/virgil/internal/config"
@@ -24,6 +25,7 @@ const (
 	EnvModel          = "VIRGIL_MODEL"
 	EnvProviderBinary = "VIRGIL_PROVIDER_BINARY"
 	EnvLogLevel       = "VIRGIL_LOG_LEVEL"
+	EnvMaxTurns       = "VIRGIL_MAX_TURNS"
 )
 
 // NewPipeLogger creates an slog.Logger for a pipe subprocess.
@@ -112,12 +114,19 @@ func BuildProviderFromEnvWithLogger(logger *slog.Logger) (bridge.Provider, error
 	if name == "" {
 		name = "claude"
 	}
+	maxTurns := 1
+	if s := os.Getenv(EnvMaxTurns); s != "" {
+		if v, err := strconv.Atoi(s); err == nil {
+			maxTurns = v
+		}
+	}
 	cfg := bridge.ProviderConfig{
-		Name:    name,
-		Model:   os.Getenv(EnvModel),
-		Binary:  os.Getenv(EnvProviderBinary),
-		Verbose: config.ParseLogLevel(os.Getenv(EnvLogLevel)) == config.Verbose,
-		Logger:  logger,
+		Name:     name,
+		Model:    os.Getenv(EnvModel),
+		Binary:   os.Getenv(EnvProviderBinary),
+		MaxTurns: maxTurns,
+		Verbose:  config.ParseLogLevel(os.Getenv(EnvLogLevel)) == config.Verbose,
+		Logger:   logger,
 	}
 	return bridge.NewProvider(cfg)
 }

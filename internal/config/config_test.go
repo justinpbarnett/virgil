@@ -653,3 +653,60 @@ func TestToSlogLevelUnset(t *testing.T) {
 	}
 }
 
+func TestEffectiveModel(t *testing.T) {
+	// Pipe model set → use pipe model
+	pc := PipeConfig{Model: "haiku"}
+	if got := pc.EffectiveModel("sonnet"); got != "haiku" {
+		t.Errorf("expected pipe model haiku, got %s", got)
+	}
+
+	// Pipe model unset → use global default
+	pc = PipeConfig{}
+	if got := pc.EffectiveModel("sonnet"); got != "sonnet" {
+		t.Errorf("expected global default sonnet, got %s", got)
+	}
+}
+
+func TestEffectiveMaxTurns(t *testing.T) {
+	// MaxTurns set to 0 → returns 0
+	zero := 0
+	pc := PipeConfig{MaxTurns: &zero}
+	if got := pc.EffectiveMaxTurns(); got != 0 {
+		t.Errorf("expected 0, got %d", got)
+	}
+
+	// MaxTurns set to 3 → returns 3
+	three := 3
+	pc = PipeConfig{MaxTurns: &three}
+	if got := pc.EffectiveMaxTurns(); got != 3 {
+		t.Errorf("expected 3, got %d", got)
+	}
+
+	// MaxTurns nil → returns default 1
+	pc = PipeConfig{}
+	if got := pc.EffectiveMaxTurns(); got != 1 {
+		t.Errorf("expected default 1, got %d", got)
+	}
+}
+
+func TestPipeConfigModelAndMaxTurnsFromYAML(t *testing.T) {
+	var pc PipeConfig
+	data := []byte(`
+name: test
+model: haiku
+max_turns: 0
+`)
+	if err := UnmarshalPipeConfig(data, &pc); err != nil {
+		t.Fatalf("unmarshal error: %v", err)
+	}
+	if pc.Model != "haiku" {
+		t.Errorf("expected model haiku, got %s", pc.Model)
+	}
+	if pc.MaxTurns == nil {
+		t.Fatal("expected MaxTurns to be set")
+	}
+	if *pc.MaxTurns != 0 {
+		t.Errorf("expected MaxTurns 0, got %d", *pc.MaxTurns)
+	}
+}
+

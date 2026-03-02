@@ -16,11 +16,12 @@ type StreamingProvider interface {
 }
 
 type ProviderConfig struct {
-	Name    string       `yaml:"name" json:"name"`
-	Model   string       `yaml:"model" json:"model"`
-	Binary  string       `yaml:"binary" json:"binary"`
-	Verbose bool         `yaml:"-" json:"-"`
-	Logger  *slog.Logger `yaml:"-" json:"-"`
+	Name     string       `yaml:"name" json:"name"`
+	Model    string       `yaml:"model" json:"model"`
+	Binary   string       `yaml:"binary" json:"binary"`
+	MaxTurns int          `yaml:"max_turns" json:"max_turns"`
+	Verbose  bool         `yaml:"-" json:"-"`
+	Logger   *slog.Logger `yaml:"-" json:"-"`
 }
 
 func NewProvider(config ProviderConfig) (Provider, error) {

@@ -85,3 +85,40 @@ func TestParseClaudeResponseEmpty(t *testing.T) {
 		t.Fatal("expected error for empty response")
 	}
 }
+
+func TestClaudeProviderMaxTurnsInArgs(t *testing.T) {
+	cases := []struct {
+		name     string
+		maxTurns int
+		want     string
+	}{
+		{"zero turns", 0, "0"},
+		{"one turn", 1, "1"},
+		{"three turns", 3, "3"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			p := NewClaudeProvider(ProviderConfig{
+				Name:     "claude",
+				Model:    "sonnet",
+				MaxTurns: tc.maxTurns,
+			})
+			args := p.buildArgs("")
+			// Find --max-turns and its value
+			found := false
+			for i, arg := range args {
+				if arg == "--max-turns" && i+1 < len(args) {
+					found = true
+					if args[i+1] != tc.want {
+						t.Errorf("expected --max-turns %s, got %s", tc.want, args[i+1])
+					}
+					break
+				}
+			}
+			if !found {
+				t.Error("--max-turns not found in args")
+			}
+		})
+	}
+}

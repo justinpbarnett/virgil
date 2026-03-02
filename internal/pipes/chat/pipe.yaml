@@ -3,6 +3,8 @@ description: Conversational fallback for general queries.
 category: general
 streaming: true
 timeout: 60s
+model: haiku
+max_turns: 0
 
 triggers:
   exact: []

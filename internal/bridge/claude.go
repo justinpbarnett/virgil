@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os/exec"
+	"strconv"
 	"strings"
 )
 
@@ -14,6 +15,7 @@ type ClaudeProvider struct {
 	model        string
 	binary       string
 	resolvedPath string
+	maxTurns     int
 	logger       *slog.Logger
 	verbose      bool
 }
@@ -32,7 +34,7 @@ func NewClaudeProvider(cfg ProviderConfig) *ClaudeProvider {
 		logger = slog.Default()
 	}
 	resolved, _ := exec.LookPath(binary)
-	return &ClaudeProvider{model: model, binary: binary, resolvedPath: resolved, logger: logger, verbose: cfg.Verbose}
+	return &ClaudeProvider{model: model, binary: binary, resolvedPath: resolved, maxTurns: cfg.MaxTurns, logger: logger, verbose: cfg.Verbose}
 }
 
 func (c *ClaudeProvider) Available() bool {
@@ -53,7 +55,7 @@ func (c *ClaudeProvider) buildArgs(system string, extra ...string) []string {
 		"-p",
 		"--model", c.model,
 		"--no-session-persistence",
-		"--max-turns", "1",
+		"--max-turns", strconv.Itoa(c.maxTurns),
 	}
 	args = append(args, extra...)
 	if system != "" {
