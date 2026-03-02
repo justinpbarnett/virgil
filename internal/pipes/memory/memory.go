@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strconv"
+	"time"
 
 	"github.com/justinpbarnett/virgil/internal/envelope"
 	"github.com/justinpbarnett/virgil/internal/pipe"
@@ -34,12 +35,14 @@ func handleStore(s *store.Store, input envelope.Envelope, flags map[string]strin
 	content := envelope.ContentToText(input.Content, input.ContentType)
 	if content == "" {
 		out.Error = envelope.FatalError("no content to store")
+		out.Duration = time.Since(out.Timestamp)
 		logger.Error("store failed", "error", "no content")
 		return out
 	}
 
 	if err := s.Save(content, nil); err != nil {
 		out.Error = envelope.FatalError(fmt.Sprintf("failed to save: %v", err))
+		out.Duration = time.Since(out.Timestamp)
 		logger.Error("store failed", "error", err)
 		return out
 	}
@@ -47,6 +50,7 @@ func handleStore(s *store.Store, input envelope.Envelope, flags map[string]strin
 	logger.Info("stored")
 	out.Content = "Remembered: " + content
 	out.ContentType = envelope.ContentText
+	out.Duration = time.Since(out.Timestamp)
 	return out
 }
 
@@ -64,6 +68,7 @@ func handleRetrieve(s *store.Store, input envelope.Envelope, flags map[string]st
 	if query == "" {
 		out.Content = []store.Entry{}
 		out.ContentType = envelope.ContentList
+		out.Duration = time.Since(out.Timestamp)
 		return out
 	}
 
@@ -77,6 +82,7 @@ func handleRetrieve(s *store.Store, input envelope.Envelope, flags map[string]st
 	entries, err := s.Search(query, limit, sort)
 	if err != nil {
 		out.Error = envelope.FatalError(fmt.Sprintf("search failed: %v", err))
+		out.Duration = time.Since(out.Timestamp)
 		logger.Error("search failed", "error", err)
 		return out
 	}
@@ -84,5 +90,6 @@ func handleRetrieve(s *store.Store, input envelope.Envelope, flags map[string]st
 	logger.Info("retrieved", "count", len(entries))
 	out.Content = entries
 	out.ContentType = envelope.ContentList
+	out.Duration = time.Since(out.Timestamp)
 	return out
 }

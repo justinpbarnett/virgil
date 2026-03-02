@@ -37,6 +37,7 @@ func NewHandler(client CalendarClient, logger *slog.Logger) pipe.Handler {
 		out.Args = flags
 
 		if client == nil {
+			out.Duration = time.Since(out.Timestamp)
 			out.Error = envelope.FatalError("no calendar client configured — see SETUP.md for Google Calendar API setup")
 			return out
 		}
@@ -57,13 +58,15 @@ func NewHandler(client CalendarClient, logger *slog.Logger) pipe.Handler {
 		events, err := client.GetEvents(context.Background(), calendarID, timeMin, timeMax)
 		if err != nil {
 			logger.Error("calendar API error", "error", err)
-			out.Error = envelope.FatalError(fmt.Sprintf("calendar API error: %v", err))
+			out.Duration = time.Since(out.Timestamp)
+			out.Error = envelope.ClassifyError("calendar API", err)
 			return out
 		}
 
 		logger.Info("fetched", "count", len(events))
 		out.Content = events
 		out.ContentType = envelope.ContentList
+		out.Duration = time.Since(out.Timestamp)
 		return out
 	}
 }

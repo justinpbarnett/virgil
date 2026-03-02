@@ -77,6 +77,7 @@ func NewHandlerWith(provider bridge.Provider, pipeConfig config.PipeConfig, comp
 		systemPrompt, userPrompt, errEnv := preparePrompt(compiled, pipeConfig, input, flags)
 		if errEnv != nil {
 			out.Error = errEnv
+			out.Duration = time.Since(out.Timestamp)
 			return out
 		}
 
@@ -88,12 +89,14 @@ func NewHandlerWith(provider bridge.Provider, pipeConfig config.PipeConfig, comp
 		if err != nil {
 			logger.Error("draft failed", "error", err)
 			out.Error = draftError(err)
+			out.Duration = time.Since(out.Timestamp)
 			return out
 		}
 
 		logger.Info("drafted", "type", flags["type"])
 		out.Content = result
 		out.ContentType = envelope.ContentText
+		out.Duration = time.Since(out.Timestamp)
 		return out
 	}
 }
@@ -113,6 +116,7 @@ func NewStreamHandlerWith(provider bridge.StreamingProvider, pipeConfig config.P
 		systemPrompt, userPrompt, errEnv := preparePrompt(compiled, pipeConfig, input, flags)
 		if errEnv != nil {
 			out.Error = errEnv
+			out.Duration = time.Since(out.Timestamp)
 			return out
 		}
 
@@ -124,12 +128,14 @@ func NewStreamHandlerWith(provider bridge.StreamingProvider, pipeConfig config.P
 		if err != nil {
 			logger.Error("draft failed", "error", err)
 			out.Error = draftError(err)
+			out.Duration = time.Since(out.Timestamp)
 			return out
 		}
 
 		logger.Info("drafted", "type", flags["type"])
 		out.Content = result
 		out.ContentType = envelope.ContentText
+		out.Duration = time.Since(out.Timestamp)
 		return out
 	}
 }

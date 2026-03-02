@@ -20,6 +20,7 @@ func prepareChat(input envelope.Envelope, flags map[string]string) (envelope.Env
 	if content == "" {
 		out.Content = "I didn't catch that. Could you try again?"
 		out.ContentType = envelope.ContentText
+		out.Duration = time.Since(out.Timestamp)
 		return out, "", true
 	}
 	return out, content, false
@@ -47,6 +48,7 @@ func NewStreamHandler(provider bridge.StreamingProvider, systemPrompt string, lo
 		if err != nil {
 			logger.Error("chat failed", "error", err)
 			out.Error = chatError(err)
+			out.Duration = time.Since(out.Timestamp)
 			return out
 		}
 
@@ -54,6 +56,7 @@ func NewStreamHandler(provider bridge.StreamingProvider, systemPrompt string, lo
 		logger.Debug("response details", "bytes", len(result))
 		out.Content = result
 		out.ContentType = envelope.ContentText
+		out.Duration = time.Since(out.Timestamp)
 		return out
 	}
 }
@@ -75,6 +78,7 @@ func NewHandler(provider bridge.Provider, systemPrompt string, logger *slog.Logg
 		if err != nil {
 			logger.Error("chat failed", "error", err)
 			out.Error = chatError(err)
+			out.Duration = time.Since(out.Timestamp)
 			return out
 		}
 
@@ -82,6 +86,7 @@ func NewHandler(provider bridge.Provider, systemPrompt string, logger *slog.Logg
 		logger.Debug("response details", "bytes", len(result))
 		out.Content = result
 		out.ContentType = envelope.ContentText
+		out.Duration = time.Since(out.Timestamp)
 		return out
 	}
 }
