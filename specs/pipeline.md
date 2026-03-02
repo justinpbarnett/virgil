@@ -14,6 +14,16 @@ From the outside, a pipeline is indistinguishable from a pipe. It has a name, ta
 
 This is the same relationship as Unix programs and shell scripts. `ls` is a program. A deploy script that calls `git`, `docker`, `ssh`, and `curl` is also a program — from the outside. It takes input and produces output. It can be called from other scripts. The fact that it has internals doesn't change its interface.
 
+### Pipelines vs. Composition Templates
+
+There are two ways multi-step execution happens in Virgil:
+
+1. **Named pipelines** (this spec) — explicit step graphs with loops, cycles, parallel branches, and error handling. Defined as standalone configuration. Triggered by name or by the router.
+
+2. **Composition templates** — lightweight plan patterns declared inside each pipe's `pipe.yaml` under the `templates` section. The planner matches a parsed signal's components (verb, type, source, modifier) against template `requires` lists and instantiates a plan on the fly. See the Templates section of `pipe.md` for the full schema.
+
+Composition templates are ad-hoc pipelines — they compose 1-3 pipes in sequence based on what the user said. Named pipelines are for complex workflows that need explicit control flow. Both produce the same thing from the runtime's perspective: an ordered list of pipe invocations.
+
 ---
 
 ## The Pipeline Contract
