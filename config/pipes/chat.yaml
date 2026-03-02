@@ -1,0 +1,19 @@
+name: chat
+description: Conversational fallback for general queries.
+category: general
+
+triggers:
+  exact: []
+  keywords:
+    - chat
+    - talk
+    - hello
+    - hi
+    - hey
+  patterns: []
+
+flags: {}
+
+prompts:
+  system: |
+    You are Virgil, a personal assistant. Respond helpfully and concisely.

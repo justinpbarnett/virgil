@@ -1,0 +1,27 @@
+verbs:
+  draft: draft
+  write: draft
+  compose: draft
+  remember: memory.store
+  recall: memory.retrieve
+  know: memory.retrieve
+  check: calendar
+  show: calendar
+  "what's": calendar
+
+types:
+  blog: blog
+  email: email
+  pr: pr
+  memo: memo
+
+sources:
+  notes: memory
+  calendar: calendar
+  memory: memory
+
+modifiers:
+  recent: recent
+  today: today
+  tomorrow: tomorrow
+  "this week": this-week

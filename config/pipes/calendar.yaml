@@ -1,0 +1,27 @@
+name: calendar
+description: Reads events from calendar services.
+category: time
+
+triggers:
+  exact:
+    - "check my calendar"
+    - "what's on my schedule"
+    - "what's on my calendar"
+  keywords:
+    - calendar
+    - schedule
+    - meeting
+    - event
+    - appointment
+  patterns:
+    - "what's on my calendar {modifier}"
+    - "check my calendar {modifier}"
+
+flags:
+  range:
+    description: Time range to query.
+    values: [today, tomorrow, this-week]
+    default: today
+  calendar:
+    description: Which calendar to use.
+    default: primary

@@ -1,0 +1,75 @@
+name: draft
+description: Produces written content from input context and instructions.
+category: comms
+
+triggers:
+  exact:
+    - "write something"
+    - "draft this"
+  keywords:
+    - draft
+    - compose
+    - write
+    - author
+  patterns:
+    - "draft {type}"
+    - "write {type} about {topic}"
+    - "draft {type} based on {source}"
+
+flags:
+  type:
+    description: What kind of content to produce.
+    values: [blog, email, pr, memo]
+    default: ""
+  tone:
+    description: Writing tone.
+    values: [formal, casual, technical]
+    default: ""
+  length:
+    description: Approximate output length.
+    values: [short, medium, long]
+    default: medium
+
+prompts:
+  system: |
+    You are a professional writer. You produce clean, clear, well-structured
+    content appropriate to the format requested. When given context material,
+    you synthesize it — you don't just summarize. You match the user's tone
+    and style preferences when provided.
+
+  templates:
+    blog: |
+      Write a blog post based on the following material.
+
+      Source material:
+      {{.Content}}
+
+      {{if .Topic}}Focus on: {{.Topic}}{{end}}
+      {{if .Tone}}Tone: {{.Tone}}{{end}}
+      {{if .Length}}Target length: {{.Length}}{{end}}
+
+    email: |
+      Draft an email based on the following context.
+
+      Context:
+      {{.Content}}
+
+      {{if .Tone}}Tone: {{.Tone}}{{end}}
+
+    pr: |
+      Write a pull request description for the following changes.
+
+      Changes:
+      {{.Content}}
+
+      Include: summary of what changed, why it changed, testing notes,
+      and any migration steps if applicable.
+
+    memo: |
+      Write a memo based on the following material.
+
+      Source material:
+      {{.Content}}
+
+      {{if .Topic}}Topic: {{.Topic}}{{end}}
+      {{if .Tone}}Tone: {{.Tone}}{{end}}

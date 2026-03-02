@@ -1,0 +1,35 @@
+name: memory
+description: Stores and retrieves information from local memory.
+category: memory
+
+triggers:
+  exact:
+    - "remember this"
+    - "what do I know"
+  keywords:
+    - remember
+    - recall
+    - memory
+    - notes
+    - know
+    - forget
+  patterns:
+    - "remember {topic}"
+    - "recall {topic}"
+    - "what do I know about {topic}"
+
+flags:
+  action:
+    description: Whether to store or retrieve.
+    values: [store, retrieve]
+    default: retrieve
+  query:
+    description: Search terms for retrieval.
+    default: ""
+  limit:
+    description: Maximum results to return.
+    default: "10"
+  sort:
+    description: Sort order for results.
+    values: [recent, relevant]
+    default: relevant

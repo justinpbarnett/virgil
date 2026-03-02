@@ -1,0 +1,12 @@
+server:
+  host: localhost
+  port: 7890
+
+provider:
+  name: claude
+  model: sonnet
+  binary: claude
+
+log_level: info
+
+database_path: ~/.local/share/virgil/memory.db
