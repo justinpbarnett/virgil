@@ -2,7 +2,7 @@
 
 Deterministic pipe for reading, writing, and listing files within Virgil's project directory and configured safe paths.
 
-Reference: `specs/pipe.md` for the pipe contract, `specs/ARCHITECTURE.md` for architectural decisions.
+Reference: `docs/pipe.md` for the pipe contract, `docs/ARCHITECTURE.md` for architectural decisions.
 
 ---
 
@@ -341,28 +341,28 @@ The dev pipe receives a list of all pipe definitions to analyze or use as exampl
 
 ### Content type conventions
 
-| Action | content_type | Content shape |
-|--------|-------------|---------------|
-| list   | list        | `[]FileInfo`  |
-| read   | text        | string (file contents) |
-| write  | structured  | `WriteResult` |
+| Action | content_type | Content shape          |
+| ------ | ------------ | ---------------------- |
+| list   | list         | `[]FileInfo`           |
+| read   | text         | string (file contents) |
+| write  | structured   | `WriteResult`          |
 
 ---
 
 ## Error Handling
 
-| Scenario | Severity | Retryable | Message pattern |
-|----------|----------|-----------|----------------|
-| Path outside allowed roots | fatal | false | `"path {resolved} is outside allowed roots: {roots}"` |
-| File not found | fatal | false | `"file not found: {path}"` |
-| Directory not found | fatal | false | `"directory not found: {path}"` |
-| Path is directory (for read) | fatal | false | `"path is a directory, use action=list: {path}"` |
-| Path is file (for list) | fatal | false | `"path is a file, use action=read: {path}"` |
-| File too large | fatal | false | `"file too large ({size}), max {limit}: {path}"` |
-| Permission denied | fatal | false | `"permission denied: {path}"` |
-| Disk full | fatal | false | OS error message |
-| Symlink target on write | fatal | false | `"write target is a symlink: {path}"` |
-| Invalid glob pattern | fatal | false | `"invalid glob pattern: {pattern}: {err}"` |
+| Scenario                     | Severity | Retryable | Message pattern                                       |
+| ---------------------------- | -------- | --------- | ----------------------------------------------------- |
+| Path outside allowed roots   | fatal    | false     | `"path {resolved} is outside allowed roots: {roots}"` |
+| File not found               | fatal    | false     | `"file not found: {path}"`                            |
+| Directory not found          | fatal    | false     | `"directory not found: {path}"`                       |
+| Path is directory (for read) | fatal    | false     | `"path is a directory, use action=list: {path}"`      |
+| Path is file (for list)      | fatal    | false     | `"path is a file, use action=read: {path}"`           |
+| File too large               | fatal    | false     | `"file too large ({size}), max {limit}: {path}"`      |
+| Permission denied            | fatal    | false     | `"permission denied: {path}"`                         |
+| Disk full                    | fatal    | false     | OS error message                                      |
+| Symlink target on write      | fatal    | false     | `"write target is a symlink: {path}"`                 |
+| Invalid glob pattern         | fatal    | false     | `"invalid glob pattern: {pattern}: {err}"`            |
 
 All errors are returned in the envelope — the handler never panics or exits.
 
