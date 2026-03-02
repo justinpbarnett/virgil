@@ -2,9 +2,11 @@ package runtime
 
 import (
 	"context"
+	"log/slog"
 	"maps"
 	"time"
 
+	"github.com/justinpbarnett/virgil/internal/config"
 	"github.com/justinpbarnett/virgil/internal/envelope"
 	"github.com/justinpbarnett/virgil/internal/pipe"
 )
@@ -21,16 +23,34 @@ type Plan struct {
 type Runtime struct {
 	registry *pipe.Registry
 	observer Observer
+	logger   *slog.Logger
+	level    config.LogLevel
 }
 
-func New(registry *pipe.Registry, observer Observer) *Runtime {
+func New(registry *pipe.Registry, observer Observer, logger *slog.Logger) *Runtime {
+	return NewWithLevel(registry, observer, logger, config.Info)
+}
+
+func NewWithLevel(registry *pipe.Registry, observer Observer, logger *slog.Logger, level config.LogLevel) *Runtime {
 	if observer == nil {
 		observer = &noopObserver{}
+	}
+	if logger == nil {
+		logger = slog.Default()
 	}
 	return &Runtime{
 		registry: registry,
 		observer: observer,
+		logger:   logger,
+		level:    level,
 	}
+}
+
+func (r *Runtime) logEnvelope(label string, env envelope.Envelope) {
+	if r.level < config.Verbose {
+		return
+	}
+	logEnvelopeJSON(r.logger, label, env)
 }
 
 // mergeFlags combines envelope args with step flags, with step flags taking precedence.
@@ -57,6 +77,8 @@ func (r *Runtime) runStep(step Step, current envelope.Envelope) envelope.Envelop
 		return current
 	}
 
+	r.logEnvelope("step input", current)
+
 	flags := mergeFlags(current.Args, step.Flags)
 
 	stepStart := time.Now()
@@ -72,6 +94,9 @@ func (r *Runtime) Execute(plan Plan, seed envelope.Envelope) envelope.Envelope {
 	start := time.Now()
 	current := seed
 
+	r.logger.Info("plan started", "steps", len(plan.Steps))
+	r.logEnvelope("seed envelope", seed)
+
 	for _, step := range plan.Steps {
 		current = r.runStep(step, current)
 		if isFatal(current) {
@@ -81,6 +106,7 @@ func (r *Runtime) Execute(plan Plan, seed envelope.Envelope) envelope.Envelope {
 	}
 
 	current.Duration = time.Since(start)
+	r.logger.Info("plan complete", "duration", current.Duration.String())
 	return current
 }
 
@@ -88,6 +114,9 @@ func (r *Runtime) ExecuteStream(ctx context.Context, plan Plan, seed envelope.En
 	start := time.Now()
 	current := seed
 	lastIdx := len(plan.Steps) - 1
+
+	r.logger.Info("plan started", "steps", len(plan.Steps), "streaming", true)
+	r.logEnvelope("seed envelope", seed)
 
 	for i, step := range plan.Steps {
 		// For the last step, try the stream handler
@@ -101,6 +130,7 @@ func (r *Runtime) ExecuteStream(ctx context.Context, plan Plan, seed envelope.En
 
 				r.observer.OnTransition(step.Pipe, result, stepDuration)
 				result.Duration = time.Since(start)
+				r.logger.Info("plan complete", "duration", result.Duration.String())
 				return result
 			}
 		}
@@ -114,5 +144,6 @@ func (r *Runtime) ExecuteStream(ctx context.Context, plan Plan, seed envelope.En
 	}
 
 	current.Duration = time.Since(start)
+	r.logger.Info("plan complete", "duration", current.Duration.String())
 	return current
 }

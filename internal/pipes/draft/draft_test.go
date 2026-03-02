@@ -33,7 +33,7 @@ func testConfig() config.PipeConfig {
 
 func TestDraftWithType(t *testing.T) {
 	provider := &mockProvider{response: "A great blog post about OAuth..."}
-	handler := NewHandler(provider, testConfig())
+	handler := NewHandler(provider, testConfig(), nil)
 
 	input := envelope.New("memory", "retrieve")
 	input.Content = "OAuth uses short-lived tokens"
@@ -54,7 +54,7 @@ func TestDraftWithType(t *testing.T) {
 
 func TestDraftNoType(t *testing.T) {
 	provider := &mockProvider{response: "Generated content"}
-	handler := NewHandler(provider, testConfig())
+	handler := NewHandler(provider, testConfig(), nil)
 
 	input := envelope.New("input", "test")
 	input.Content = "Some input text"
@@ -72,7 +72,7 @@ func TestDraftNoType(t *testing.T) {
 
 func TestDraftEmptyContent(t *testing.T) {
 	provider := &mockProvider{response: "something"}
-	handler := NewHandler(provider, testConfig())
+	handler := NewHandler(provider, testConfig(), nil)
 
 	input := envelope.New("input", "test")
 	input.ContentType = "text"
@@ -86,7 +86,7 @@ func TestDraftEmptyContent(t *testing.T) {
 
 func TestDraftProviderError(t *testing.T) {
 	provider := &mockProvider{err: fmt.Errorf("auth failed")}
-	handler := NewHandler(provider, testConfig())
+	handler := NewHandler(provider, testConfig(), nil)
 
 	input := envelope.New("input", "test")
 	input.Content = "content"
@@ -115,7 +115,7 @@ func TestDraftTemplateResolution(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.draftType, func(t *testing.T) {
 			provider := &mockProvider{response: "output"}
-			handler := NewHandler(provider, testConfig())
+			handler := NewHandler(provider, testConfig(), nil)
 
 			input := envelope.New("input", "test")
 			input.Content = "test content"

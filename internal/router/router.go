@@ -1,10 +1,19 @@
 package router
 
 import (
+	"log/slog"
 	"strings"
 
 	"github.com/justinpbarnett/virgil/internal/parser"
 	"github.com/justinpbarnett/virgil/internal/pipe"
+)
+
+// Routing layers, evaluated in order until a match is found.
+const (
+	LayerExact    = 1 // exact phrase match
+	LayerKeyword  = 2 // keyword scoring above threshold
+	LayerCategory = 3 // category narrowing / parsed verb
+	LayerFallback = 4 // no match, fall back to chat
 )
 
 type RouteResult struct {
@@ -21,9 +30,13 @@ type Router struct {
 	definitions  map[string]pipe.Definition
 	missLog      *MissLog
 	threshold    float64
+	logger       *slog.Logger
 }
 
-func NewRouter(defs []pipe.Definition, missLog *MissLog) *Router {
+func NewRouter(defs []pipe.Definition, missLog *MissLog, logger *slog.Logger) *Router {
+	if logger == nil {
+		logger = slog.Default()
+	}
 	r := &Router{
 		exactMap:     make(map[string]string),
 		keywordIndex: make(map[string][]string),
@@ -32,6 +45,7 @@ func NewRouter(defs []pipe.Definition, missLog *MissLog) *Router {
 		definitions:  make(map[string]pipe.Definition),
 		missLog:      missLog,
 		threshold:    0.6,
+		logger:       logger,
 	}
 
 	for _, def := range defs {
@@ -53,6 +67,7 @@ func NewRouter(defs []pipe.Definition, missLog *MissLog) *Router {
 		r.categories[def.Category] = append(r.categories[def.Category], def)
 	}
 
+	r.logger.Debug("router built", "pipes", len(defs), "keywords", len(r.keywordIndex))
 	return r
 }
 
@@ -61,7 +76,9 @@ func (r *Router) Route(signal string, parsed parser.ParsedSignal) RouteResult {
 
 	// Layer 1: Exact match
 	if pipeName, ok := r.exactMap[lower]; ok {
-		return RouteResult{Pipe: pipeName, Confidence: 1.0, Layer: 1}
+		result := RouteResult{Pipe: pipeName, Confidence: 1.0, Layer: LayerExact}
+		r.logger.Info("routed", "pipe", result.Pipe, "layer", result.Layer)
+		return result
 	}
 
 	// Layer 2: Keyword scoring
@@ -92,8 +109,12 @@ func (r *Router) Route(signal string, parsed parser.ParsedSignal) RouteResult {
 		}
 	}
 
+	r.logger.Debug("keyword scoring", "scores", scores, "keywords_found", keywordsFound, "best", bestPipe, "best_score", bestScore)
+
 	if bestScore >= r.threshold {
-		return RouteResult{Pipe: bestPipe, Confidence: bestScore, Layer: 2}
+		result := RouteResult{Pipe: bestPipe, Confidence: bestScore, Layer: LayerKeyword}
+		r.logger.Info("routed", "pipe", result.Pipe, "layer", result.Layer)
+		return result
 	}
 
 	// Layer 3: Category narrowing
@@ -111,14 +132,18 @@ func (r *Router) Route(signal string, parsed parser.ParsedSignal) RouteResult {
 		}
 
 		if bestScore >= r.threshold {
-			return RouteResult{Pipe: bestPipe, Confidence: bestScore, Layer: 3}
+			result := RouteResult{Pipe: bestPipe, Confidence: bestScore, Layer: LayerCategory}
+			r.logger.Info("routed", "pipe", result.Pipe, "layer", result.Layer)
+			return result
 		}
 	}
 
 	// Also try parsed verb directly if it matches a pipe
 	if parsed.Verb != "" {
 		if _, ok := r.definitions[parsed.Verb]; ok {
-			return RouteResult{Pipe: parsed.Verb, Confidence: 0.8, Layer: 3}
+			result := RouteResult{Pipe: parsed.Verb, Confidence: 0.8, Layer: LayerCategory}
+			r.logger.Info("routed", "pipe", result.Pipe, "layer", result.Layer)
+			return result
 		}
 	}
 
@@ -139,7 +164,10 @@ func (r *Router) Route(signal string, parsed parser.ParsedSignal) RouteResult {
 		})
 	}
 
-	return RouteResult{Pipe: "chat", Confidence: 0.0, Layer: 4}
+	r.logger.Warn("miss", "signal", signal)
+	result := RouteResult{Pipe: "chat", Confidence: 0.0, Layer: LayerFallback}
+	r.logger.Info("routed", "pipe", result.Pipe, "layer", result.Layer)
+	return result
 }
 
 func (r *Router) scoreParsedMatch(def pipe.Definition, parsed parser.ParsedSignal) float64 {

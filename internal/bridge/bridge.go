@@ -3,6 +3,7 @@ package bridge
 import (
 	"context"
 	"fmt"
+	"log/slog"
 )
 
 type Provider interface {
@@ -15,19 +16,17 @@ type StreamingProvider interface {
 }
 
 type ProviderConfig struct {
-	Name   string `yaml:"name" json:"name"`
-	Model  string `yaml:"model" json:"model"`
-	Binary string `yaml:"binary" json:"binary"`
+	Name    string       `yaml:"name" json:"name"`
+	Model   string       `yaml:"model" json:"model"`
+	Binary  string       `yaml:"binary" json:"binary"`
+	Verbose bool         `yaml:"-" json:"-"`
+	Logger  *slog.Logger `yaml:"-" json:"-"`
 }
 
 func NewProvider(config ProviderConfig) (Provider, error) {
 	switch config.Name {
 	case "claude":
-		binary := config.Binary
-		if binary == "" {
-			binary = "claude"
-		}
-		return NewClaudeProvider(config.Model, binary), nil
+		return NewClaudeProvider(config), nil
 	default:
 		return nil, fmt.Errorf("unknown provider: %s", config.Name)
 	}

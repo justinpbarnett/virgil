@@ -8,7 +8,9 @@ import (
 )
 
 func main() {
-	provider, err := pipehost.BuildProviderFromEnv()
+	logger := pipehost.NewPipeLogger("chat")
+
+	provider, err := pipehost.BuildProviderFromEnvWithLogger(logger)
 	if err != nil {
 		pipehost.Fatal("chat", err.Error())
 	}
@@ -20,7 +22,8 @@ func main() {
 
 	systemPrompt := pc.Prompts.System
 
-	pipehost.RunWithStreaming(provider, chat.NewHandler(provider, systemPrompt), func(sp bridge.StreamingProvider) pipe.StreamHandler {
-		return chat.NewStreamHandler(sp, systemPrompt)
+	logger.Info("initialized")
+	pipehost.RunWithStreaming(provider, chat.NewHandler(provider, systemPrompt, logger), func(sp bridge.StreamingProvider) pipe.StreamHandler {
+		return chat.NewStreamHandler(sp, systemPrompt, logger)
 	})
 }

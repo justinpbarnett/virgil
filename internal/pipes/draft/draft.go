@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"log/slog"
 	"text/template"
 	"time"
 
@@ -61,11 +62,14 @@ func draftError(err error) *envelope.EnvelopeError {
 	return envelope.ClassifyError("draft generation failed", err)
 }
 
-func NewHandler(provider bridge.Provider, pipeConfig config.PipeConfig) pipe.Handler {
-	return NewHandlerWith(provider, pipeConfig, CompileTemplates(pipeConfig))
+func NewHandler(provider bridge.Provider, pipeConfig config.PipeConfig, logger *slog.Logger) pipe.Handler {
+	return NewHandlerWith(provider, pipeConfig, CompileTemplates(pipeConfig), logger)
 }
 
-func NewHandlerWith(provider bridge.Provider, pipeConfig config.PipeConfig, compiled map[string]*template.Template) pipe.Handler {
+func NewHandlerWith(provider bridge.Provider, pipeConfig config.PipeConfig, compiled map[string]*template.Template, logger *slog.Logger) pipe.Handler {
+	if logger == nil {
+		logger = slog.Default()
+	}
 	return func(input envelope.Envelope, flags map[string]string) envelope.Envelope {
 		out := envelope.New("draft", "generate")
 		out.Args = flags
@@ -79,23 +83,29 @@ func NewHandlerWith(provider bridge.Provider, pipeConfig config.PipeConfig, comp
 		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 		defer cancel()
 
+		logger.Debug("drafting", "type", flags["type"], "prompt_len", len(userPrompt))
 		result, err := provider.Complete(ctx, systemPrompt, userPrompt)
 		if err != nil {
+			logger.Error("draft failed", "error", err)
 			out.Error = draftError(err)
 			return out
 		}
 
+		logger.Info("drafted", "type", flags["type"])
 		out.Content = result
 		out.ContentType = envelope.ContentText
 		return out
 	}
 }
 
-func NewStreamHandler(provider bridge.StreamingProvider, pipeConfig config.PipeConfig) pipe.StreamHandler {
-	return NewStreamHandlerWith(provider, pipeConfig, CompileTemplates(pipeConfig))
+func NewStreamHandler(provider bridge.StreamingProvider, pipeConfig config.PipeConfig, logger *slog.Logger) pipe.StreamHandler {
+	return NewStreamHandlerWith(provider, pipeConfig, CompileTemplates(pipeConfig), logger)
 }
 
-func NewStreamHandlerWith(provider bridge.StreamingProvider, pipeConfig config.PipeConfig, compiled map[string]*template.Template) pipe.StreamHandler {
+func NewStreamHandlerWith(provider bridge.StreamingProvider, pipeConfig config.PipeConfig, compiled map[string]*template.Template, logger *slog.Logger) pipe.StreamHandler {
+	if logger == nil {
+		logger = slog.Default()
+	}
 	return func(ctx context.Context, input envelope.Envelope, flags map[string]string, sink func(chunk string)) envelope.Envelope {
 		out := envelope.New("draft", "generate")
 		out.Args = flags
@@ -109,12 +119,15 @@ func NewStreamHandlerWith(provider bridge.StreamingProvider, pipeConfig config.P
 		ctx, cancel := context.WithTimeout(ctx, 60*time.Second)
 		defer cancel()
 
+		logger.Debug("drafting", "type", flags["type"], "prompt_len", len(userPrompt))
 		result, err := provider.CompleteStream(ctx, systemPrompt, userPrompt, sink)
 		if err != nil {
+			logger.Error("draft failed", "error", err)
 			out.Error = draftError(err)
 			return out
 		}
 
+		logger.Info("drafted", "type", flags["type"])
 		out.Content = result
 		out.ContentType = envelope.ContentText
 		return out

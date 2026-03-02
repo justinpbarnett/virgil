@@ -2,6 +2,7 @@ package chat
 
 import (
 	"context"
+	"log/slog"
 	"time"
 
 	"github.com/justinpbarnett/virgil/internal/bridge"
@@ -29,7 +30,10 @@ func chatError(err error) *envelope.EnvelopeError {
 	return envelope.ClassifyError("chat failed", err)
 }
 
-func NewStreamHandler(provider bridge.StreamingProvider, systemPrompt string) pipe.StreamHandler {
+func NewStreamHandler(provider bridge.StreamingProvider, systemPrompt string, logger *slog.Logger) pipe.StreamHandler {
+	if logger == nil {
+		logger = slog.Default()
+	}
 	return func(ctx context.Context, input envelope.Envelope, flags map[string]string, sink func(chunk string)) envelope.Envelope {
 		out, content, empty := prepareChat(input, flags)
 		if empty {
@@ -41,17 +45,23 @@ func NewStreamHandler(provider bridge.StreamingProvider, systemPrompt string) pi
 
 		result, err := provider.CompleteStream(ctx, systemPrompt, content, sink)
 		if err != nil {
+			logger.Error("chat failed", "error", err)
 			out.Error = chatError(err)
 			return out
 		}
 
+		logger.Info("responded")
+		logger.Debug("response details", "bytes", len(result))
 		out.Content = result
 		out.ContentType = envelope.ContentText
 		return out
 	}
 }
 
-func NewHandler(provider bridge.Provider, systemPrompt string) pipe.Handler {
+func NewHandler(provider bridge.Provider, systemPrompt string, logger *slog.Logger) pipe.Handler {
+	if logger == nil {
+		logger = slog.Default()
+	}
 	return func(input envelope.Envelope, flags map[string]string) envelope.Envelope {
 		out, content, empty := prepareChat(input, flags)
 		if empty {
@@ -63,10 +73,13 @@ func NewHandler(provider bridge.Provider, systemPrompt string) pipe.Handler {
 
 		result, err := provider.Complete(ctx, systemPrompt, content)
 		if err != nil {
+			logger.Error("chat failed", "error", err)
 			out.Error = chatError(err)
 			return out
 		}
 
+		logger.Info("responded")
+		logger.Debug("response details", "bytes", len(result))
 		out.Content = result
 		out.ContentType = envelope.ContentText
 		return out

@@ -1,10 +1,13 @@
 package config
 
 import (
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"gopkg.in/yaml.v3"
 )
 
 func writeFile(t *testing.T, dir, name, content string) {
@@ -98,8 +101,8 @@ func TestLoadValidConfig(t *testing.T) {
 	if cfg.Provider.Model != "haiku" {
 		t.Errorf("expected model haiku, got %s", cfg.Provider.Model)
 	}
-	if cfg.LogLevel != "debug" {
-		t.Errorf("expected log_level debug, got %s", cfg.LogLevel)
+	if cfg.LogLevel != Debug {
+		t.Errorf("expected log_level debug, got %v", cfg.LogLevel)
 	}
 	if cfg.DatabasePath != "/tmp/test.db" {
 		t.Errorf("expected database_path /tmp/test.db, got %s", cfg.DatabasePath)
@@ -524,6 +527,129 @@ triggers:
 
 	if _, ok := cfg.Pipes["chat"]; !ok {
 		t.Error("expected chat pipe to be loaded")
+	}
+}
+
+func TestParseLogLevel(t *testing.T) {
+	cases := []struct {
+		input string
+		want  LogLevel
+	}{
+		{"silent", Silent},
+		{"error", Error},
+		{"warn", Warn},
+		{"info", Info},
+		{"debug", Debug},
+		{"verbose", Verbose},
+		{"SILENT", Silent},
+		{"Info", Info},
+		{"DEBUG", Debug},
+		{"", Info},
+		{"unknown", Info},
+		{"trace", Info},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.input, func(t *testing.T) {
+			got := ParseLogLevel(tc.input)
+			if got != tc.want {
+				t.Errorf("ParseLogLevel(%q) = %v, want %v", tc.input, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestToSlogLevel(t *testing.T) {
+	// Silent should be above error so nothing prints
+	if ToSlogLevel(Silent) <= slog.LevelError {
+		t.Error("Silent slog level should be above error")
+	}
+	if ToSlogLevel(Error) != slog.LevelError {
+		t.Errorf("Error → expected slog.LevelError, got %v", ToSlogLevel(Error))
+	}
+	if ToSlogLevel(Warn) != slog.LevelWarn {
+		t.Errorf("Warn → expected slog.LevelWarn, got %v", ToSlogLevel(Warn))
+	}
+	if ToSlogLevel(Info) != slog.LevelInfo {
+		t.Errorf("Info → expected slog.LevelInfo, got %v", ToSlogLevel(Info))
+	}
+	if ToSlogLevel(Debug) != slog.LevelDebug {
+		t.Errorf("Debug → expected slog.LevelDebug, got %v", ToSlogLevel(Debug))
+	}
+	if ToSlogLevel(Verbose) != slog.LevelDebug {
+		t.Errorf("Verbose → expected slog.LevelDebug, got %v", ToSlogLevel(Verbose))
+	}
+}
+
+func TestEffectiveLogLevel(t *testing.T) {
+	// Pipe level set → use pipe level
+	pc := PipeConfig{PipeLogLevel: Debug}
+	if got := pc.EffectiveLogLevel(Info); got != Debug {
+		t.Errorf("expected pipe level Debug, got %v", got)
+	}
+
+	// Pipe level unset → use global default
+	pc = PipeConfig{PipeLogLevel: Unset}
+	if got := pc.EffectiveLogLevel(Warn); got != Warn {
+		t.Errorf("expected global default Warn, got %v", got)
+	}
+}
+
+func TestLogLevelString(t *testing.T) {
+	cases := []struct {
+		level LogLevel
+		want  string
+	}{
+		{Unset, ""},
+		{Silent, "silent"},
+		{Error, "error"},
+		{Warn, "warn"},
+		{Info, "info"},
+		{Debug, "debug"},
+		{Verbose, "verbose"},
+	}
+
+	for _, tc := range cases {
+		if got := tc.level.String(); got != tc.want {
+			t.Errorf("LogLevel(%d).String() = %q, want %q", tc.level, got, tc.want)
+		}
+	}
+}
+
+func TestLogLevelUnmarshalYAML(t *testing.T) {
+	type wrapper struct {
+		Level LogLevel `yaml:"level"`
+	}
+
+	cases := []struct {
+		name string
+		yaml string
+		want LogLevel
+	}{
+		{"debug", "level: debug", Debug},
+		{"info", "level: info", Info},
+		{"silent", "level: silent", Silent},
+		{"verbose", "level: verbose", Verbose},
+		{"empty string", "level: \"\"", Unset},
+		{"absent field", "{}", Unset},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var w wrapper
+			if err := yaml.Unmarshal([]byte(tc.yaml), &w); err != nil {
+				t.Fatalf("unmarshal error: %v", err)
+			}
+			if w.Level != tc.want {
+				t.Errorf("got %v, want %v", w.Level, tc.want)
+			}
+		})
+	}
+}
+
+func TestToSlogLevelUnset(t *testing.T) {
+	if ToSlogLevel(Unset) != slog.LevelInfo {
+		t.Errorf("Unset → expected slog.LevelInfo, got %v", ToSlogLevel(Unset))
 	}
 }
 

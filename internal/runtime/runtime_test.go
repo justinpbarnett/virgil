@@ -26,7 +26,7 @@ func TestExecuteSinglePipe(t *testing.T) {
 	})
 
 	obs := &testObserver{}
-	rt := New(reg, obs)
+	rt := New(reg, obs, nil)
 
 	seed := envelope.New("input", "test")
 	seed.Content = "hello"
@@ -61,7 +61,7 @@ func TestExecuteTwoPipeChain(t *testing.T) {
 		return out
 	})
 
-	rt := New(reg, nil)
+	rt := New(reg, nil, nil)
 
 	seed := envelope.New("input", "test")
 	seed.Content = "hello"
@@ -94,7 +94,7 @@ func TestExecuteThreePipeChain(t *testing.T) {
 	makePipe("c", "-C")
 
 	obs := &testObserver{}
-	rt := New(reg, obs)
+	rt := New(reg, obs, nil)
 
 	seed := envelope.New("input", "test")
 	seed.Content = "start"
@@ -129,7 +129,7 @@ func TestExecuteFatalErrorHalts(t *testing.T) {
 	})
 
 	obs := &testObserver{}
-	rt := New(reg, obs)
+	rt := New(reg, obs, nil)
 
 	result := rt.Execute(Plan{Steps: []Step{
 		{Pipe: "fail"}, {Pipe: "after"},
@@ -167,7 +167,7 @@ func TestExecuteWarnContinues(t *testing.T) {
 		return out
 	})
 
-	rt := New(reg, nil)
+	rt := New(reg, nil, nil)
 
 	result := rt.Execute(Plan{Steps: []Step{
 		{Pipe: "warn"}, {Pipe: "next"},
@@ -180,7 +180,7 @@ func TestExecuteWarnContinues(t *testing.T) {
 
 func TestExecuteMissingPipe(t *testing.T) {
 	reg := pipe.NewRegistry()
-	rt := New(reg, nil)
+	rt := New(reg, nil, nil)
 
 	result := rt.Execute(Plan{Steps: []Step{
 		{Pipe: "nonexistent"},
@@ -203,7 +203,7 @@ func TestExecuteFlagsPassedToPipe(t *testing.T) {
 		return envelope.New("flagtest", "run")
 	})
 
-	rt := New(reg, nil)
+	rt := New(reg, nil, nil)
 
 	result := rt.Execute(Plan{Steps: []Step{
 		{Pipe: "flagtest", Flags: map[string]string{"action": "store", "key": "value"}},

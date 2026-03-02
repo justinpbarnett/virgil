@@ -1,7 +1,6 @@
 package main
 
 import (
-	"fmt"
 	"os"
 
 	"github.com/justinpbarnett/virgil/internal/pipehost"
@@ -9,13 +8,17 @@ import (
 )
 
 func main() {
+	logger := pipehost.NewPipeLogger("calendar")
+
 	userDir := os.Getenv(pipehost.EnvUserDir)
 
 	client, err := calendar.NewGoogleClient(userDir)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "calendar: %v (continuing without client)\n", err)
-		pipehost.Run(calendar.NewHandler(nil), nil)
+		logger.Warn("calendar client unavailable, continuing without", "error", err)
+		pipehost.Run(calendar.NewHandler(nil, logger), nil)
 		return
 	}
-	pipehost.Run(calendar.NewHandler(client), nil)
+
+	logger.Info("initialized")
+	pipehost.Run(calendar.NewHandler(client, logger), nil)
 }

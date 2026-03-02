@@ -82,19 +82,19 @@ func setupIntegrationServer(t *testing.T) http.Handler {
 	reg := pipe.NewRegistry()
 
 	if memCfg, ok := cfg.Pipes["memory"]; ok {
-		reg.Register(memCfg.ToDefinition(), memoryPipe.NewHandler(memStore))
+		reg.Register(memCfg.ToDefinition(), memoryPipe.NewHandler(memStore, nil))
 	}
 
 	if calCfg, ok := cfg.Pipes["calendar"]; ok {
-		reg.Register(calCfg.ToDefinition(), calendarPipe.NewHandler(&mockCalendarClient{}))
+		reg.Register(calCfg.ToDefinition(), calendarPipe.NewHandler(&mockCalendarClient{}, nil))
 	}
 
 	if draftCfg, ok := cfg.Pipes["draft"]; ok {
-		reg.Register(draftCfg.ToDefinition(), draftPipe.NewHandler(provider, draftCfg))
+		reg.Register(draftCfg.ToDefinition(), draftPipe.NewHandler(provider, draftCfg, nil))
 	}
 
 	if chatCfg, ok := cfg.Pipes["chat"]; ok {
-		reg.Register(chatCfg.ToDefinition(), chatPipe.NewHandler(provider, chatCfg.Prompts.System))
+		reg.Register(chatCfg.ToDefinition(), chatPipe.NewHandler(provider, chatCfg.Prompts.System, nil))
 	}
 
 	// Build router
@@ -103,18 +103,26 @@ func setupIntegrationServer(t *testing.T) http.Handler {
 	if missLog != nil {
 		t.Cleanup(func() { missLog.Close() })
 	}
-	rt := router.NewRouter(reg.Definitions(), missLog)
+	rt := router.NewRouter(reg.Definitions(), missLog, nil)
 
 	// Build planner
-	pl := planner.New(cfg.Templates, cfg.Vocabulary.Sources)
+	pl := planner.New(cfg.Templates, cfg.Vocabulary.Sources, nil)
 
 	// Build runtime
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelDebug}))
-	observer := runtime.NewLogObserver(logger, "debug")
-	run := runtime.New(reg, observer)
+	observer := runtime.NewLogObserver(logger, config.Debug)
+	run := runtime.New(reg, observer, logger)
 
 	// Build server
-	srv := server.New(cfg, rt, p, pl, run, reg, logger)
+	srv := server.New(server.Deps{
+		Config:   cfg,
+		Router:   rt,
+		Parser:   p,
+		Planner:  pl,
+		Runtime:  run,
+		Registry: reg,
+		Logger:   logger,
+	})
 	return srv.Handler()
 }
 
@@ -246,17 +254,25 @@ func TestIntegration_MissLogStructure(t *testing.T) {
 
 	reg := pipe.NewRegistry()
 	if chatCfg, ok := cfg.Pipes["chat"]; ok {
-		reg.Register(chatCfg.ToDefinition(), chatPipe.NewHandler(provider, chatCfg.Prompts.System))
+		reg.Register(chatCfg.ToDefinition(), chatPipe.NewHandler(provider, chatCfg.Prompts.System, nil))
 	}
 
 	missLog, _ := router.NewMissLog(missLogPath)
 	defer missLog.Close()
-	rt := router.NewRouter(reg.Definitions(), missLog)
-	pl := planner.New(cfg.Templates, cfg.Vocabulary.Sources)
+	rt := router.NewRouter(reg.Definitions(), missLog, nil)
+	pl := planner.New(cfg.Templates, cfg.Vocabulary.Sources, nil)
 
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn}))
-	run := runtime.New(reg, nil)
-	srv := server.New(cfg, rt, p, pl, run, reg, logger)
+	run := runtime.New(reg, nil, nil)
+	srv := server.New(server.Deps{
+		Config:   cfg,
+		Router:   rt,
+		Parser:   p,
+		Planner:  pl,
+		Runtime:  run,
+		Registry: reg,
+		Logger:   logger,
+	})
 	handler := srv.Handler()
 
 	// Send unrecognized signal

@@ -3,6 +3,7 @@ description: Conversational fallback for general queries.
 category: general
 streaming: true
 timeout: 60s
+log_level: ""
 
 triggers:
   exact: []

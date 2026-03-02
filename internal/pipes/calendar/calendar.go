@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"os"
@@ -27,7 +28,10 @@ type CalendarClient interface {
 	GetEvents(ctx context.Context, calendarID string, timeMin, timeMax time.Time) ([]Event, error)
 }
 
-func NewHandler(client CalendarClient) pipe.Handler {
+func NewHandler(client CalendarClient, logger *slog.Logger) pipe.Handler {
+	if logger == nil {
+		logger = slog.Default()
+	}
 	return func(input envelope.Envelope, flags map[string]string) envelope.Envelope {
 		out := envelope.New("calendar", "list")
 		out.Args = flags
@@ -49,12 +53,15 @@ func NewHandler(client CalendarClient) pipe.Handler {
 			calendarID = "primary"
 		}
 
+		logger.Debug("fetching events", "range", rangeFlag, "calendar", calendarID)
 		events, err := client.GetEvents(context.Background(), calendarID, timeMin, timeMax)
 		if err != nil {
+			logger.Error("calendar API error", "error", err)
 			out.Error = envelope.FatalError(fmt.Sprintf("calendar API error: %v", err))
 			return out
 		}
 
+		logger.Info("fetched", "count", len(events))
 		out.Content = events
 		out.ContentType = envelope.ContentList
 		return out

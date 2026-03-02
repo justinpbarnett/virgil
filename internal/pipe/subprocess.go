@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"os/exec"
 	"time"
 
@@ -55,6 +56,7 @@ type SubprocessConfig struct {
 	WorkDir    string
 	Timeout    time.Duration
 	Env        []string
+	Logger     *slog.Logger
 }
 
 // buildCmd creates a configured exec.Cmd for a subprocess invocation.
@@ -82,6 +84,52 @@ func (sc SubprocessConfig) marshalRequest(input envelope.Envelope, flags map[str
 	return reqBytes, nil
 }
 
+// forwardLogs parses stderr lines for structured log messages and forwards them
+// to the logger. Non-JSON lines are collected and returned as plain stderr text.
+func forwardLogs(logger *slog.Logger, stderr []byte, pipeName string) string {
+	if logger == nil || len(stderr) == 0 {
+		return string(stderr)
+	}
+
+	var plainLines []byte
+	scanner := bufio.NewScanner(bytes.NewReader(stderr))
+	for scanner.Scan() {
+		line := scanner.Bytes()
+		if len(line) == 0 || line[0] != '{' {
+			plainLines = append(plainLines, line...)
+			plainLines = append(plainLines, '\n')
+			continue
+		}
+		var raw map[string]any
+		if err := json.Unmarshal(line, &raw); err == nil {
+			msg, _ := raw["msg"].(string)
+			if msg == "" {
+				plainLines = append(plainLines, line...)
+				plainLines = append(plainLines, '\n')
+				continue
+			}
+			var lvl slog.Level
+			if levelStr, _ := raw["level"].(string); levelStr != "" {
+				if err := lvl.UnmarshalText([]byte(levelStr)); err != nil {
+					lvl = slog.LevelInfo
+				}
+			}
+			attrs := []any{"pipe", pipeName}
+			for k, v := range raw {
+				if k == "time" || k == "level" || k == "msg" {
+					continue
+				}
+				attrs = append(attrs, k, v)
+			}
+			logger.Log(context.Background(), lvl, msg, attrs...)
+		} else {
+			plainLines = append(plainLines, line...)
+			plainLines = append(plainLines, '\n')
+		}
+	}
+	return string(plainLines)
+}
+
 // SubprocessHandler returns a Handler that invokes the given executable as a
 // subprocess, sending a SubprocessRequest on stdin and reading a single
 // envelope from stdout.
@@ -104,6 +152,9 @@ func SubprocessHandler(cfg SubprocessConfig) Handler {
 
 		runErr := cmd.Run()
 
+		// Forward structured log messages from stderr
+		plainStderr := forwardLogs(cfg.Logger, stderr.Bytes(), cfg.Name)
+
 		// Timeout → retryable error
 		if ctx.Err() == context.DeadlineExceeded {
 			return envelope.NewRetryableError(cfg.Name, fmt.Sprintf("timeout after %s", cfg.Timeout))
@@ -119,7 +170,7 @@ func SubprocessHandler(cfg SubprocessConfig) Handler {
 				return out
 			}
 			// Non-zero exit, no valid JSON → fatal from stderr
-			msg := stderr.String()
+			msg := plainStderr
 			if msg == "" {
 				msg = runErr.Error()
 			}
@@ -180,6 +231,9 @@ func SubprocessStreamHandler(cfg SubprocessConfig) StreamHandler {
 
 		waitErr := cmd.Wait()
 
+		// Forward structured log messages from stderr
+		plainStderr := forwardLogs(cfg.Logger, stderr.Bytes(), cfg.Name)
+
 		if ctx.Err() == context.DeadlineExceeded {
 			return envelope.NewRetryableError(cfg.Name, fmt.Sprintf("timeout after %s", cfg.Timeout))
 		}
@@ -189,7 +243,7 @@ func SubprocessStreamHandler(cfg SubprocessConfig) StreamHandler {
 		}
 
 		if waitErr != nil {
-			msg := stderr.String()
+			msg := plainStderr
 			if msg == "" {
 				msg = waitErr.Error()
 			}

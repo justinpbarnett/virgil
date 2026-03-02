@@ -1,6 +1,7 @@
 name: memory
 description: Stores and retrieves information from local memory.
 category: memory
+log_level: ""
 
 triggers:
   exact:

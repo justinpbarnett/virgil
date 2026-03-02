@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 
@@ -22,7 +23,19 @@ const (
 	EnvProvider       = "VIRGIL_PROVIDER"
 	EnvModel          = "VIRGIL_MODEL"
 	EnvProviderBinary = "VIRGIL_PROVIDER_BINARY"
+	EnvLogLevel       = "VIRGIL_LOG_LEVEL"
 )
+
+// NewPipeLogger creates an slog.Logger for a pipe subprocess.
+// It reads VIRGIL_LOG_LEVEL from the environment and writes JSON to stderr
+// so the parent process can parse structured log messages.
+func NewPipeLogger(pipeName string) *slog.Logger {
+	levelStr := os.Getenv(EnvLogLevel)
+	level := config.ParseLogLevel(levelStr)
+	return slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{
+		Level: config.ToSlogLevel(level),
+	})).With("pipe", pipeName)
+}
 
 // Run reads a SubprocessRequest from stdin, calls the appropriate handler,
 // and writes the response to stdout. If req.Stream is true and streamHandler
@@ -89,14 +102,22 @@ func Fatal(pipeName, message string) {
 // BuildProviderFromEnv creates a bridge.Provider from VIRGIL_PROVIDER,
 // VIRGIL_MODEL, and VIRGIL_PROVIDER_BINARY environment variables.
 func BuildProviderFromEnv() (bridge.Provider, error) {
+	return BuildProviderFromEnvWithLogger(nil)
+}
+
+// BuildProviderFromEnvWithLogger creates a bridge.Provider with the given logger.
+// If log level is verbose, enables verbose prompt logging on the provider.
+func BuildProviderFromEnvWithLogger(logger *slog.Logger) (bridge.Provider, error) {
 	name := os.Getenv(EnvProvider)
 	if name == "" {
 		name = "claude"
 	}
 	cfg := bridge.ProviderConfig{
-		Name:   name,
-		Model:  os.Getenv(EnvModel),
-		Binary: os.Getenv(EnvProviderBinary),
+		Name:    name,
+		Model:   os.Getenv(EnvModel),
+		Binary:  os.Getenv(EnvProviderBinary),
+		Verbose: config.ParseLogLevel(os.Getenv(EnvLogLevel)) == config.Verbose,
+		Logger:  logger,
 	}
 	return bridge.NewProvider(cfg)
 }

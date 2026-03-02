@@ -92,15 +92,9 @@ func runServer(cfgDir string, logger *slog.Logger) error {
 	}
 
 	// Set log level from config
-	switch cfg.LogLevel {
-	case "debug":
-		logger = slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelDebug}))
-	}
+	logger = slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: config.ToSlogLevel(cfg.LogLevel)}))
 
-	logger.Info("virgil v0.1.0 starting",
-		"config_dir", cfgDir,
-		"port", cfg.Server.Port,
-	)
+	logger.Info("server started", "log_level", cfg.LogLevel, "config_dir", cfgDir, "port", cfg.Server.Port)
 
 	if cfg.DatabasePath == "" {
 		logger.Warn("database_path not set in virgil.yaml — pipes requiring storage will fail")
@@ -112,7 +106,8 @@ func runServer(cfgDir string, logger *slog.Logger) error {
 
 	// 3. Register all pipes as subprocesses
 	reg := pipe.NewRegistry()
-	env := pipeEnv(cfg, cfgDir)
+	baseEnv := pipeEnv(cfg, cfgDir)
+	baseEnv = baseEnv[:len(baseEnv):len(baseEnv)] // clip capacity to prevent aliasing
 
 	for name, pc := range cfg.Pipes {
 		handlerPath := pc.HandlerPath()
@@ -120,12 +115,15 @@ func runServer(cfgDir string, logger *slog.Logger) error {
 			logger.Warn("pipe handler not available, skipping", "pipe", name, "error", err)
 			continue
 		}
+		pipeLogLevel := pc.EffectiveLogLevel(cfg.LogLevel)
+		env := append(baseEnv, pipehost.EnvLogLevel+"="+pipeLogLevel.String())
 		sc := pipe.SubprocessConfig{
 			Name:       name,
 			Executable: handlerPath,
 			WorkDir:    pc.Dir,
 			Timeout:    pc.TimeoutDuration(),
 			Env:        env,
+			Logger:     logger,
 		}
 		reg.Register(pc.ToDefinition(), pipe.SubprocessHandler(sc))
 		if pc.Streaming {
@@ -144,17 +142,25 @@ func runServer(cfgDir string, logger *slog.Logger) error {
 		defer missLog.Close()
 	}
 
-	rt := router.NewRouter(reg.Definitions(), missLog)
+	rt := router.NewRouter(reg.Definitions(), missLog, logger)
 
 	// Build planner
-	pl := planner.New(cfg.Templates, cfg.Vocabulary.Sources)
+	pl := planner.New(cfg.Templates, cfg.Vocabulary.Sources, logger)
 
 	// Build runtime
 	observer := runtime.NewLogObserver(logger, cfg.LogLevel)
-	run := runtime.New(reg, observer)
+	run := runtime.NewWithLevel(reg, observer, logger, cfg.LogLevel)
 
 	// 4. Start HTTP server
-	srv := server.New(cfg, rt, p, pl, run, reg, logger)
+	srv := server.New(server.Deps{
+		Config:   cfg,
+		Router:   rt,
+		Parser:   p,
+		Planner:  pl,
+		Runtime:  run,
+		Registry: reg,
+		Logger:   logger,
+	})
 	return srv.Start()
 }
 

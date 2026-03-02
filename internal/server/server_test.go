@@ -32,18 +32,24 @@ func testServer(t *testing.T) *Server {
 	})
 
 	defs := reg.Definitions()
-	rt := router.NewRouter(defs, nil)
+	rt := router.NewRouter(defs, nil, nil)
 	p := parser.New(parser.LoadVocabulary(config.VocabularyConfig{}))
-	pl := planner.New(config.TemplatesConfig{}, nil)
-	run := runtime.New(reg, nil)
+	pl := planner.New(config.TemplatesConfig{}, nil, nil)
+	run := runtime.New(reg, nil, nil)
 
 	cfg := &config.Config{
 		Server: config.ServerConfig{Host: "localhost", Port: 7890},
 	}
 
-	logger := slog.Default()
-
-	return New(cfg, rt, p, pl, run, reg, logger)
+	return New(Deps{
+		Config:   cfg,
+		Router:   rt,
+		Parser:   p,
+		Planner:  pl,
+		Runtime:  run,
+		Registry: reg,
+		Logger:   slog.Default(),
+	})
 }
 
 func TestHealthEndpoint(t *testing.T) {

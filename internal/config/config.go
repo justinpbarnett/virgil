@@ -2,19 +2,109 @@ package config
 
 import (
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/justinpbarnett/virgil/internal/pipe"
 	"gopkg.in/yaml.v3"
 )
 
+// LogLevel represents a logging verbosity level.
+type LogLevel int
+
+const (
+	Unset   LogLevel = iota // zero value; means "inherit from parent"
+	Silent
+	Error
+	Warn
+	Info
+	Debug
+	Verbose
+)
+
+// ParseLogLevel maps a string name to a LogLevel constant.
+// Unknown strings default to Info.
+func ParseLogLevel(s string) LogLevel {
+	switch strings.ToLower(s) {
+	case "silent":
+		return Silent
+	case "error":
+		return Error
+	case "warn":
+		return Warn
+	case "info":
+		return Info
+	case "debug":
+		return Debug
+	case "verbose":
+		return Verbose
+	default:
+		return Info
+	}
+}
+
+// UnmarshalYAML decodes a YAML string directly into a typed LogLevel.
+// An empty or absent field leaves the value unchanged (stays at Unset).
+func (l *LogLevel) UnmarshalYAML(unmarshal func(interface{}) error) error {
+	var s string
+	if err := unmarshal(&s); err != nil {
+		return err
+	}
+	if s == "" {
+		return nil // leave at zero value (Unset)
+	}
+	*l = ParseLogLevel(s)
+	return nil
+}
+
+// ToSlogLevel maps a Virgil LogLevel to an slog.Level.
+func ToSlogLevel(level LogLevel) slog.Level {
+	switch level {
+	case Silent:
+		return slog.LevelError + 1 // above error so nothing prints
+	case Error:
+		return slog.LevelError
+	case Warn:
+		return slog.LevelWarn
+	case Info:
+		return slog.LevelInfo
+	case Debug, Verbose:
+		return slog.LevelDebug
+	default:
+		return slog.LevelInfo // covers Unset
+	}
+}
+
+// String returns the string representation of a LogLevel.
+func (l LogLevel) String() string {
+	switch l {
+	case Unset:
+		return ""
+	case Silent:
+		return "silent"
+	case Error:
+		return "error"
+	case Warn:
+		return "warn"
+	case Info:
+		return "info"
+	case Debug:
+		return "debug"
+	case Verbose:
+		return "verbose"
+	default:
+		return "info"
+	}
+}
+
 type Config struct {
 	Server       ServerConfig          `yaml:"server"`
 	Provider     ProviderConfig        `yaml:"provider"`
-	LogLevel     string                `yaml:"log_level"`
+	LogLevel     LogLevel              `yaml:"log_level"`
 	DatabasePath string                `yaml:"database_path"`
 	ConfigDir    string                `yaml:"-"`
 	Pipes        map[string]PipeConfig `yaml:"-"`
@@ -39,12 +129,21 @@ type PipeConfig struct {
 	Category    string                `yaml:"category"`
 	Streaming   bool                  `yaml:"streaming"`
 	Timeout     string                `yaml:"timeout"`
+	PipeLogLevel LogLevel             `yaml:"log_level"`
 	Triggers    pipe.Triggers        `yaml:"triggers"`
 	Flags       map[string]pipe.Flag `yaml:"flags"`
 	Prompts     PromptsConfig         `yaml:"prompts"`
 	Vocabulary  VocabularyConfig      `yaml:"vocabulary"`
 	Templates   TemplateContrib       `yaml:"templates"`
 	Dir         string                `yaml:"-"`
+}
+
+// EffectiveLogLevel returns the pipe's log level if set, otherwise the global default.
+func (pc PipeConfig) EffectiveLogLevel(globalDefault LogLevel) LogLevel {
+	if pc.PipeLogLevel != Unset {
+		return pc.PipeLogLevel
+	}
+	return globalDefault
 }
 
 type PromptsConfig struct {
@@ -83,7 +182,7 @@ func Load(configDir string, pipesDir string) (*Config, error) {
 		ConfigDir: configDir,
 		Server:    ServerConfig{Host: "localhost", Port: 7890},
 		Provider:  ProviderConfig{Name: "claude", Model: "sonnet", Binary: "claude"},
-		LogLevel:  "info",
+		LogLevel:  Info,
 		Pipes:     make(map[string]PipeConfig),
 	}
 

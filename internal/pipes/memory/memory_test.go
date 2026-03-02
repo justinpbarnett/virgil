@@ -20,7 +20,7 @@ func testStore(t *testing.T) *store.Store {
 
 func TestStoreAction(t *testing.T) {
 	s := testStore(t)
-	handler := NewHandler(s)
+	handler := NewHandler(s, nil)
 
 	input := envelope.New("input", "test")
 	input.Content = "OAuth uses short-lived tokens"
@@ -43,7 +43,7 @@ func TestRetrieveAction(t *testing.T) {
 	s := testStore(t)
 	s.Save("OAuth uses short-lived tokens", nil)
 
-	handler := NewHandler(s)
+	handler := NewHandler(s, nil)
 	input := envelope.New("input", "test")
 
 	result := handler(input, map[string]string{"action": "retrieve", "query": "OAuth"})
@@ -65,7 +65,7 @@ func TestRetrieveAction(t *testing.T) {
 
 func TestRetrieveNoResults(t *testing.T) {
 	s := testStore(t)
-	handler := NewHandler(s)
+	handler := NewHandler(s, nil)
 	input := envelope.New("input", "test")
 
 	result := handler(input, map[string]string{"action": "retrieve", "query": "nonexistent"})
@@ -80,7 +80,7 @@ func TestRetrieveNoResults(t *testing.T) {
 
 func TestStoreEmptyContent(t *testing.T) {
 	s := testStore(t)
-	handler := NewHandler(s)
+	handler := NewHandler(s, nil)
 	input := envelope.New("input", "test")
 	input.ContentType = "text"
 
@@ -96,7 +96,7 @@ func TestStoreEmptyContent(t *testing.T) {
 
 func TestDefaultActionIsRetrieve(t *testing.T) {
 	s := testStore(t)
-	handler := NewHandler(s)
+	handler := NewHandler(s, nil)
 	input := envelope.New("input", "test")
 
 	result := handler(input, map[string]string{})

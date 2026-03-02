@@ -47,7 +47,7 @@ func testDefs() []pipe.Definition {
 }
 
 func TestLayer1ExactMatch(t *testing.T) {
-	r := NewRouter(testDefs(), nil)
+	r := NewRouter(testDefs(), nil, nil)
 	result := r.Route("check my calendar", parser.ParsedSignal{})
 
 	if result.Pipe != "calendar" {
@@ -56,26 +56,26 @@ func TestLayer1ExactMatch(t *testing.T) {
 	if result.Confidence != 1.0 {
 		t.Errorf("expected confidence 1.0, got %f", result.Confidence)
 	}
-	if result.Layer != 1 {
-		t.Errorf("expected layer 1, got %d", result.Layer)
+	if result.Layer != LayerExact {
+		t.Errorf("expected layer %d, got %d", LayerExact, result.Layer)
 	}
 }
 
 func TestLayer2KeywordScoring(t *testing.T) {
-	r := NewRouter(testDefs(), nil)
+	r := NewRouter(testDefs(), nil, nil)
 	// Signal hits 3 of 4 calendar keywords: calendar, schedule, meeting → 75% > 60% threshold
 	result := r.Route("show my calendar schedule for the meeting", parser.ParsedSignal{})
 
 	if result.Pipe != "calendar" {
 		t.Errorf("expected calendar, got %s", result.Pipe)
 	}
-	if result.Layer != 2 {
-		t.Errorf("expected layer 2, got %d", result.Layer)
+	if result.Layer != LayerKeyword {
+		t.Errorf("expected layer %d, got %d", LayerKeyword, result.Layer)
 	}
 }
 
 func TestLayer3CategoryNarrowing(t *testing.T) {
-	r := NewRouter(testDefs(), nil)
+	r := NewRouter(testDefs(), nil, nil)
 	parsed := parser.ParsedSignal{
 		Verb:   "memory",
 		Action: "retrieve",
@@ -94,7 +94,7 @@ func TestLayer4StubFallback(t *testing.T) {
 	missLog, _ := NewMissLog(filepath.Join(dir, "misses.jsonl"))
 	defer missLog.Close()
 
-	r := NewRouter(testDefs(), missLog)
+	r := NewRouter(testDefs(), missLog, nil)
 	result := r.Route("xyzzy foobar", parser.ParsedSignal{})
 
 	if result.Pipe != "chat" {
@@ -103,8 +103,8 @@ func TestLayer4StubFallback(t *testing.T) {
 	if result.Confidence != 0.0 {
 		t.Errorf("expected confidence 0.0, got %f", result.Confidence)
 	}
-	if result.Layer != 4 {
-		t.Errorf("expected layer 4, got %d", result.Layer)
+	if result.Layer != LayerFallback {
+		t.Errorf("expected layer %d, got %d", LayerFallback, result.Layer)
 	}
 
 	// Verify miss was logged
@@ -126,7 +126,7 @@ func TestMissLogStructure(t *testing.T) {
 	}
 	defer missLog.Close()
 
-	r := NewRouter(testDefs(), missLog)
+	r := NewRouter(testDefs(), missLog, nil)
 	r.Route("completely unknown input", parser.ParsedSignal{})
 
 	data, err := os.ReadFile(path)
@@ -150,13 +150,13 @@ func TestMissLogStructure(t *testing.T) {
 }
 
 func TestExactMatchCaseInsensitive(t *testing.T) {
-	r := NewRouter(testDefs(), nil)
+	r := NewRouter(testDefs(), nil, nil)
 	result := r.Route("Check My Calendar", parser.ParsedSignal{})
 
 	if result.Pipe != "calendar" {
 		t.Errorf("expected calendar, got %s", result.Pipe)
 	}
-	if result.Layer != 1 {
-		t.Errorf("expected layer 1, got %d", result.Layer)
+	if result.Layer != LayerExact {
+		t.Errorf("expected layer %d, got %d", LayerExact, result.Layer)
 	}
 }

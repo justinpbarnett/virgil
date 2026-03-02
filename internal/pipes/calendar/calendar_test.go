@@ -26,7 +26,7 @@ func TestCalendarReturnsEvents(t *testing.T) {
 		},
 	}
 
-	handler := NewHandler(client)
+	handler := NewHandler(client, nil)
 	input := envelope.New("input", "test")
 	result := handler(input, map[string]string{"range": "today"})
 
@@ -48,7 +48,7 @@ func TestCalendarReturnsEvents(t *testing.T) {
 
 func TestCalendarEmptySchedule(t *testing.T) {
 	client := &mockCalendarClient{events: []Event{}}
-	handler := NewHandler(client)
+	handler := NewHandler(client, nil)
 	input := envelope.New("input", "test")
 
 	result := handler(input, map[string]string{})
@@ -67,7 +67,7 @@ func TestCalendarEmptySchedule(t *testing.T) {
 
 func TestCalendarAPIError(t *testing.T) {
 	client := &mockCalendarClient{err: fmt.Errorf("API rate limited")}
-	handler := NewHandler(client)
+	handler := NewHandler(client, nil)
 	input := envelope.New("input", "test")
 
 	result := handler(input, map[string]string{})
@@ -81,7 +81,7 @@ func TestCalendarAPIError(t *testing.T) {
 }
 
 func TestCalendarNoClient(t *testing.T) {
-	handler := NewHandler(nil)
+	handler := NewHandler(nil, nil)
 	input := envelope.New("input", "test")
 
 	result := handler(input, map[string]string{})
@@ -97,7 +97,7 @@ func TestCalendarNoClient(t *testing.T) {
 func TestCalendarDefaultRange(t *testing.T) {
 	var receivedMin, receivedMax time.Time
 	client := &mockCalendarClient{}
-	handler := NewHandler(&mockCalendarClient{})
+	handler := NewHandler(&mockCalendarClient{}, nil)
 
 	// Override to capture range
 	handler = func(input envelope.Envelope, flags map[string]string) envelope.Envelope {
@@ -106,7 +106,7 @@ func TestCalendarDefaultRange(t *testing.T) {
 			rangeFlag = "today"
 		}
 		receivedMin, receivedMax = resolveRange(rangeFlag)
-		return NewHandler(client)(input, flags)
+		return NewHandler(client, nil)(input, flags)
 	}
 
 	input := envelope.New("input", "test")

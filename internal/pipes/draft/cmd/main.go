@@ -8,7 +8,9 @@ import (
 )
 
 func main() {
-	provider, err := pipehost.BuildProviderFromEnv()
+	logger := pipehost.NewPipeLogger("draft")
+
+	provider, err := pipehost.BuildProviderFromEnvWithLogger(logger)
 	if err != nil {
 		pipehost.Fatal("draft", err.Error())
 	}
@@ -20,7 +22,8 @@ func main() {
 
 	compiled := draft.CompileTemplates(pc)
 
-	pipehost.RunWithStreaming(provider, draft.NewHandlerWith(provider, pc, compiled), func(sp bridge.StreamingProvider) pipe.StreamHandler {
-		return draft.NewStreamHandlerWith(sp, pc, compiled)
+	logger.Info("initialized")
+	pipehost.RunWithStreaming(provider, draft.NewHandlerWith(provider, pc, compiled, logger), func(sp bridge.StreamingProvider) pipe.StreamHandler {
+		return draft.NewStreamHandlerWith(sp, pc, compiled, logger)
 	})
 }

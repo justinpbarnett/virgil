@@ -1,7 +1,9 @@
 package pipe
 
 import (
+	"bytes"
 	"context"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -208,5 +210,130 @@ echo "{\"pipe\":\"echo\",\"action\":\"respond\",\"args\":{},\"content\":\"got: $
 	s, ok := result.Content.(string)
 	if !ok || s != "got: test" {
 		t.Errorf("expected content='got: test', got %v", result.Content)
+	}
+}
+
+func TestForwardLogs_ParsesSlogJSON(t *testing.T) {
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+
+	// slog JSONHandler produces uppercase level names
+	stderr := []byte(`{"time":"2025-01-01T00:00:00Z","level":"INFO","msg":"stored","pipe":"memory","count":3}
+{"time":"2025-01-01T00:00:00Z","level":"DEBUG","msg":"query details","pipe":"memory"}
+{"time":"2025-01-01T00:00:00Z","level":"ERROR","msg":"search failed","pipe":"memory","error":"db locked"}
+`)
+
+	plain := forwardLogs(logger, stderr, "memory")
+
+	if plain != "" {
+		t.Errorf("expected no plain text, got: %q", plain)
+	}
+
+	output := buf.String()
+	if !strings.Contains(output, "stored") {
+		t.Errorf("expected 'stored' in forwarded logs, got: %s", output)
+	}
+	if !strings.Contains(output, "query details") {
+		t.Errorf("expected 'query details' in forwarded logs, got: %s", output)
+	}
+	if !strings.Contains(output, "search failed") {
+		t.Errorf("expected 'search failed' in forwarded logs, got: %s", output)
+	}
+}
+
+func TestForwardLogs_ForwardsAttrs(t *testing.T) {
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+
+	stderr := []byte(`{"time":"2025-01-01T00:00:00Z","level":"INFO","msg":"fetched","count":5,"calendar":"primary"}
+`)
+
+	forwardLogs(logger, stderr, "calendar")
+
+	output := buf.String()
+	if !strings.Contains(output, "count") {
+		t.Errorf("expected 'count' attr in forwarded logs, got: %s", output)
+	}
+	if !strings.Contains(output, "calendar") {
+		t.Errorf("expected 'calendar' attr in forwarded logs, got: %s", output)
+	}
+}
+
+func TestForwardLogs_SeparatesPlainStderr(t *testing.T) {
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+
+	stderr := []byte(`{"time":"2025-01-01T00:00:00Z","level":"INFO","msg":"stored"}
+plain error text
+{"time":"2025-01-01T00:00:00Z","level":"ERROR","msg":"failed"}
+another plain line
+`)
+
+	plain := forwardLogs(logger, stderr, "test")
+
+	if !strings.Contains(plain, "plain error text") {
+		t.Errorf("expected 'plain error text' in plain output, got: %q", plain)
+	}
+	if !strings.Contains(plain, "another plain line") {
+		t.Errorf("expected 'another plain line' in plain output, got: %q", plain)
+	}
+	if strings.Contains(plain, "stored") {
+		t.Errorf("expected 'stored' to be forwarded, not in plain output")
+	}
+
+	output := buf.String()
+	if !strings.Contains(output, "stored") {
+		t.Errorf("expected 'stored' in forwarded logs, got: %s", output)
+	}
+	if !strings.Contains(output, "failed") {
+		t.Errorf("expected 'failed' in forwarded logs, got: %s", output)
+	}
+}
+
+func TestForwardLogs_NilLogger(t *testing.T) {
+	stderr := []byte("some error output\n")
+	plain := forwardLogs(nil, stderr, "test")
+	if plain != "some error output\n" {
+		t.Errorf("expected raw stderr with nil logger, got: %q", plain)
+	}
+}
+
+func TestForwardLogs_EmptyStderr(t *testing.T) {
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+
+	plain := forwardLogs(logger, nil, "test")
+	if plain != "" {
+		t.Errorf("expected empty plain for nil stderr, got: %q", plain)
+	}
+	if buf.Len() != 0 {
+		t.Errorf("expected no forwarded logs for nil stderr, got: %s", buf.String())
+	}
+}
+
+func TestForwardLogs_LevelMapping(t *testing.T) {
+	cases := []struct {
+		level    string
+		contains string
+	}{
+		{"DEBUG", "level=DEBUG"},
+		{"INFO", "level=INFO"},
+		{"WARN", "level=WARN"},
+		{"ERROR", "level=ERROR"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.level, func(t *testing.T) {
+			var buf bytes.Buffer
+			logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+
+			stderr := []byte(`{"time":"2025-01-01T00:00:00Z","level":"` + tc.level + `","msg":"test msg"}` + "\n")
+			forwardLogs(logger, stderr, "test")
+
+			output := buf.String()
+			if !strings.Contains(output, tc.contains) {
+				t.Errorf("expected %q in output for level %s, got: %s", tc.contains, tc.level, output)
+			}
+		})
 	}
 }

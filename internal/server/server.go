@@ -21,6 +21,16 @@ import (
 	"github.com/justinpbarnett/virgil/internal/runtime"
 )
 
+type Deps struct {
+	Config   *config.Config
+	Router   *router.Router
+	Parser   *parser.Parser
+	Planner  *planner.Planner
+	Runtime  *runtime.Runtime
+	Registry *pipe.Registry
+	Logger   *slog.Logger
+}
+
 type Server struct {
 	config   *config.Config
 	router   *router.Router
@@ -33,26 +43,18 @@ type Server struct {
 	logger   *slog.Logger
 }
 
-func New(
-	cfg *config.Config,
-	rt *router.Router,
-	p *parser.Parser,
-	pl *planner.Planner,
-	run *runtime.Runtime,
-	reg *pipe.Registry,
-	logger *slog.Logger,
-) *Server {
+func New(d Deps) *Server {
 	pidPath := filepath.Join(config.DataDir(), "virgil.pid")
 
 	return &Server{
-		config:   cfg,
-		router:   rt,
-		parser:   p,
-		planner:  pl,
-		runtime:  run,
-		registry: reg,
+		config:   d.Config,
+		router:   d.Router,
+		parser:   d.Parser,
+		planner:  d.Planner,
+		runtime:  d.Runtime,
+		registry: d.Registry,
 		pidPath:  pidPath,
-		logger:   logger,
+		logger:   d.Logger,
 	}
 }
 
@@ -67,6 +69,8 @@ func (s *Server) Start() error {
 
 	if err := s.writePID(); err != nil {
 		s.logger.Warn("failed to write PID file", "error", err)
+	} else {
+		s.logger.Info("pid file written", "path", s.pidPath)
 	}
 
 	// Handle shutdown signals
@@ -89,6 +93,7 @@ func (s *Server) Start() error {
 
 func (s *Server) Shutdown(ctx context.Context) error {
 	os.Remove(s.pidPath)
+	s.logger.Info("shutdown complete")
 	if s.server != nil {
 		return s.server.Shutdown(ctx)
 	}

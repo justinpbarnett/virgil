@@ -53,7 +53,7 @@ func testPlanner() *Planner {
 		"memory":   "memory",
 	}
 
-	return New(templates, sources)
+	return New(templates, sources, nil)
 }
 
 func TestPlanVerbTypeSource(t *testing.T) {
@@ -279,7 +279,7 @@ func TestPlanVerbSourceSamePipeCollapsedMergesFlags(t *testing.T) {
 		},
 	}
 	sources := map[string]string{"memory": "memory"}
-	p := New(templates, sources)
+	p := New(templates, sources, nil)
 
 	parsed := parser.ParsedSignal{
 		Verb:   "memory",

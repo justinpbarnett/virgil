@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"os/exec"
 	"strings"
 )
@@ -13,17 +14,25 @@ type ClaudeProvider struct {
 	model        string
 	binary       string
 	resolvedPath string
+	logger       *slog.Logger
+	verbose      bool
 }
 
-func NewClaudeProvider(model, binary string) *ClaudeProvider {
+func NewClaudeProvider(cfg ProviderConfig) *ClaudeProvider {
+	model := cfg.Model
 	if model == "" {
 		model = "sonnet"
 	}
+	binary := cfg.Binary
 	if binary == "" {
 		binary = "claude"
 	}
+	logger := cfg.Logger
+	if logger == nil {
+		logger = slog.Default()
+	}
 	resolved, _ := exec.LookPath(binary)
-	return &ClaudeProvider{model: model, binary: binary, resolvedPath: resolved}
+	return &ClaudeProvider{model: model, binary: binary, resolvedPath: resolved, logger: logger, verbose: cfg.Verbose}
 }
 
 func (c *ClaudeProvider) Available() bool {
@@ -53,6 +62,22 @@ func (c *ClaudeProvider) buildArgs(system string, extra ...string) []string {
 	return args
 }
 
+func (c *ClaudeProvider) logRequest(streaming bool, system, user string) {
+	c.logger.Info("provider called", "model", c.model, "streaming", streaming)
+	c.logger.Debug("provider request", "system_len", len(system), "user_len", len(user))
+	if c.verbose {
+		c.logger.Debug("provider prompt", "system", system, "user", user)
+	}
+}
+
+func (c *ClaudeProvider) logResponse(result string) {
+	c.logger.Info("provider responded", "bytes", len(result))
+}
+
+func (c *ClaudeProvider) logError(err error, stderr string) {
+	c.logger.Error("provider failed", "error", err, "stderr", stderr)
+}
+
 // classifyCLIError converts a CLI execution error into a user-friendly error.
 func classifyCLIError(ctx context.Context, runErr error, stderr string) error {
 	if ctx.Err() != nil {
@@ -69,6 +94,8 @@ func (c *ClaudeProvider) Complete(ctx context.Context, system, user string) (str
 		return "", err
 	}
 
+	c.logRequest(false, system, user)
+
 	args := c.buildArgs(system, "--output-format", "json")
 	cmd := exec.CommandContext(ctx, c.resolvedPath, args...)
 	cmd.Stdin = strings.NewReader(user)
@@ -78,16 +105,24 @@ func (c *ClaudeProvider) Complete(ctx context.Context, system, user string) (str
 	cmd.Stderr = &stderr
 
 	if err := cmd.Run(); err != nil {
+		c.logError(err, stderr.String())
 		return "", classifyCLIError(ctx, err, stderr.String())
 	}
 
-	return parseClaudeResponse(stdout.Bytes())
+	result, err := parseClaudeResponse(stdout.Bytes())
+	if err != nil {
+		return "", err
+	}
+	c.logResponse(result)
+	return result, nil
 }
 
 func (c *ClaudeProvider) CompleteStream(ctx context.Context, system, user string, onChunk func(chunk string)) (string, error) {
 	if err := c.checkAvailable(); err != nil {
 		return "", err
 	}
+
+	c.logRequest(true, system, user)
 
 	args := c.buildArgs(system)
 	cmd := exec.CommandContext(ctx, c.resolvedPath, args...)
@@ -120,10 +155,13 @@ func (c *ClaudeProvider) CompleteStream(ctx context.Context, system, user string
 	}
 
 	if err := cmd.Wait(); err != nil {
+		c.logError(err, stderr.String())
 		return "", classifyCLIError(ctx, err, stderr.String())
 	}
 
-	return strings.TrimSpace(full.String()), nil
+	result := strings.TrimSpace(full.String())
+	c.logResponse(result)
+	return result, nil
 }
 
 func parseClaudeResponse(data []byte) (string, error) {

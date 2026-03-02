@@ -1,6 +1,7 @@
 name: calendar
 description: Reads events from calendar services.
 category: time
+log_level: ""
 
 triggers:
   exact:

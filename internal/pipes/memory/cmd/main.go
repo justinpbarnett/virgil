@@ -9,11 +9,14 @@ import (
 )
 
 func main() {
+	logger := pipehost.NewPipeLogger("memory")
+
 	s, err := store.Open(os.Getenv(pipehost.EnvDBPath))
 	if err != nil {
 		pipehost.Fatal("memory", err.Error())
 	}
 	defer s.Close()
 
-	pipehost.Run(memory.NewHandler(s), nil)
+	logger.Info("initialized")
+	pipehost.Run(memory.NewHandler(s, logger), nil)
 }

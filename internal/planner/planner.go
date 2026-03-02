@@ -1,6 +1,7 @@
 package planner
 
 import (
+	"log/slog"
 	"strings"
 
 	"github.com/justinpbarnett/virgil/internal/config"
@@ -12,12 +13,17 @@ import (
 type Planner struct {
 	templates []config.TemplateEntry
 	sources   map[string]string // source name → pipe name
+	logger    *slog.Logger
 }
 
-func New(templates config.TemplatesConfig, sources map[string]string) *Planner {
+func New(templates config.TemplatesConfig, sources map[string]string, logger *slog.Logger) *Planner {
+	if logger == nil {
+		logger = slog.Default()
+	}
 	return &Planner{
 		templates: templates.Templates,
 		sources:   sources,
+		logger:    logger,
 	}
 }
 
@@ -25,7 +31,10 @@ func (p *Planner) Plan(route router.RouteResult, parsed parser.ParsedSignal) run
 	// Try template matching (component-presence-based)
 	for _, tmpl := range p.templates {
 		if p.matchesRequirements(tmpl.Requires, parsed) {
-			return p.resolveTemplate(tmpl, parsed)
+			plan := p.resolveTemplate(tmpl, parsed)
+			p.logger.Info("planned", "steps", len(plan.Steps))
+			p.logger.Debug("template matched", "requires", tmpl.Requires, "steps", len(plan.Steps))
+			return plan
 		}
 	}
 
@@ -38,11 +47,14 @@ func (p *Planner) Plan(route router.RouteResult, parsed parser.ParsedSignal) run
 		flags["topic"] = parsed.Topic
 	}
 
-	return runtime.Plan{
+	plan := runtime.Plan{
 		Steps: []runtime.Step{
 			{Pipe: route.Pipe, Flags: flags},
 		},
 	}
+	p.logger.Info("planned", "steps", 1)
+	p.logger.Debug("no template, single step", "pipe", route.Pipe)
+	return plan
 }
 
 func (p *Planner) matchesRequirements(requires []string, parsed parser.ParsedSignal) bool {
