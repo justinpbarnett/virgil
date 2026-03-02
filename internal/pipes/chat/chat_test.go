@@ -3,6 +3,7 @@ package chat
 import (
 	"context"
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/justinpbarnett/virgil/internal/envelope"
@@ -126,6 +127,48 @@ func TestStreamEmptyInput(t *testing.T) {
 		t.Errorf("expected no chunks for empty input, got %v", received)
 	}
 	testutil.AssertEnvelope(t, result, "chat", "respond")
+}
+
+func TestSynthesisPrompt(t *testing.T) {
+	// When flags contain "signal" and content differs, prepareChat should
+	// build a synthesis prompt combining both.
+	input := envelope.New("memory", "retrieve")
+	input.Content = "1. content: remember that my name is Justin"
+	input.ContentType = "text"
+
+	flags := map[string]string{"signal": "do you remember my name?"}
+
+	_, content, empty := prepareChat(input, flags)
+	if empty {
+		t.Fatal("expected non-empty")
+	}
+	if content == "1. content: remember that my name is Justin" {
+		t.Error("expected synthesis prompt, got raw content")
+	}
+	// Should contain both the original signal and the context
+	if !strings.Contains(content, "do you remember my name?") {
+		t.Error("synthesis prompt missing original signal")
+	}
+	if !strings.Contains(content, "remember that my name is Justin") {
+		t.Error("synthesis prompt missing context")
+	}
+}
+
+func TestSynthesisSkippedForDirectChat(t *testing.T) {
+	// When signal equals content (direct chat, no upstream pipe), no synthesis
+	input := envelope.New("signal", "input")
+	input.Content = "hello there"
+	input.ContentType = "text"
+
+	flags := map[string]string{"signal": "hello there"}
+
+	_, content, empty := prepareChat(input, flags)
+	if empty {
+		t.Fatal("expected non-empty")
+	}
+	if content != "hello there" {
+		t.Errorf("expected raw content for direct chat, got %q", content)
+	}
 }
 
 func TestStreamProviderError(t *testing.T) {

@@ -32,29 +32,31 @@ type Deps struct {
 }
 
 type Server struct {
-	config   *config.Config
-	router   *router.Router
-	parser   *parser.Parser
-	planner  *planner.Planner
-	runtime  *runtime.Runtime
-	registry *pipe.Registry
-	server   *http.Server
-	pidPath  string
-	logger   *slog.Logger
+	config    *config.Config
+	router    *router.Router
+	parser    *parser.Parser
+	planner   *planner.Planner
+	runtime   *runtime.Runtime
+	registry  *pipe.Registry
+	server    *http.Server
+	pidPath   string
+	logger    *slog.Logger
+	startedAt time.Time
 }
 
 func New(d Deps) *Server {
 	pidPath := filepath.Join(config.DataDir(), "virgil.pid")
 
 	return &Server{
-		config:   d.Config,
-		router:   d.Router,
-		parser:   d.Parser,
-		planner:  d.Planner,
-		runtime:  d.Runtime,
-		registry: d.Registry,
-		pidPath:  pidPath,
-		logger:   d.Logger,
+		config:    d.Config,
+		router:    d.Router,
+		parser:    d.Parser,
+		planner:   d.Planner,
+		runtime:   d.Runtime,
+		registry:  d.Registry,
+		pidPath:   pidPath,
+		logger:    d.Logger,
+		startedAt: time.Now(),
 	}
 }
 
@@ -104,6 +106,8 @@ func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /signal", s.handleSignal)
 	mux.HandleFunc("GET /health", s.handleHealth)
+	mux.HandleFunc("GET /pipes", s.handlePipes)
+	mux.HandleFunc("GET /status", s.handleStatus)
 	return mux
 }
 

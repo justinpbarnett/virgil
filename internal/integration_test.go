@@ -127,7 +127,7 @@ func sendSignal(handler http.Handler, text string) envelope.Envelope {
 	return env
 }
 
-// Scenario 1: "what's on my calendar today" → routes to calendar, returns list
+// Scenario 1: "what's on my calendar today" → calendar retrieves, chat synthesizes
 func TestIntegration_CalendarToday(t *testing.T) {
 	handler := setupIntegrationServer(t)
 	result := sendSignal(handler, "what's on my calendar today")
@@ -135,12 +135,15 @@ func TestIntegration_CalendarToday(t *testing.T) {
 	if result.Error != nil {
 		t.Fatalf("unexpected error: %v", result.Error)
 	}
-	if result.ContentType != "list" {
-		t.Errorf("expected content_type=list, got %s", result.ContentType)
+	if result.Pipe != "chat" {
+		t.Errorf("expected final pipe=chat (synthesis), got %s", result.Pipe)
+	}
+	if result.ContentType != "text" {
+		t.Errorf("expected content_type=text, got %s", result.ContentType)
 	}
 }
 
-// Scenario 2: "remember that OAuth uses short-lived tokens" → routes to memory, stores
+// Scenario 2: "remember that OAuth uses short-lived tokens" → memory stores, chat synthesizes
 func TestIntegration_MemoryStore(t *testing.T) {
 	handler := setupIntegrationServer(t)
 	result := sendSignal(handler, "remember that OAuth uses short-lived tokens")
@@ -148,15 +151,15 @@ func TestIntegration_MemoryStore(t *testing.T) {
 	if result.Error != nil {
 		t.Fatalf("unexpected error: %v", result.Error)
 	}
-	if result.Pipe != "memory" {
-		t.Errorf("expected pipe=memory, got %s", result.Pipe)
+	if result.Pipe != "chat" {
+		t.Errorf("expected final pipe=chat (synthesis), got %s", result.Pipe)
 	}
-	if result.Action != "store" {
-		t.Errorf("expected action=store, got %s", result.Action)
+	if result.ContentType != "text" {
+		t.Errorf("expected content_type=text, got %s", result.ContentType)
 	}
 }
 
-// Scenario 3: "what do I know about OAuth" → routes to memory, retrieves
+// Scenario 3: "what do I know about OAuth" → memory retrieves, chat synthesizes
 func TestIntegration_MemoryRetrieve(t *testing.T) {
 	handler := setupIntegrationServer(t)
 
@@ -169,21 +172,18 @@ func TestIntegration_MemoryRetrieve(t *testing.T) {
 	if result.Error != nil {
 		t.Fatalf("unexpected error: %v", result.Error)
 	}
-	if result.Pipe != "memory" {
-		t.Errorf("expected pipe=memory, got %s", result.Pipe)
+	if result.Pipe != "chat" {
+		t.Errorf("expected final pipe=chat (synthesis), got %s", result.Pipe)
 	}
-	if result.ContentType != "list" {
-		t.Errorf("expected content_type=list, got %s", result.ContentType)
+	if result.ContentType != "text" {
+		t.Errorf("expected content_type=text (synthesized), got %s", result.ContentType)
 	}
-
-	// Verify actual entries were returned
-	contentJSON, _ := json.Marshal(result.Content)
-	if result.Content == nil || string(contentJSON) == "[]" || string(contentJSON) == "null" {
-		t.Error("expected non-empty content with matching entries")
+	if result.Content == nil || result.Content == "" {
+		t.Error("expected non-empty synthesized content")
 	}
 }
 
-// Scenario 4: "draft a blog post about my notes on OAuth" → 2-step plan (memory.retrieve | draft)
+// Scenario 4: "draft a blog post about my notes on OAuth" → memory.retrieve | draft | chat
 func TestIntegration_DraftFromNotes(t *testing.T) {
 	handler := setupIntegrationServer(t)
 
@@ -200,9 +200,8 @@ func TestIntegration_DraftFromNotes(t *testing.T) {
 	if result.ContentType != "text" {
 		t.Errorf("expected content_type=text, got %s", result.ContentType)
 	}
-	// Draft pipe should have been the last to execute
-	if result.Pipe != "draft" {
-		t.Errorf("expected final pipe=draft, got %s", result.Pipe)
+	if result.Pipe != "chat" {
+		t.Errorf("expected final pipe=chat (synthesis), got %s", result.Pipe)
 	}
 }
 

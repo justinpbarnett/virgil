@@ -50,6 +50,7 @@ func (s *Server) handleSignal(w http.ResponseWriter, r *http.Request) {
 	seed := envelope.New("signal", "input")
 	seed.Content = req.Text
 	seed.ContentType = envelope.ContentText
+	seed.Args["signal"] = req.Text
 
 	// SSE streaming path
 	if r.Header.Get("Accept") == envelope.SSEContentType {
@@ -93,4 +94,21 @@ func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request, plan runtime.
 func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.Write([]byte(`{"status":"ok"}`))
+}
+
+func (s *Server) handlePipes(w http.ResponseWriter, _ *http.Request) {
+	defs := s.registry.Definitions()
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(defs)
+}
+
+func (s *Server) handleStatus(w http.ResponseWriter, _ *http.Request) {
+	status := map[string]any{
+		"status":     "ok",
+		"pipes":      len(s.registry.Definitions()),
+		"started_at": s.startedAt.Format(time.RFC3339),
+		"uptime":     time.Since(s.startedAt).String(),
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(status)
 }

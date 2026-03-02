@@ -141,10 +141,13 @@ func (r *Router) Route(signal string, parsed parser.ParsedSignal) RouteResult {
 		}
 	}
 
-	// Also try parsed verb directly if it matches a pipe
-	if parsed.Verb != "" {
-		if _, ok := r.definitions[parsed.Verb]; ok {
-			result := RouteResult{Pipe: parsed.Verb, Confidence: 0.8, Layer: LayerCategory}
+	// Also try parsed verb/source directly if they match a pipe
+	for _, candidate := range []string{parsed.Verb, parsed.Source} {
+		if candidate == "" {
+			continue
+		}
+		if _, ok := r.definitions[candidate]; ok {
+			result := RouteResult{Pipe: candidate, Confidence: 0.8, Layer: LayerCategory}
 			r.logger.Info("routed", "pipe", result.Pipe, "layer", result.Layer)
 			return result
 		}

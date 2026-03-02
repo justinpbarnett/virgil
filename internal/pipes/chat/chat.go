@@ -2,6 +2,7 @@ package chat
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"time"
 
@@ -23,6 +24,14 @@ func prepareChat(input envelope.Envelope, flags map[string]string) (envelope.Env
 		out.Duration = time.Since(out.Timestamp)
 		return out, "", true
 	}
+
+	// Pipeline synthesis: when an upstream pipe transformed the content,
+	// combine the original signal with the pipe output so the model can
+	// answer the question using the retrieved context.
+	if signal := flags["signal"]; signal != "" && signal != content {
+		content = fmt.Sprintf("The user said: %q\n\nContext:\n%s\n\nRespond to the user based on the above context. Be concise and natural.", signal, content)
+	}
+
 	return out, content, false
 }
 

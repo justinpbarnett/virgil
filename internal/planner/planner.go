@@ -27,11 +27,14 @@ func New(templates config.TemplatesConfig, sources map[string]string, logger *sl
 	}
 }
 
+const synthesizer = "chat"
+
 func (p *Planner) Plan(route router.RouteResult, parsed parser.ParsedSignal) runtime.Plan {
 	// Try template matching (component-presence-based)
 	for _, tmpl := range p.templates {
 		if p.matchesRequirements(tmpl.Requires, parsed) {
 			plan := p.resolveTemplate(tmpl, parsed)
+			plan = p.ensureSynthesis(plan)
 			p.logger.Info("planned", "steps", len(plan.Steps))
 			p.logger.Debug("template matched", "requires", tmpl.Requires, "steps", len(plan.Steps))
 			return plan
@@ -52,8 +55,24 @@ func (p *Planner) Plan(route router.RouteResult, parsed parser.ParsedSignal) run
 			{Pipe: route.Pipe, Flags: flags},
 		},
 	}
-	p.logger.Info("planned", "steps", 1)
+	plan = p.ensureSynthesis(plan)
+	p.logger.Info("planned", "steps", len(plan.Steps))
 	p.logger.Debug("no template, single step", "pipe", route.Pipe)
+	return plan
+}
+
+// ensureSynthesis appends a chat step to any plan that doesn't already
+// end with one. This turns raw pipe output (lists, structured data) into
+// a natural-language response by giving chat the original signal plus
+// the upstream context.
+func (p *Planner) ensureSynthesis(plan runtime.Plan) runtime.Plan {
+	if len(plan.Steps) == 0 {
+		return plan
+	}
+	if plan.Steps[len(plan.Steps)-1].Pipe == synthesizer {
+		return plan
+	}
+	plan.Steps = append(plan.Steps, runtime.Step{Pipe: synthesizer})
 	return plan
 }
 
