@@ -7,16 +7,8 @@ import (
 
 	"github.com/justinpbarnett/virgil/internal/config"
 	"github.com/justinpbarnett/virgil/internal/envelope"
+	"github.com/justinpbarnett/virgil/internal/testutil"
 )
-
-type mockProvider struct {
-	response string
-	err      error
-}
-
-func (m *mockProvider) Complete(_ context.Context, _, _ string) (string, error) {
-	return m.response, m.err
-}
 
 func testConfig() config.PipeConfig {
 	return config.PipeConfig{
@@ -24,7 +16,7 @@ func testConfig() config.PipeConfig {
 		Prompts: config.PromptsConfig{
 			System: "You are a professional writer.",
 			Templates: map[string]string{
-				"blog": "Write a blog post.\n\nSource material:\n{{.Content}}\n\n{{if .Topic}}Focus on: {{.Topic}}{{end}}",
+				"blog":  "Write a blog post.\n\nSource material:\n{{.Content}}\n\n{{if .Topic}}Focus on: {{.Topic}}{{end}}",
 				"email": "Draft an email.\n\nContext:\n{{.Content}}",
 			},
 		},
@@ -32,7 +24,7 @@ func testConfig() config.PipeConfig {
 }
 
 func TestDraftWithType(t *testing.T) {
-	provider := &mockProvider{response: "A great blog post about OAuth..."}
+	provider := &testutil.MockProvider{Response: "A great blog post about OAuth..."}
 	handler := NewHandler(provider, testConfig(), nil)
 
 	input := envelope.New("memory", "retrieve")
@@ -53,7 +45,7 @@ func TestDraftWithType(t *testing.T) {
 }
 
 func TestDraftNoType(t *testing.T) {
-	provider := &mockProvider{response: "Generated content"}
+	provider := &testutil.MockProvider{Response: "Generated content"}
 	handler := NewHandler(provider, testConfig(), nil)
 
 	input := envelope.New("input", "test")
@@ -71,7 +63,7 @@ func TestDraftNoType(t *testing.T) {
 }
 
 func TestDraftEmptyContent(t *testing.T) {
-	provider := &mockProvider{response: "something"}
+	provider := &testutil.MockProvider{Response: "something"}
 	handler := NewHandler(provider, testConfig(), nil)
 
 	input := envelope.New("input", "test")
@@ -85,7 +77,7 @@ func TestDraftEmptyContent(t *testing.T) {
 }
 
 func TestDraftProviderError(t *testing.T) {
-	provider := &mockProvider{err: fmt.Errorf("auth failed")}
+	provider := &testutil.MockProvider{Err: fmt.Errorf("auth failed")}
 	handler := NewHandler(provider, testConfig(), nil)
 
 	input := envelope.New("input", "test")
@@ -94,11 +86,67 @@ func TestDraftProviderError(t *testing.T) {
 
 	result := handler(input, map[string]string{"type": "blog"})
 
-	if result.Error == nil {
-		t.Fatal("expected error")
+	testutil.AssertFatalError(t, result)
+}
+
+func TestStreamHandler(t *testing.T) {
+	provider := &testutil.MockStreamProvider{
+		MockProvider: testutil.MockProvider{Response: "Full streamed blog post"},
+		Chunks:       []string{"Full ", "streamed ", "blog post"},
 	}
-	if result.Error.Severity != "fatal" {
-		t.Errorf("expected severity=fatal, got %s", result.Error.Severity)
+	handler := NewStreamHandler(provider, testConfig(), nil)
+
+	input := envelope.New("memory", "retrieve")
+	input.Content = "OAuth uses short-lived tokens"
+	input.ContentType = "text"
+
+	var chunks []string
+	sink := func(chunk string) { chunks = append(chunks, chunk) }
+
+	result := handler(context.Background(), input, map[string]string{"type": "blog"}, sink)
+
+	if result.Error != nil {
+		t.Fatalf("unexpected error: %v", result.Error)
+	}
+	if result.ContentType != "text" {
+		t.Errorf("expected content_type=text, got %s", result.ContentType)
+	}
+	if result.Content != "Full streamed blog post" {
+		t.Errorf("unexpected content: %v", result.Content)
+	}
+	if len(chunks) != 3 {
+		t.Errorf("expected 3 chunks, got %d", len(chunks))
+	}
+}
+
+func TestStreamHandlerProviderError(t *testing.T) {
+	provider := &testutil.MockStreamProvider{
+		MockProvider: testutil.MockProvider{Err: fmt.Errorf("stream timeout")},
+	}
+	handler := NewStreamHandler(provider, testConfig(), nil)
+
+	input := envelope.New("input", "test")
+	input.Content = "content"
+	input.ContentType = "text"
+
+	result := handler(context.Background(), input, map[string]string{"type": "blog"}, func(string) {})
+
+	testutil.AssertFatalError(t, result)
+}
+
+func TestStreamHandlerEmptyContent(t *testing.T) {
+	provider := &testutil.MockStreamProvider{
+		MockProvider: testutil.MockProvider{Response: "something"},
+	}
+	handler := NewStreamHandler(provider, testConfig(), nil)
+
+	input := envelope.New("input", "test")
+	input.ContentType = "text"
+
+	result := handler(context.Background(), input, map[string]string{}, func(string) {})
+
+	if result.Error == nil {
+		t.Fatal("expected error for empty content")
 	}
 }
 
@@ -114,7 +162,7 @@ func TestDraftTemplateResolution(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.draftType, func(t *testing.T) {
-			provider := &mockProvider{response: "output"}
+			provider := &testutil.MockProvider{Response: "output"}
 			handler := NewHandler(provider, testConfig(), nil)
 
 			input := envelope.New("input", "test")

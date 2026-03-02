@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/justinpbarnett/virgil/internal/envelope"
+	"github.com/justinpbarnett/virgil/internal/testutil"
 )
 
 type mockCalendarClient struct {
@@ -72,11 +73,21 @@ func TestCalendarAPIError(t *testing.T) {
 
 	result := handler(input, map[string]string{})
 
+	testutil.AssertFatalError(t, result)
+}
+
+func TestCalendarTimeoutErrorIsRetryable(t *testing.T) {
+	client := &mockCalendarClient{err: context.DeadlineExceeded}
+	handler := NewHandler(client, nil)
+	input := envelope.New("input", "test")
+
+	result := handler(input, map[string]string{})
+
 	if result.Error == nil {
 		t.Fatal("expected error")
 	}
-	if result.Error.Severity != "fatal" {
-		t.Errorf("expected severity=fatal, got %s", result.Error.Severity)
+	if !result.Error.Retryable {
+		t.Error("expected retryable=true for timeout error")
 	}
 }
 
@@ -86,12 +97,7 @@ func TestCalendarNoClient(t *testing.T) {
 
 	result := handler(input, map[string]string{})
 
-	if result.Error == nil {
-		t.Fatal("expected error")
-	}
-	if result.Error.Severity != "fatal" {
-		t.Errorf("expected severity=fatal, got %s", result.Error.Severity)
-	}
+	testutil.AssertFatalError(t, result)
 }
 
 func TestCalendarDefaultRange(t *testing.T) {
@@ -117,5 +123,29 @@ func TestCalendarDefaultRange(t *testing.T) {
 	}
 	if receivedMax.Sub(receivedMin) != 24*time.Hour {
 		t.Errorf("expected 24h range, got %v", receivedMax.Sub(receivedMin))
+	}
+}
+
+func TestCalendarEnvelopeCompliance(t *testing.T) {
+	client := &mockCalendarClient{
+		events: []Event{{Title: "Test", Start: "10:00", End: "11:00", Location: ""}},
+	}
+	handler := NewHandler(client, nil)
+	input := envelope.New("input", "test")
+
+	result := handler(input, map[string]string{"range": "today"})
+
+	testutil.AssertEnvelope(t, result, "calendar", "list")
+	if result.Args == nil {
+		t.Error("expected args to be non-nil")
+	}
+	if result.Content == nil {
+		t.Error("expected content to be non-nil")
+	}
+	if result.ContentType != envelope.ContentList {
+		t.Errorf("expected content_type=list, got %s", result.ContentType)
+	}
+	if result.Error != nil {
+		t.Errorf("expected no error, got %v", result.Error)
 	}
 }

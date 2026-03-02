@@ -6,6 +6,7 @@ import (
 
 	"github.com/justinpbarnett/virgil/internal/envelope"
 	"github.com/justinpbarnett/virgil/internal/store"
+	"github.com/justinpbarnett/virgil/internal/testutil"
 )
 
 func testStore(t *testing.T) *store.Store {
@@ -86,12 +87,7 @@ func TestStoreEmptyContent(t *testing.T) {
 
 	result := handler(input, map[string]string{"action": "store"})
 
-	if result.Error == nil {
-		t.Fatal("expected error for empty content")
-	}
-	if result.Error.Severity != "fatal" {
-		t.Errorf("expected severity=fatal, got %s", result.Error.Severity)
-	}
+	testutil.AssertFatalError(t, result)
 }
 
 func TestDefaultActionIsRetrieve(t *testing.T) {

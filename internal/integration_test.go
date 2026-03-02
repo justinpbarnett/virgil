@@ -22,23 +22,12 @@ import (
 	"github.com/justinpbarnett/virgil/internal/runtime"
 	"github.com/justinpbarnett/virgil/internal/server"
 	"github.com/justinpbarnett/virgil/internal/store"
+	"github.com/justinpbarnett/virgil/internal/testutil"
 
 	"context"
 	"log/slog"
 	"time"
 )
-
-// Mock provider for integration tests
-type mockProvider struct {
-	response string
-}
-
-func (m *mockProvider) Complete(_ context.Context, system, user string) (string, error) {
-	if m.response != "" {
-		return m.response, nil
-	}
-	return "Mock response for: " + user, nil
-}
 
 // Mock calendar client
 type mockCalendarClient struct{}
@@ -76,7 +65,7 @@ func setupIntegrationServer(t *testing.T) http.Handler {
 	p := parser.New(vocab)
 
 	// Mock provider
-	provider := &mockProvider{}
+	provider := &testutil.MockProvider{}
 
 	// Register all pipes
 	reg := pipe.NewRegistry()
@@ -250,7 +239,7 @@ func TestIntegration_MissLogStructure(t *testing.T) {
 
 	vocab := parser.LoadVocabulary(cfg.Vocabulary)
 	p := parser.New(vocab)
-	provider := &mockProvider{}
+	provider := &testutil.MockProvider{}
 
 	reg := pipe.NewRegistry()
 	if chatCfg, ok := cfg.Pipes["chat"]; ok {
