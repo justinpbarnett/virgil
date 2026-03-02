@@ -3,9 +3,7 @@ package draft
 import (
 	"bytes"
 	"context"
-	"errors"
 	"fmt"
-	"net"
 	"text/template"
 	"time"
 
@@ -22,8 +20,8 @@ type templateData struct {
 	Length  string
 }
 
-func NewHandler(provider bridge.Provider, pipeConfig config.PipeConfig) pipe.Handler {
-	// Pre-compile templates at init time
+// CompileTemplates pre-parses all prompt templates from the pipe config.
+func CompileTemplates(pipeConfig config.PipeConfig) map[string]*template.Template {
 	compiled := make(map[string]*template.Template)
 	for name, tmplStr := range pipeConfig.Prompts.Templates {
 		t, err := template.New(name).Parse(tmplStr)
@@ -31,35 +29,51 @@ func NewHandler(provider bridge.Provider, pipeConfig config.PipeConfig) pipe.Han
 			compiled[name] = t
 		}
 	}
+	return compiled
+}
 
+// preparePrompt extracts content from the input, resolves the template, and
+// returns the system prompt, user prompt, and an error envelope if the input is empty.
+func preparePrompt(compiled map[string]*template.Template, pipeConfig config.PipeConfig, input envelope.Envelope, flags map[string]string) (systemPrompt, userPrompt string, errEnv *envelope.EnvelopeError) {
+	content := envelope.ContentToText(input.Content, input.ContentType)
+	if content == "" {
+		content = flags["topic"]
+	}
+	if content == "" {
+		return "", "", envelope.FatalError("no content or topic provided for drafting")
+	}
+
+	systemPrompt = pipeConfig.Prompts.System
+	userPrompt, err := executeTemplate(compiled, flags["type"], templateData{
+		Content: content,
+		Topic:   flags["topic"],
+		Tone:    flags["tone"],
+		Length:  flags["length"],
+	})
+	if err != nil {
+		userPrompt = content
+	}
+	return systemPrompt, userPrompt, nil
+}
+
+// draftError wraps an error into an EnvelopeError, marking timeouts as retryable.
+func draftError(err error) *envelope.EnvelopeError {
+	return envelope.ClassifyError("draft generation failed", err)
+}
+
+func NewHandler(provider bridge.Provider, pipeConfig config.PipeConfig) pipe.Handler {
+	return NewHandlerWith(provider, pipeConfig, CompileTemplates(pipeConfig))
+}
+
+func NewHandlerWith(provider bridge.Provider, pipeConfig config.PipeConfig, compiled map[string]*template.Template) pipe.Handler {
 	return func(input envelope.Envelope, flags map[string]string) envelope.Envelope {
 		out := envelope.New("draft", "generate")
 		out.Args = flags
 
-		content := envelope.ContentToText(input.Content, input.ContentType)
-		if content == "" {
-			content = flags["topic"]
-		}
-		if content == "" {
-			out.Error = &envelope.EnvelopeError{
-				Message:  "no content or topic provided for drafting",
-				Severity: "fatal",
-			}
+		systemPrompt, userPrompt, errEnv := preparePrompt(compiled, pipeConfig, input, flags)
+		if errEnv != nil {
+			out.Error = errEnv
 			return out
-		}
-
-		draftType := flags["type"]
-		systemPrompt := pipeConfig.Prompts.System
-
-		userPrompt, err := executeTemplate(compiled, draftType, templateData{
-			Content: content,
-			Topic:   flags["topic"],
-			Tone:    flags["tone"],
-			Length:  flags["length"],
-		})
-		if err != nil {
-			// Fall back to raw content if template fails
-			userPrompt = content
 		}
 
 		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
@@ -67,22 +81,42 @@ func NewHandler(provider bridge.Provider, pipeConfig config.PipeConfig) pipe.Han
 
 		result, err := provider.Complete(ctx, systemPrompt, userPrompt)
 		if err != nil {
-			severity := "fatal"
-			retryable := false
-			if isTimeout(err) {
-				severity = "error"
-				retryable = true
-			}
-			out.Error = &envelope.EnvelopeError{
-				Message:   fmt.Sprintf("draft generation failed: %v", err),
-				Severity:  severity,
-				Retryable: retryable,
-			}
+			out.Error = draftError(err)
 			return out
 		}
 
 		out.Content = result
-		out.ContentType = "text"
+		out.ContentType = envelope.ContentText
+		return out
+	}
+}
+
+func NewStreamHandler(provider bridge.StreamingProvider, pipeConfig config.PipeConfig) pipe.StreamHandler {
+	return NewStreamHandlerWith(provider, pipeConfig, CompileTemplates(pipeConfig))
+}
+
+func NewStreamHandlerWith(provider bridge.StreamingProvider, pipeConfig config.PipeConfig, compiled map[string]*template.Template) pipe.StreamHandler {
+	return func(ctx context.Context, input envelope.Envelope, flags map[string]string, sink func(chunk string)) envelope.Envelope {
+		out := envelope.New("draft", "generate")
+		out.Args = flags
+
+		systemPrompt, userPrompt, errEnv := preparePrompt(compiled, pipeConfig, input, flags)
+		if errEnv != nil {
+			out.Error = errEnv
+			return out
+		}
+
+		ctx, cancel := context.WithTimeout(ctx, 60*time.Second)
+		defer cancel()
+
+		result, err := provider.CompleteStream(ctx, systemPrompt, userPrompt, sink)
+		if err != nil {
+			out.Error = draftError(err)
+			return out
+		}
+
+		out.Content = result
+		out.ContentType = envelope.ContentText
 		return out
 	}
 }
@@ -104,10 +138,3 @@ func executeTemplate(compiled map[string]*template.Template, draftType string, d
 	return buf.String(), nil
 }
 
-func isTimeout(err error) bool {
-	if errors.Is(err, context.DeadlineExceeded) {
-		return true
-	}
-	var netErr net.Error
-	return errors.As(err, &netErr) && netErr.Timeout()
-}

@@ -19,7 +19,7 @@ func (m *mockProvider) Complete(_ context.Context, _, _ string) (string, error) 
 
 func TestChatResponse(t *testing.T) {
 	provider := &mockProvider{response: "Hello! How can I help you?"}
-	handler := NewHandler(provider)
+	handler := NewHandler(provider, "test system prompt")
 
 	input := envelope.New("input", "test")
 	input.Content = "hello there"
@@ -40,7 +40,7 @@ func TestChatResponse(t *testing.T) {
 
 func TestChatEmptyInput(t *testing.T) {
 	provider := &mockProvider{response: "anything"}
-	handler := NewHandler(provider)
+	handler := NewHandler(provider, "test system prompt")
 
 	input := envelope.New("input", "test")
 	input.ContentType = "text"
@@ -61,7 +61,7 @@ func TestChatEmptyInput(t *testing.T) {
 
 func TestChatProviderError(t *testing.T) {
 	provider := &mockProvider{err: fmt.Errorf("provider down")}
-	handler := NewHandler(provider)
+	handler := NewHandler(provider, "test system prompt")
 
 	input := envelope.New("input", "test")
 	input.Content = "hello"

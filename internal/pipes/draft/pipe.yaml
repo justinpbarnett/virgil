@@ -1,6 +1,8 @@
 name: draft
 description: Produces written content from input context and instructions.
 category: comms
+streaming: true
+timeout: 60s
 
 triggers:
   exact:
@@ -29,6 +31,54 @@ flags:
     description: Approximate output length.
     values: [short, medium, long]
     default: medium
+
+vocabulary:
+  verbs:
+    draft: draft
+    write: draft
+    compose: draft
+    summarize: draft
+    summary: draft
+  types:
+    blog: blog
+    email: email
+    pr: pr
+    memo: memo
+  sources: {}
+  modifiers: {}
+
+templates:
+  priority: 50
+  entries:
+    - requires: [verb, type, source]
+      plan:
+        - pipe: "{source}"
+          flags: { action: retrieve, sort: recent, limit: "10", topic: "{topic}" }
+        - pipe: "{verb}"
+          flags: { type: "{type}" }
+
+    - requires: [verb, source, modifier]
+      plan:
+        - pipe: "{source}"
+          flags: { range: "{modifier}" }
+        - pipe: "{verb}"
+          flags: { type: summary }
+
+    - requires: [verb, type]
+      plan:
+        - pipe: "{verb}"
+          flags: { type: "{type}", topic: "{topic}" }
+
+    - requires: [verb, source]
+      plan:
+        - pipe: "{source}"
+          flags: { action: retrieve }
+        - pipe: "{verb}"
+          flags: {}
+
+    - requires: [verb]
+      plan:
+        - pipe: "{verb}"
 
 prompts:
   system: |
@@ -73,3 +123,12 @@ prompts:
 
       {{if .Topic}}Topic: {{.Topic}}{{end}}
       {{if .Tone}}Tone: {{.Tone}}{{end}}
+
+    summary: |
+      Summarize the following information clearly and concisely.
+      Present the key points in a natural, readable format.
+
+      Information:
+      {{.Content}}
+
+      {{if .Topic}}Focus on: {{.Topic}}{{end}}

@@ -10,11 +10,12 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/justinpbarnett/virgil/internal/config"
 )
 
 func EnsureServer(binary string, serverAddr string) error {
-	home, _ := os.UserHomeDir()
-	dataDir := filepath.Join(home, ".local", "share", "virgil")
+	dataDir := config.DataDir()
 	pidPath := filepath.Join(dataDir, "virgil.pid")
 	lockPath := filepath.Join(dataDir, "virgil.lock")
 

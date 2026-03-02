@@ -2,9 +2,11 @@ package server
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 
 	"github.com/justinpbarnett/virgil/internal/envelope"
+	"github.com/justinpbarnett/virgil/internal/runtime"
 )
 
 type signalRequest struct {
@@ -38,12 +40,43 @@ func (s *Server) handleSignal(w http.ResponseWriter, r *http.Request) {
 
 	seed := envelope.New("signal", "input")
 	seed.Content = req.Text
-	seed.ContentType = "text"
+	seed.ContentType = envelope.ContentText
+
+	// SSE streaming path
+	if r.Header.Get("Accept") == envelope.SSEContentType {
+		s.handleSSE(w, r, plan, seed)
+		return
+	}
 
 	result := s.runtime.Execute(plan, seed)
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(result)
+}
+
+func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request, plan runtime.Plan, seed envelope.Envelope) {
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		http.Error(w, `{"error":"streaming not supported"}`, http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", envelope.SSEContentType)
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	flusher.Flush()
+
+	sink := func(chunk string) {
+		escaped, _ := json.Marshal(chunk)
+		fmt.Fprintf(w, "event: %s\ndata: {\"text\":%s}\n\n", envelope.SSEEventChunk, escaped)
+		flusher.Flush()
+	}
+
+	result := s.runtime.ExecuteStream(r.Context(), plan, seed, sink)
+
+	doneData, _ := json.Marshal(result)
+	fmt.Fprintf(w, "event: %s\ndata: %s\n\n", envelope.SSEEventDone, doneData)
+	flusher.Flush()
 }
 
 func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {

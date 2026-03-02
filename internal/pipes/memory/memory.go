@@ -29,23 +29,17 @@ func handleStore(s *store.Store, input envelope.Envelope, flags map[string]strin
 
 	content := envelope.ContentToText(input.Content, input.ContentType)
 	if content == "" {
-		out.Error = &envelope.EnvelopeError{
-			Message:  "no content to store",
-			Severity: "fatal",
-		}
+		out.Error = envelope.FatalError("no content to store")
 		return out
 	}
 
 	if err := s.Save(content, nil); err != nil {
-		out.Error = &envelope.EnvelopeError{
-			Message:  fmt.Sprintf("failed to save: %v", err),
-			Severity: "fatal",
-		}
+		out.Error = envelope.FatalError(fmt.Sprintf("failed to save: %v", err))
 		return out
 	}
 
 	out.Content = "Remembered: " + content
-	out.ContentType = "text"
+	out.ContentType = envelope.ContentText
 	return out
 }
 
@@ -62,7 +56,7 @@ func handleRetrieve(s *store.Store, input envelope.Envelope, flags map[string]st
 	}
 	if query == "" {
 		out.Content = []store.Entry{}
-		out.ContentType = "list"
+		out.ContentType = envelope.ContentList
 		return out
 	}
 
@@ -74,14 +68,11 @@ func handleRetrieve(s *store.Store, input envelope.Envelope, flags map[string]st
 	sort := flags["sort"]
 	entries, err := s.Search(query, limit, sort)
 	if err != nil {
-		out.Error = &envelope.EnvelopeError{
-			Message:  fmt.Sprintf("search failed: %v", err),
-			Severity: "fatal",
-		}
+		out.Error = envelope.FatalError(fmt.Sprintf("search failed: %v", err))
 		return out
 	}
 
 	out.Content = entries
-	out.ContentType = "list"
+	out.ContentType = envelope.ContentList
 	return out
 }

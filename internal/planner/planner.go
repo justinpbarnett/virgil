@@ -97,6 +97,28 @@ func (p *Planner) resolveTemplate(tmpl config.TemplateEntry, parsed parser.Parse
 		steps = append(steps, runtime.Step{Pipe: pipeName, Flags: flags})
 	}
 
+	// Collapse consecutive steps targeting the same pipe.
+	// This prevents redundant execution when verb and source resolve
+	// to the same pipe (e.g., "check my calendar" → calendar→calendar
+	// collapses to a single calendar step). Flags from the later step
+	// are merged in (earlier step wins on conflicts).
+	if len(steps) > 1 {
+		collapsed := []runtime.Step{steps[0]}
+		for i := 1; i < len(steps); i++ {
+			last := &collapsed[len(collapsed)-1]
+			if steps[i].Pipe != last.Pipe {
+				collapsed = append(collapsed, steps[i])
+			} else {
+				for k, v := range steps[i].Flags {
+					if _, exists := last.Flags[k]; !exists {
+						last.Flags[k] = v
+					}
+				}
+			}
+		}
+		steps = collapsed
+	}
+
 	return runtime.Plan{Steps: steps}
 }
 

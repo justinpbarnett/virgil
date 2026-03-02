@@ -33,3 +33,14 @@ flags:
     description: Sort order for results.
     values: [recent, relevant]
     default: relevant
+
+vocabulary:
+  verbs:
+    remember: memory.store
+    recall: memory.retrieve
+    know: memory.retrieve
+  types: {}
+  sources:
+    notes: memory
+    memory: memory
+  modifiers: {}

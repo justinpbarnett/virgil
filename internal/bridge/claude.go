@@ -30,23 +30,46 @@ func (c *ClaudeProvider) Available() bool {
 	return c.resolvedPath != ""
 }
 
-func (c *ClaudeProvider) Complete(ctx context.Context, system, user string) (string, error) {
+// checkAvailable returns an error if the Claude CLI is not found.
+func (c *ClaudeProvider) checkAvailable() error {
 	if !c.Available() {
-		return "", fmt.Errorf("claude CLI not found on PATH — install it or run: npm install -g @anthropic-ai/claude-code")
+		return fmt.Errorf("claude CLI not found on PATH — install it or run: npm install -g @anthropic-ai/claude-code")
 	}
+	return nil
+}
 
+// buildArgs constructs the common argument list for the Claude CLI.
+func (c *ClaudeProvider) buildArgs(system string, extra ...string) []string {
 	args := []string{
 		"-p",
-		"--output-format", "json",
 		"--model", c.model,
 		"--no-session-persistence",
 		"--max-turns", "1",
 	}
-
+	args = append(args, extra...)
 	if system != "" {
 		args = append(args, "--system-prompt", system)
 	}
+	return args
+}
 
+// classifyCLIError converts a CLI execution error into a user-friendly error.
+func classifyCLIError(ctx context.Context, runErr error, stderr string) error {
+	if ctx.Err() != nil {
+		return fmt.Errorf("provider timeout: %w", ctx.Err())
+	}
+	if strings.Contains(stderr, "auth") || strings.Contains(stderr, "login") {
+		return fmt.Errorf("authentication required — run: claude auth login")
+	}
+	return fmt.Errorf("claude CLI error: %s (stderr: %s)", runErr, stderr)
+}
+
+func (c *ClaudeProvider) Complete(ctx context.Context, system, user string) (string, error) {
+	if err := c.checkAvailable(); err != nil {
+		return "", err
+	}
+
+	args := c.buildArgs(system, "--output-format", "json")
 	cmd := exec.CommandContext(ctx, c.resolvedPath, args...)
 	cmd.Stdin = strings.NewReader(user)
 
@@ -55,17 +78,52 @@ func (c *ClaudeProvider) Complete(ctx context.Context, system, user string) (str
 	cmd.Stderr = &stderr
 
 	if err := cmd.Run(); err != nil {
-		stderrStr := stderr.String()
-		if ctx.Err() != nil {
-			return "", fmt.Errorf("provider timeout: %w", ctx.Err())
-		}
-		if strings.Contains(stderrStr, "auth") || strings.Contains(stderrStr, "login") {
-			return "", fmt.Errorf("authentication required — run: claude auth login")
-		}
-		return "", fmt.Errorf("claude CLI error: %s (stderr: %s)", err, stderrStr)
+		return "", classifyCLIError(ctx, err, stderr.String())
 	}
 
 	return parseClaudeResponse(stdout.Bytes())
+}
+
+func (c *ClaudeProvider) CompleteStream(ctx context.Context, system, user string, onChunk func(chunk string)) (string, error) {
+	if err := c.checkAvailable(); err != nil {
+		return "", err
+	}
+
+	args := c.buildArgs(system)
+	cmd := exec.CommandContext(ctx, c.resolvedPath, args...)
+	cmd.Stdin = strings.NewReader(user)
+
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return "", fmt.Errorf("creating stdout pipe: %w", err)
+	}
+
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+
+	if err := cmd.Start(); err != nil {
+		return "", fmt.Errorf("starting claude CLI: %w", err)
+	}
+
+	var full strings.Builder
+	buf := make([]byte, 4096)
+	for {
+		n, readErr := stdout.Read(buf)
+		if n > 0 {
+			chunk := string(buf[:n])
+			full.WriteString(chunk)
+			onChunk(chunk)
+		}
+		if readErr != nil {
+			break // io.EOF is expected; cmd.Wait surfaces other errors
+		}
+	}
+
+	if err := cmd.Wait(); err != nil {
+		return "", classifyCLIError(ctx, err, stderr.String())
+	}
+
+	return strings.TrimSpace(full.String()), nil
 }
 
 func parseClaudeResponse(data []byte) (string, error) {

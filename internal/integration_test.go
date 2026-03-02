@@ -55,7 +55,7 @@ func setupIntegrationServer(t *testing.T) http.Handler {
 	t.Helper()
 
 	// Load config from project config directory
-	cfg, err := config.Load("../config")
+	cfg, err := config.Load("../config", "./pipes")
 	if err != nil {
 		t.Fatalf("failed to load config: %v", err)
 	}
@@ -94,7 +94,7 @@ func setupIntegrationServer(t *testing.T) http.Handler {
 	}
 
 	if chatCfg, ok := cfg.Pipes["chat"]; ok {
-		reg.Register(chatCfg.ToDefinition(), chatPipe.NewHandler(provider))
+		reg.Register(chatCfg.ToDefinition(), chatPipe.NewHandler(provider, chatCfg.Prompts.System))
 	}
 
 	// Build router
@@ -228,7 +228,7 @@ func TestIntegration_MissLogStructure(t *testing.T) {
 	missLogPath := filepath.Join(dir, "misses.jsonl")
 
 	// Load config
-	cfg, err := config.Load("../config")
+	cfg, err := config.Load("../config", "./pipes")
 	if err != nil {
 		t.Fatalf("failed to load config: %v", err)
 	}
@@ -246,7 +246,7 @@ func TestIntegration_MissLogStructure(t *testing.T) {
 
 	reg := pipe.NewRegistry()
 	if chatCfg, ok := cfg.Pipes["chat"]; ok {
-		reg.Register(chatCfg.ToDefinition(), chatPipe.NewHandler(provider))
+		reg.Register(chatCfg.ToDefinition(), chatPipe.NewHandler(provider, chatCfg.Prompts.System))
 	}
 
 	missLog, _ := router.NewMissLog(missLogPath)

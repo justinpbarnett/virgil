@@ -25,3 +25,17 @@ flags:
   calendar:
     description: Which calendar to use.
     default: primary
+
+vocabulary:
+  verbs:
+    check: calendar
+    show: calendar
+    "what's": calendar
+  types: {}
+  sources:
+    calendar: calendar
+  modifiers:
+    recent: recent
+    today: today
+    tomorrow: tomorrow
+    "this week": this-week

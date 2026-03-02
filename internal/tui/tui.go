@@ -1,8 +1,10 @@
 package tui
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
@@ -10,15 +12,37 @@ import (
 )
 
 type model struct {
-	textInput  textinput.Model
-	messages   []string
-	serverAddr string
-	err        error
+	textInput      textinput.Model
+	messages       []string
+	serverAddr     string
+	err            error
+	pending        strings.Builder
+	waiting        bool
+	dotPhase       int
+	activeStreamID int
 }
 
-type responseMsg struct {
-	content string
-	err     error
+const maxMessages = 200
+
+type tickMsg struct{}
+
+type streamChunkMsg struct {
+	text     string
+	streamID int
+	reader   *sseReader
+}
+
+type streamDoneMsg struct {
+	env      envelope.Envelope
+	streamID int
+	err      error
+}
+
+func (m *model) appendMessage(msg string) {
+	m.messages = append(m.messages, msg)
+	if len(m.messages) > maxMessages {
+		m.messages = m.messages[len(m.messages)-maxMessages:]
+	}
 }
 
 func RunSession(serverAddr string) error {
@@ -51,19 +75,54 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if strings.TrimSpace(input) == "" {
 				return m, nil
 			}
-			m.messages = append(m.messages, "you > "+input)
+			m.appendMessage("you > " + input)
 			m.textInput.SetValue("")
-			return m, sendSignal(m.serverAddr, input)
+			m.waiting = true
+			m.pending.Reset()
+			m.dotPhase = 0
+			m.activeStreamID++
+			streamID := m.activeStreamID
+			return m, tea.Batch(
+				startStream(m.serverAddr, input, streamID),
+				tickCmd(),
+			)
 		}
 
-	case responseMsg:
-		if msg.err != nil {
-			m.messages = append(m.messages, fmt.Sprintf("error: %v", msg.err))
-		} else {
-			m.messages = append(m.messages, msg.content)
+	case tickMsg:
+		if m.waiting {
+			m.dotPhase = (m.dotPhase + 1) % 4
+			return m, tickCmd()
 		}
-		m.messages = append(m.messages, "")
 		return m, nil
+
+	case streamChunkMsg:
+		if msg.streamID != m.activeStreamID {
+			msg.reader.Close()
+			return m, nil
+		}
+		m.pending.WriteString(msg.text)
+		m.waiting = false
+		return m, readNextEvent(msg.reader, msg.streamID)
+
+	case streamDoneMsg:
+		if msg.streamID != m.activeStreamID {
+			return m, nil
+		}
+		m.waiting = false
+		if msg.err != nil {
+			m.appendMessage(fmt.Sprintf("error: %v", msg.err))
+		} else if m.pending.Len() > 0 {
+			m.appendMessage("virgil > " + m.pending.String())
+		} else {
+			content := envelope.ContentToText(msg.env.Content, msg.env.ContentType)
+			if content != "" {
+				m.appendMessage("virgil > " + content)
+			}
+		}
+		m.appendMessage("")
+		m.pending.Reset()
+		return m, nil
+
 	}
 
 	var cmd tea.Cmd
@@ -79,24 +138,75 @@ func (m model) View() string {
 		b.WriteString("\n")
 	}
 
+	if m.waiting {
+		dots := strings.Repeat(".", m.dotPhase)
+		b.WriteString("virgil > " + dots)
+		b.WriteString("\n")
+	} else if m.pending.Len() > 0 {
+		b.WriteString("virgil > " + m.pending.String())
+		b.WriteString("\n")
+	}
+
 	b.WriteString(m.textInput.View())
 	b.WriteString("\n")
 
 	return b.String()
 }
 
-func sendSignal(addr, text string) tea.Cmd {
+func tickCmd() tea.Cmd {
+	return tea.Tick(300*time.Millisecond, func(_ time.Time) tea.Msg {
+		return tickMsg{}
+	})
+}
+
+func startStream(addr, text string, streamID int) tea.Cmd {
 	return func() tea.Msg {
-		env, err := postSignal(addr, text)
+		reader, err := openSSEStream(addr, text)
 		if err != nil {
-			return responseMsg{err: err}
+			return streamDoneMsg{streamID: streamID, err: err}
 		}
-
-		if env.Error != nil {
-			return responseMsg{err: fmt.Errorf("%s: %s", env.Error.Severity, env.Error.Message)}
-		}
-
-		content := envelope.ContentToText(env.Content, env.ContentType)
-		return responseMsg{content: content}
+		return readNextEventSync(reader, streamID)
 	}
 }
+
+func readNextEvent(reader *sseReader, streamID int) tea.Cmd {
+	return func() tea.Msg {
+		return readNextEventSync(reader, streamID)
+	}
+}
+
+func readNextEventSync(reader *sseReader, streamID int) tea.Msg {
+	event, err := reader.Next()
+	if err != nil {
+		reader.Close()
+		return streamDoneMsg{streamID: streamID, err: err}
+	}
+
+	switch event.Type {
+	case envelope.SSEEventChunk:
+		var chunk struct {
+			Text string `json:"text"`
+		}
+		if err := json.Unmarshal([]byte(event.Data), &chunk); err != nil {
+			reader.Close()
+			return streamDoneMsg{streamID: streamID, err: fmt.Errorf("invalid chunk: %w", err)}
+		}
+		return streamChunkMsg{text: chunk.Text, streamID: streamID, reader: reader}
+
+	case envelope.SSEEventDone:
+		reader.Close()
+		var env envelope.Envelope
+		if err := json.Unmarshal([]byte(event.Data), &env); err != nil {
+			return streamDoneMsg{streamID: streamID, err: fmt.Errorf("invalid done event: %w", err)}
+		}
+		if env.Error != nil {
+			return streamDoneMsg{streamID: streamID, err: fmt.Errorf("%s: %s", env.Error.Severity, env.Error.Message)}
+		}
+		return streamDoneMsg{env: env, streamID: streamID}
+
+	default:
+		reader.Close()
+		return streamDoneMsg{streamID: streamID, err: fmt.Errorf("unknown event type: %s", event.Type)}
+	}
+}
+

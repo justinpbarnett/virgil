@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -16,11 +17,12 @@ func writeFile(t *testing.T, dir, name, content string) {
 	}
 }
 
-func setupTestConfig(t *testing.T) string {
+func setupTestConfig(t *testing.T) (configDir, pipesDir string) {
 	t.Helper()
-	dir := t.TempDir()
+	configDir = t.TempDir()
+	pipesDir = t.TempDir()
 
-	writeFile(t, dir, "virgil.yaml", `
+	writeFile(t, configDir, "virgil.yaml", `
 server:
   host: localhost
   port: 9999
@@ -32,27 +34,9 @@ log_level: debug
 database_path: /tmp/test.db
 `)
 
-	writeFile(t, dir, "vocabulary.yaml", `
-verbs:
-  draft: draft
-  remember: memory.store
-types:
-  blog: blog
-sources:
-  notes: memory
-modifiers:
-  today: today
-`)
-
-	writeFile(t, dir, "templates.yaml", `
-templates:
-  - requires: [verb]
-    plan:
-      - pipe: "{verb}"
-`)
-
-	pipesDir := filepath.Join(dir, "pipes")
-	writeFile(t, pipesDir, "memory.yaml", `
+	// Memory pipe with vocabulary
+	memDir := filepath.Join(pipesDir, "memory")
+	writeFile(t, memDir, "pipe.yaml", `
 name: memory
 description: Test memory pipe
 category: memory
@@ -60,14 +44,47 @@ triggers:
   exact: []
   keywords: [remember]
   patterns: []
+vocabulary:
+  verbs:
+    remember: memory.store
+  types: {}
+  sources:
+    notes: memory
+  modifiers: {}
 `)
 
-	return dir
+	// Draft pipe with vocabulary and templates
+	draftDir := filepath.Join(pipesDir, "draft")
+	writeFile(t, draftDir, "pipe.yaml", `
+name: draft
+description: Test draft pipe
+category: comms
+triggers:
+  exact: []
+  keywords: [draft]
+  patterns: []
+vocabulary:
+  verbs:
+    draft: draft
+  types:
+    blog: blog
+  sources: {}
+  modifiers:
+    today: today
+templates:
+  priority: 50
+  entries:
+    - requires: [verb]
+      plan:
+        - pipe: "{verb}"
+`)
+
+	return configDir, pipesDir
 }
 
 func TestLoadValidConfig(t *testing.T) {
-	dir := setupTestConfig(t)
-	cfg, err := Load(dir)
+	configDir, pipesDir := setupTestConfig(t)
+	cfg, err := Load(configDir, pipesDir)
 	if err != nil {
 		t.Fatalf("failed to load config: %v", err)
 	}
@@ -90,8 +107,8 @@ func TestLoadValidConfig(t *testing.T) {
 }
 
 func TestLoadVocabulary(t *testing.T) {
-	dir := setupTestConfig(t)
-	cfg, err := Load(dir)
+	configDir, pipesDir := setupTestConfig(t)
+	cfg, err := Load(configDir, pipesDir)
 	if err != nil {
 		t.Fatalf("failed to load config: %v", err)
 	}
@@ -108,8 +125,8 @@ func TestLoadVocabulary(t *testing.T) {
 }
 
 func TestLoadTemplates(t *testing.T) {
-	dir := setupTestConfig(t)
-	cfg, err := Load(dir)
+	configDir, pipesDir := setupTestConfig(t)
+	cfg, err := Load(configDir, pipesDir)
 	if err != nil {
 		t.Fatalf("failed to load config: %v", err)
 	}
@@ -124,8 +141,8 @@ func TestLoadTemplates(t *testing.T) {
 }
 
 func TestLoadPipeConfigs(t *testing.T) {
-	dir := setupTestConfig(t)
-	cfg, err := Load(dir)
+	configDir, pipesDir := setupTestConfig(t)
+	cfg, err := Load(configDir, pipesDir)
 	if err != nil {
 		t.Fatalf("failed to load config: %v", err)
 	}
@@ -140,7 +157,7 @@ func TestLoadPipeConfigs(t *testing.T) {
 }
 
 func TestLoadMissingConfigDir(t *testing.T) {
-	_, err := Load("/nonexistent/path")
+	_, err := Load("/nonexistent/path", "/nonexistent/pipes")
 	if err == nil {
 		t.Error("expected error for missing config directory")
 	}
@@ -166,26 +183,17 @@ func TestExpandHome(t *testing.T) {
 }
 
 func TestLoadDatabasePathExpansion(t *testing.T) {
-	dir := t.TempDir()
+	configDir := t.TempDir()
+	pipesDir := t.TempDir()
 
-	writeFile(t, dir, "virgil.yaml", `
+	writeFile(t, configDir, "virgil.yaml", `
 server:
   host: localhost
   port: 7890
 database_path: ~/data/test.db
 `)
-	writeFile(t, dir, "vocabulary.yaml", `
-verbs: {}
-types: {}
-sources: {}
-modifiers: {}
-`)
-	writeFile(t, dir, "templates.yaml", `
-templates: []
-`)
-	os.MkdirAll(filepath.Join(dir, "pipes"), 0o755)
 
-	cfg, err := Load(dir)
+	cfg, err := Load(configDir, pipesDir)
 	if err != nil {
 		t.Fatalf("failed to load config: %v", err)
 	}
@@ -194,3 +202,328 @@ templates: []
 		t.Errorf("expected ~ to be expanded, got %s", cfg.DatabasePath)
 	}
 }
+
+func TestVocabularyMergeFromMultiplePipes(t *testing.T) {
+	configDir := t.TempDir()
+	pipesDir := t.TempDir()
+
+	writeFile(t, configDir, "virgil.yaml", `
+server:
+  host: localhost
+  port: 7890
+`)
+
+	writeFile(t, filepath.Join(pipesDir, "alpha"), "pipe.yaml", `
+name: alpha
+description: Alpha pipe
+category: test
+triggers:
+  exact: []
+  keywords: []
+  patterns: []
+vocabulary:
+  verbs:
+    run: alpha
+  types:
+    report: report
+  sources: {}
+  modifiers: {}
+`)
+
+	writeFile(t, filepath.Join(pipesDir, "beta"), "pipe.yaml", `
+name: beta
+description: Beta pipe
+category: test
+triggers:
+  exact: []
+  keywords: []
+  patterns: []
+vocabulary:
+  verbs:
+    build: beta
+  types: {}
+  sources:
+    logs: beta
+  modifiers:
+    recent: recent
+`)
+
+	cfg, err := Load(configDir, pipesDir)
+	if err != nil {
+		t.Fatalf("failed to load config: %v", err)
+	}
+
+	if cfg.Vocabulary.Verbs["run"] != "alpha" {
+		t.Errorf("expected verb run→alpha, got %s", cfg.Vocabulary.Verbs["run"])
+	}
+	if cfg.Vocabulary.Verbs["build"] != "beta" {
+		t.Errorf("expected verb build→beta, got %s", cfg.Vocabulary.Verbs["build"])
+	}
+	if cfg.Vocabulary.Types["report"] != "report" {
+		t.Errorf("expected type report→report, got %s", cfg.Vocabulary.Types["report"])
+	}
+	if cfg.Vocabulary.Sources["logs"] != "beta" {
+		t.Errorf("expected source logs→beta, got %s", cfg.Vocabulary.Sources["logs"])
+	}
+	if cfg.Vocabulary.Modifiers["recent"] != "recent" {
+		t.Errorf("expected modifier recent→recent, got %s", cfg.Vocabulary.Modifiers["recent"])
+	}
+}
+
+func TestVocabularyConflictDetection(t *testing.T) {
+	configDir := t.TempDir()
+	pipesDir := t.TempDir()
+
+	writeFile(t, configDir, "virgil.yaml", `
+server:
+  host: localhost
+  port: 7890
+`)
+
+	writeFile(t, filepath.Join(pipesDir, "alpha"), "pipe.yaml", `
+name: alpha
+description: Alpha pipe
+category: test
+triggers:
+  exact: []
+  keywords: []
+  patterns: []
+vocabulary:
+  verbs:
+    run: alpha
+  types: {}
+  sources: {}
+  modifiers: {}
+`)
+
+	writeFile(t, filepath.Join(pipesDir, "beta"), "pipe.yaml", `
+name: beta
+description: Beta pipe
+category: test
+triggers:
+  exact: []
+  keywords: []
+  patterns: []
+vocabulary:
+  verbs:
+    run: beta
+  types: {}
+  sources: {}
+  modifiers: {}
+`)
+
+	_, err := Load(configDir, pipesDir)
+	if err == nil {
+		t.Fatal("expected vocabulary conflict error")
+	}
+	if !strings.Contains(err.Error(), "vocabulary conflict") {
+		t.Errorf("expected 'vocabulary conflict' in error, got: %s", err.Error())
+	}
+}
+
+func TestVocabularyIdenticalMappingOK(t *testing.T) {
+	configDir := t.TempDir()
+	pipesDir := t.TempDir()
+
+	writeFile(t, configDir, "virgil.yaml", `
+server:
+  host: localhost
+  port: 7890
+`)
+
+	writeFile(t, filepath.Join(pipesDir, "alpha"), "pipe.yaml", `
+name: alpha
+description: Alpha pipe
+category: test
+triggers:
+  exact: []
+  keywords: []
+  patterns: []
+vocabulary:
+  verbs:
+    run: shared
+  types: {}
+  sources: {}
+  modifiers: {}
+`)
+
+	writeFile(t, filepath.Join(pipesDir, "beta"), "pipe.yaml", `
+name: beta
+description: Beta pipe
+category: test
+triggers:
+  exact: []
+  keywords: []
+  patterns: []
+vocabulary:
+  verbs:
+    run: shared
+  types: {}
+  sources: {}
+  modifiers: {}
+`)
+
+	cfg, err := Load(configDir, pipesDir)
+	if err != nil {
+		t.Fatalf("expected no error for identical mapping, got: %v", err)
+	}
+	if cfg.Vocabulary.Verbs["run"] != "shared" {
+		t.Errorf("expected verb run→shared, got %s", cfg.Vocabulary.Verbs["run"])
+	}
+}
+
+func TestTemplatePriorityOrdering(t *testing.T) {
+	configDir := t.TempDir()
+	pipesDir := t.TempDir()
+
+	writeFile(t, configDir, "virgil.yaml", `
+server:
+  host: localhost
+  port: 7890
+`)
+
+	// Low priority pipe (should come first)
+	writeFile(t, filepath.Join(pipesDir, "alpha"), "pipe.yaml", `
+name: alpha
+description: Alpha pipe
+category: test
+triggers:
+  exact: []
+  keywords: []
+  patterns: []
+templates:
+  priority: 10
+  entries:
+    - requires: [verb, type]
+      plan:
+        - pipe: alpha
+`)
+
+	// High priority pipe (should come last)
+	writeFile(t, filepath.Join(pipesDir, "beta"), "pipe.yaml", `
+name: beta
+description: Beta pipe
+category: test
+triggers:
+  exact: []
+  keywords: []
+  patterns: []
+templates:
+  priority: 90
+  entries:
+    - requires: [verb]
+      plan:
+        - pipe: beta
+`)
+
+	cfg, err := Load(configDir, pipesDir)
+	if err != nil {
+		t.Fatalf("failed to load config: %v", err)
+	}
+
+	if len(cfg.Templates.Templates) != 2 {
+		t.Fatalf("expected 2 templates, got %d", len(cfg.Templates.Templates))
+	}
+
+	// First template should be from alpha (priority 10)
+	if len(cfg.Templates.Templates[0].Plan) != 1 || cfg.Templates.Templates[0].Plan[0].Pipe != "alpha" {
+		t.Errorf("expected first template from alpha, got pipe=%s", cfg.Templates.Templates[0].Plan[0].Pipe)
+	}
+
+	// Second template should be from beta (priority 90)
+	if len(cfg.Templates.Templates[1].Plan) != 1 || cfg.Templates.Templates[1].Plan[0].Pipe != "beta" {
+		t.Errorf("expected second template from beta, got pipe=%s", cfg.Templates.Templates[1].Plan[0].Pipe)
+	}
+}
+
+func TestTemplateSpecificityOrdering(t *testing.T) {
+	configDir := t.TempDir()
+	pipesDir := t.TempDir()
+
+	writeFile(t, configDir, "virgil.yaml", `
+server:
+  host: localhost
+  port: 7890
+`)
+
+	// Same priority, different specificity
+	writeFile(t, filepath.Join(pipesDir, "alpha"), "pipe.yaml", `
+name: alpha
+description: Alpha pipe
+category: test
+triggers:
+  exact: []
+  keywords: []
+  patterns: []
+templates:
+  priority: 50
+  entries:
+    - requires: [verb]
+      plan:
+        - pipe: less-specific
+    - requires: [verb, type, source]
+      plan:
+        - pipe: most-specific
+    - requires: [verb, type]
+      plan:
+        - pipe: mid-specific
+`)
+
+	cfg, err := Load(configDir, pipesDir)
+	if err != nil {
+		t.Fatalf("failed to load config: %v", err)
+	}
+
+	if len(cfg.Templates.Templates) != 3 {
+		t.Fatalf("expected 3 templates, got %d", len(cfg.Templates.Templates))
+	}
+
+	// Should be ordered: most-specific (3 requires), mid-specific (2), less-specific (1)
+	if cfg.Templates.Templates[0].Plan[0].Pipe != "most-specific" {
+		t.Errorf("expected first template most-specific, got %s", cfg.Templates.Templates[0].Plan[0].Pipe)
+	}
+	if cfg.Templates.Templates[1].Plan[0].Pipe != "mid-specific" {
+		t.Errorf("expected second template mid-specific, got %s", cfg.Templates.Templates[1].Plan[0].Pipe)
+	}
+	if cfg.Templates.Templates[2].Plan[0].Pipe != "less-specific" {
+		t.Errorf("expected third template less-specific, got %s", cfg.Templates.Templates[2].Plan[0].Pipe)
+	}
+}
+
+func TestPipeWithNoVocabularyOrTemplates(t *testing.T) {
+	configDir := t.TempDir()
+	pipesDir := t.TempDir()
+
+	writeFile(t, configDir, "virgil.yaml", `
+server:
+  host: localhost
+  port: 7890
+`)
+
+	writeFile(t, filepath.Join(pipesDir, "chat"), "pipe.yaml", `
+name: chat
+description: Chat pipe
+category: general
+triggers:
+  exact: []
+  keywords: [chat]
+  patterns: []
+`)
+
+	cfg, err := Load(configDir, pipesDir)
+	if err != nil {
+		t.Fatalf("failed to load config: %v", err)
+	}
+
+	if len(cfg.Vocabulary.Verbs) != 0 {
+		t.Errorf("expected no verbs, got %d", len(cfg.Vocabulary.Verbs))
+	}
+	if len(cfg.Templates.Templates) != 0 {
+		t.Errorf("expected no templates, got %d", len(cfg.Templates.Templates))
+	}
+
+	if _, ok := cfg.Pipes["chat"]; !ok {
+		t.Error("expected chat pipe to be loaded")
+	}
+}
+

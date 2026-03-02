@@ -10,22 +10,18 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/justinpbarnett/virgil/internal/bridge"
 	"github.com/justinpbarnett/virgil/internal/config"
-	"github.com/justinpbarnett/virgil/internal/envelope"
 	"github.com/justinpbarnett/virgil/internal/parser"
 	"github.com/justinpbarnett/virgil/internal/pipe"
-	calendarPipe "github.com/justinpbarnett/virgil/internal/pipes/calendar"
-	chatPipe "github.com/justinpbarnett/virgil/internal/pipes/chat"
-	draftPipe "github.com/justinpbarnett/virgil/internal/pipes/draft"
-	memoryPipe "github.com/justinpbarnett/virgil/internal/pipes/memory"
+	"github.com/justinpbarnett/virgil/internal/pipehost"
 	"github.com/justinpbarnett/virgil/internal/planner"
 	"github.com/justinpbarnett/virgil/internal/router"
 	"github.com/justinpbarnett/virgil/internal/runtime"
 	"github.com/justinpbarnett/virgil/internal/server"
-	"github.com/justinpbarnett/virgil/internal/store"
 	"github.com/justinpbarnett/virgil/internal/tui"
 )
+
+const defaultPipesDir = "internal/pipes"
 
 func main() {
 	configDir := flag.String("config", "", "config directory path")
@@ -37,7 +33,7 @@ func main() {
 	if cfgDir == "" {
 		home, _ := os.UserHomeDir()
 		cfgDir = filepath.Join(home, ".config", "virgil")
-		if _, err := os.Stat(cfgDir); os.IsNotExist(err) {
+		if _, err := os.Stat(filepath.Join(cfgDir, "virgil.yaml")); os.IsNotExist(err) {
 			cfgDir = "config"
 		}
 	}
@@ -58,7 +54,7 @@ func main() {
 	args := flag.Args()
 
 	// Load config to get server address
-	cfg, err := config.Load(cfgDir)
+	cfg, err := config.Load(cfgDir, defaultPipesDir)
 	if err != nil {
 		logger.Error("failed to load config", "error", err)
 		os.Exit(1)
@@ -90,7 +86,7 @@ func main() {
 
 func runServer(cfgDir string, logger *slog.Logger) error {
 	// 1. Load configuration
-	cfg, err := config.Load(cfgDir)
+	cfg, err := config.Load(cfgDir, defaultPipesDir)
 	if err != nil {
 		return fmt.Errorf("loading config: %w", err)
 	}
@@ -106,82 +102,40 @@ func runServer(cfgDir string, logger *slog.Logger) error {
 		"port", cfg.Server.Port,
 	)
 
-	// 2. Initialize SQLite store
-	memStore, err := store.Open(cfg.DatabasePath)
-	if err != nil {
-		return fmt.Errorf("opening store: %w", err)
+	if cfg.DatabasePath == "" {
+		logger.Warn("database_path not set in virgil.yaml — pipes requiring storage will fail")
 	}
-	defer memStore.Close()
-	logger.Info("memory store opened", "path", cfg.DatabasePath)
 
-	// 3. Build vocabulary, parser, router
+	// 2. Build vocabulary, parser, router
 	vocab := parser.LoadVocabulary(cfg.Vocabulary)
 	p := parser.New(vocab)
 
-	// 4. Initialize AI bridge
-	providerCfg := bridge.ProviderConfig{
-		Name:  cfg.Provider.Name,
-		Model: cfg.Provider.Model,
-		Options: map[string]string{
-			"binary": cfg.Provider.Binary,
-		},
-	}
-	provider, err := bridge.NewProvider(providerCfg)
-	if err != nil {
-		logger.Warn("AI provider not available", "error", err)
-	} else {
-		if cp, ok := provider.(*bridge.ClaudeProvider); ok {
-			if !cp.Available() {
-				logger.Warn("claude CLI not found on PATH — non-deterministic pipes will return errors")
-			} else {
-				logger.Info("AI provider ready", "provider", cfg.Provider.Name, "model", cfg.Provider.Model)
-			}
-		}
-	}
-
-	// 5. Register all pipe handlers
+	// 3. Register all pipes as subprocesses
 	reg := pipe.NewRegistry()
+	env := pipeEnv(cfg, cfgDir)
 
-	// Memory pipe
-	if memCfg, ok := cfg.Pipes["memory"]; ok {
-		reg.Register(memCfg.ToDefinition(), memoryPipe.NewHandler(memStore))
-	}
-
-	// Calendar pipe
-	if calCfg, ok := cfg.Pipes["calendar"]; ok {
-		var calClient calendarPipe.CalendarClient
-		home, _ := os.UserHomeDir()
-		calConfigDir := filepath.Join(home, ".config", "virgil")
-		gc, err := calendarPipe.NewGoogleClient(calConfigDir)
-		if err != nil {
-			logger.Warn("calendar not configured", "error", err)
-		} else {
-			calClient = gc
+	for name, pc := range cfg.Pipes {
+		handlerPath := pc.HandlerPath()
+		if err := validateExecutable(handlerPath); err != nil {
+			logger.Warn("pipe handler not available, skipping", "pipe", name, "error", err)
+			continue
 		}
-		reg.Register(calCfg.ToDefinition(), calendarPipe.NewHandler(calClient))
-	}
-
-	// Draft pipe
-	if draftCfg, ok := cfg.Pipes["draft"]; ok {
-		if provider != nil {
-			reg.Register(draftCfg.ToDefinition(), draftPipe.NewHandler(provider, draftCfg))
-		} else {
-			reg.Register(draftCfg.ToDefinition(), errorHandler("draft", "AI provider not configured"))
+		sc := pipe.SubprocessConfig{
+			Name:       name,
+			Executable: handlerPath,
+			WorkDir:    pc.Dir,
+			Timeout:    pc.TimeoutDuration(),
+			Env:        env,
 		}
-	}
-
-	// Chat pipe
-	if chatCfg, ok := cfg.Pipes["chat"]; ok {
-		if provider != nil {
-			reg.Register(chatCfg.ToDefinition(), chatPipe.NewHandler(provider))
-		} else {
-			reg.Register(chatCfg.ToDefinition(), errorHandler("chat", "AI provider not configured"))
+		reg.Register(pc.ToDefinition(), pipe.SubprocessHandler(sc))
+		if pc.Streaming {
+			reg.RegisterStream(name, pipe.SubprocessStreamHandler(sc))
 		}
+		logger.Info("registered pipe", "pipe", name, "handler", handlerPath)
 	}
 
 	// Build router from registered definitions
-	home, _ := os.UserHomeDir()
-	missLogPath := filepath.Join(home, ".local", "share", "virgil", "misses.jsonl")
+	missLogPath := filepath.Join(config.DataDir(), "misses.jsonl")
 	missLog, err := router.NewMissLog(missLogPath)
 	if err != nil {
 		logger.Warn("miss log not available", "error", err)
@@ -199,18 +153,36 @@ func runServer(cfgDir string, logger *slog.Logger) error {
 	observer := runtime.NewLogObserver(logger, cfg.LogLevel)
 	run := runtime.New(reg, observer)
 
-	// 6. Start HTTP server
+	// 4. Start HTTP server
 	srv := server.New(cfg, rt, p, pl, run, reg, logger)
 	return srv.Start()
 }
 
-func errorHandler(name, msg string) pipe.Handler {
-	return func(input envelope.Envelope, flags map[string]string) envelope.Envelope {
-		out := envelope.New(name, "error")
-		out.Error = &envelope.EnvelopeError{
-			Message:  msg,
-			Severity: "fatal",
-		}
-		return out
+// pipeEnv builds the environment variable list passed to pipe subprocesses.
+func pipeEnv(cfg *config.Config, cfgDir string) []string {
+	env := os.Environ()
+	env = append(env,
+		pipehost.EnvDBPath+"="+cfg.DatabasePath,
+		pipehost.EnvConfigDir+"="+cfgDir,
+		pipehost.EnvUserDir+"="+config.UserDir(),
+		pipehost.EnvProvider+"="+cfg.Provider.Name,
+		pipehost.EnvModel+"="+cfg.Provider.Model,
+		pipehost.EnvProviderBinary+"="+cfg.Provider.Binary,
+	)
+	return env
+}
+
+// validateExecutable checks that the file at path exists and is executable.
+func validateExecutable(path string) error {
+	info, err := os.Stat(path)
+	if err != nil {
+		return err
 	}
+	if info.IsDir() {
+		return fmt.Errorf("%s is a directory", path)
+	}
+	if info.Mode()&0o111 == 0 {
+		return fmt.Errorf("%s is not executable", path)
+	}
+	return nil
 }

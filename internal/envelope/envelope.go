@@ -1,11 +1,36 @@
 package envelope
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"net"
 	"reflect"
 	"strings"
 	"time"
+)
+
+// Severity constants for EnvelopeError.
+const (
+	SeverityFatal = "fatal"
+	SeverityError = "error"
+	SeverityWarn  = "warn"
+)
+
+// ContentType constants.
+const (
+	ContentText       = "text"
+	ContentList       = "list"
+	ContentStructured = "structured"
+	ContentBinary     = "binary"
+)
+
+// SSE constants shared between server and client.
+const (
+	SSEEventChunk  = "chunk"
+	SSEEventDone   = "done"
+	SSEContentType = "text/event-stream"
 )
 
 type Envelope struct {
@@ -34,26 +59,72 @@ func New(pipe, action string) Envelope {
 	}
 }
 
+// NewFatalError creates an envelope representing a fatal error from a named pipe.
+func NewFatalError(pipe, message string) Envelope {
+	out := New(pipe, "error")
+	out.Error = FatalError(message)
+	return out
+}
+
+// FatalError returns a non-retryable fatal EnvelopeError.
+func FatalError(message string) *EnvelopeError {
+	return &EnvelopeError{
+		Message:  message,
+		Severity: SeverityFatal,
+	}
+}
+
+// NewRetryableError creates an envelope representing a retryable error from a named pipe.
+func NewRetryableError(pipe, message string) Envelope {
+	out := New(pipe, "error")
+	out.Error = &EnvelopeError{
+		Message:   message,
+		Severity:  SeverityError,
+		Retryable: true,
+	}
+	return out
+}
+
+// ClassifyError wraps err into an EnvelopeError, marking timeouts as retryable.
+func ClassifyError(prefix string, err error) *EnvelopeError {
+	if isTimeout(err) {
+		return &EnvelopeError{
+			Message:   fmt.Sprintf("%s: %v", prefix, err),
+			Severity:  SeverityError,
+			Retryable: true,
+		}
+	}
+	return FatalError(fmt.Sprintf("%s: %v", prefix, err))
+}
+
+func isTimeout(err error) bool {
+	if errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+	var netErr net.Error
+	return errors.As(err, &netErr) && netErr.Timeout()
+}
+
 func ContentToText(content any, contentType string) string {
 	if content == nil {
 		return ""
 	}
 
 	switch contentType {
-	case "text":
+	case ContentText:
 		s, ok := content.(string)
 		if ok {
 			return s
 		}
 		return fmt.Sprintf("%v", content)
 
-	case "list":
+	case ContentList:
 		return renderList(content)
 
-	case "structured":
+	case ContentStructured:
 		return renderStructured(content)
 
-	case "binary":
+	case ContentBinary:
 		return "[binary content]"
 
 	default:

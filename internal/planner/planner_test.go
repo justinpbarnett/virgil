@@ -19,6 +19,13 @@ func testPlanner() *Planner {
 				},
 			},
 			{
+				Requires: []string{"verb", "source", "modifier"},
+				Plan: []config.PlanStep{
+					{Pipe: "{source}", Flags: map[string]string{"range": "{modifier}"}},
+					{Pipe: "{verb}", Flags: map[string]string{"type": "summary"}},
+				},
+			},
+			{
 				Requires: []string{"verb", "type"},
 				Plan: []config.PlanStep{
 					{Pipe: "{verb}", Flags: map[string]string{"type": "{type}", "topic": "{topic}"}},
@@ -28,6 +35,7 @@ func testPlanner() *Planner {
 				Requires: []string{"verb", "source"},
 				Plan: []config.PlanStep{
 					{Pipe: "{source}", Flags: map[string]string{"action": "retrieve"}},
+					{Pipe: "{verb}", Flags: map[string]string{}},
 				},
 			},
 			{
@@ -181,5 +189,112 @@ func TestPlanSourceResolution(t *testing.T) {
 	}
 	if plan.Steps[0].Pipe != "memory" {
 		t.Errorf("expected step 0 pipe=memory (resolved from notes), got %s", plan.Steps[0].Pipe)
+	}
+}
+
+func TestPlanVerbSourceModifier(t *testing.T) {
+	p := testPlanner()
+	parsed := parser.ParsedSignal{
+		Verb:     "draft",
+		Source:   "calendar",
+		Modifier: "today",
+	}
+	route := router.RouteResult{Pipe: "draft"}
+
+	plan := p.Plan(route, parsed)
+
+	if len(plan.Steps) != 2 {
+		t.Fatalf("expected 2 steps, got %d", len(plan.Steps))
+	}
+	if plan.Steps[0].Pipe != "calendar" {
+		t.Errorf("expected step 0 pipe=calendar, got %s", plan.Steps[0].Pipe)
+	}
+	if plan.Steps[0].Flags["range"] != "today" {
+		t.Errorf("expected range=today, got %s", plan.Steps[0].Flags["range"])
+	}
+	if plan.Steps[1].Pipe != "draft" {
+		t.Errorf("expected step 1 pipe=draft, got %s", plan.Steps[1].Pipe)
+	}
+	if plan.Steps[1].Flags["type"] != "summary" {
+		t.Errorf("expected type=summary, got %s", plan.Steps[1].Flags["type"])
+	}
+}
+
+func TestPlanVerbSourceDifferentPipes(t *testing.T) {
+	p := testPlanner()
+	parsed := parser.ParsedSignal{
+		Verb:   "draft",
+		Source: "calendar",
+	}
+	route := router.RouteResult{Pipe: "draft"}
+
+	plan := p.Plan(route, parsed)
+
+	if len(plan.Steps) != 2 {
+		t.Fatalf("expected 2 steps (calendar→draft), got %d", len(plan.Steps))
+	}
+	if plan.Steps[0].Pipe != "calendar" {
+		t.Errorf("expected step 0 pipe=calendar, got %s", plan.Steps[0].Pipe)
+	}
+	if plan.Steps[1].Pipe != "draft" {
+		t.Errorf("expected step 1 pipe=draft, got %s", plan.Steps[1].Pipe)
+	}
+}
+
+func TestPlanVerbSourceSamePipeCollapsed(t *testing.T) {
+	p := testPlanner()
+	parsed := parser.ParsedSignal{
+		Verb:   "memory",
+		Action: "retrieve",
+		Source: "memory",
+	}
+	route := router.RouteResult{Pipe: "memory"}
+
+	plan := p.Plan(route, parsed)
+
+	// verb=memory, source=memory → two steps resolve to memory→memory
+	// which should be collapsed to a single step
+	if len(plan.Steps) != 1 {
+		t.Fatalf("expected 1 step (collapsed memory→memory), got %d", len(plan.Steps))
+	}
+	if plan.Steps[0].Pipe != "memory" {
+		t.Errorf("expected pipe=memory, got %s", plan.Steps[0].Pipe)
+	}
+	if plan.Steps[0].Flags["action"] != "retrieve" {
+		t.Errorf("expected action=retrieve, got %s", plan.Steps[0].Flags["action"])
+	}
+}
+
+func TestPlanVerbSourceSamePipeCollapsedMergesFlags(t *testing.T) {
+	// Custom planner with a template that produces two same-pipe steps with different flags
+	templates := config.TemplatesConfig{
+		Templates: []config.TemplateEntry{
+			{
+				Requires: []string{"verb", "source"},
+				Plan: []config.PlanStep{
+					{Pipe: "{source}", Flags: map[string]string{"action": "retrieve"}},
+					{Pipe: "{verb}", Flags: map[string]string{"sort": "recent"}},
+				},
+			},
+		},
+	}
+	sources := map[string]string{"memory": "memory"}
+	p := New(templates, sources)
+
+	parsed := parser.ParsedSignal{
+		Verb:   "memory",
+		Source: "memory",
+	}
+	route := router.RouteResult{Pipe: "memory"}
+	plan := p.Plan(route, parsed)
+
+	if len(plan.Steps) != 1 {
+		t.Fatalf("expected 1 collapsed step, got %d", len(plan.Steps))
+	}
+	if plan.Steps[0].Flags["action"] != "retrieve" {
+		t.Errorf("expected action=retrieve from first step, got %s", plan.Steps[0].Flags["action"])
+	}
+	if plan.Steps[0].Flags["sort"] != "recent" {
+		t.Errorf("expected sort=recent merged from second step, got %s", plan.Steps[0].Flags["sort"])
 	}
 }

@@ -42,8 +42,7 @@ func New(
 	reg *pipe.Registry,
 	logger *slog.Logger,
 ) *Server {
-	home, _ := os.UserHomeDir()
-	pidPath := filepath.Join(home, ".local", "share", "virgil", "virgil.pid")
+	pidPath := filepath.Join(config.DataDir(), "virgil.pid")
 
 	return &Server{
 		config:   cfg,
@@ -58,14 +57,12 @@ func New(
 }
 
 func (s *Server) Start() error {
-	mux := http.NewServeMux()
-	mux.HandleFunc("POST /signal", s.handleSignal)
-	mux.HandleFunc("GET /health", s.handleHealth)
-
 	addr := net.JoinHostPort(s.config.Server.Host, strconv.Itoa(s.config.Server.Port))
 	s.server = &http.Server{
-		Addr:    addr,
-		Handler: mux,
+		Addr:              addr,
+		Handler:           s.Handler(),
+		ReadHeaderTimeout: 10 * time.Second,
+		IdleTimeout:       120 * time.Second,
 	}
 
 	if err := s.writePID(); err != nil {
