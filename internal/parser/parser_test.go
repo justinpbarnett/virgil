@@ -17,7 +17,6 @@ func testVocab() *Vocabulary {
 			"know":     "memory.retrieve",
 			"check":    "calendar",
 			"show":     "calendar",
-			"what's":   "calendar",
 		},
 		Types: map[string]string{
 			"blog":  "blog",
@@ -61,8 +60,10 @@ func TestParseCalendarToday(t *testing.T) {
 	p := New(testVocab())
 	result := p.Parse("what's on my calendar today")
 
-	if result.Verb != "calendar" {
-		t.Errorf("expected verb=calendar, got %s", result.Verb)
+	// "what's" is a stop word, not a verb — calendar routing comes from
+	// source=calendar + exact matches in triggers, not from vocabulary verbs.
+	if result.Verb != "" {
+		t.Errorf("expected verb empty, got %s", result.Verb)
 	}
 	if result.Source != "calendar" {
 		t.Errorf("expected source=calendar, got %s", result.Source)
@@ -141,6 +142,66 @@ func TestParseCaseInsensitive(t *testing.T) {
 	}
 	if result.Type != "blog" {
 		t.Errorf("expected type=blog, got %s", result.Type)
+	}
+}
+
+func TestParseInterrogativeRemember(t *testing.T) {
+	p := New(testVocab())
+	result := p.Parse("do you remember what my name is?")
+
+	if result.Verb != "memory" {
+		t.Errorf("expected verb=memory, got %s", result.Verb)
+	}
+	if result.Action != "retrieve" {
+		t.Errorf("expected action=retrieve (interrogative), got %s", result.Action)
+	}
+}
+
+func TestParseInterrogativeRememberNoQuestionMark(t *testing.T) {
+	p := New(testVocab())
+	result := p.Parse("can you remember my birthday")
+
+	if result.Verb != "memory" {
+		t.Errorf("expected verb=memory, got %s", result.Verb)
+	}
+	if result.Action != "retrieve" {
+		t.Errorf("expected action=retrieve (interrogative), got %s", result.Action)
+	}
+}
+
+func TestParseImperativeRemember(t *testing.T) {
+	p := New(testVocab())
+	result := p.Parse("remember that my name is Justin")
+
+	if result.Verb != "memory" {
+		t.Errorf("expected verb=memory, got %s", result.Verb)
+	}
+	if result.Action != "store" {
+		t.Errorf("expected action=store (imperative), got %s", result.Action)
+	}
+}
+
+func TestParseQuestionMarkFlipsStore(t *testing.T) {
+	p := New(testVocab())
+	result := p.Parse("remember my name?")
+
+	if result.Action != "retrieve" {
+		t.Errorf("expected action=retrieve (question mark), got %s", result.Action)
+	}
+}
+
+func TestParsePunctuationStripped(t *testing.T) {
+	p := New(testVocab())
+	result := p.Parse("what do I know about OAuth?")
+
+	if result.Verb != "memory" {
+		t.Errorf("expected verb=memory, got %s", result.Verb)
+	}
+	if result.Action != "retrieve" {
+		t.Errorf("expected action=retrieve, got %s", result.Action)
+	}
+	if result.Topic != "oauth" {
+		t.Errorf("expected topic=oauth, got '%s'", result.Topic)
 	}
 }
 

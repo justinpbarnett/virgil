@@ -29,14 +29,35 @@ var stopWords = map[string]bool{
 	"about": true, "do": true, "i": true, "it": true,
 	"me": true, "and": true, "or": true, "but": true,
 	"with": true, "from": true, "post": true,
-	"what": true, "how": true, "when": true, "where": true,
-	"can": true, "does": true, "will": true,
+	"what": true, "what's": true, "how": true, "when": true, "where": true,
+	"can": true, "does": true, "did": true, "will": true,
+	"you": true, "could": true, "would": true, "should": true,
+	"are": true, "was": true, "were": true, "has": true, "have": true,
+}
+
+// interrogativeWords are words that, when appearing before a verb,
+// indicate the signal is a question rather than a command.
+var interrogativeWords = map[string]bool{
+	"do": true, "does": true, "did": true,
+	"can": true, "could": true,
+	"would": true, "should": true, "will": true,
+	"is": true, "are": true, "was": true, "were": true,
+	"has": true, "have": true,
+}
+
+// CleanToken strips trailing punctuation from a word.
+func CleanToken(s string) string {
+	return strings.TrimRight(s, ".,?!;:")
 }
 
 func (p *Parser) Parse(signal string) ParsedSignal {
+	signal = strings.TrimSpace(signal)
 	result := ParsedSignal{Raw: signal}
 	lower := strings.ToLower(signal)
 	words := strings.Fields(lower)
+	for i, w := range words {
+		words[i] = CleanToken(w)
+	}
 	used := make([]bool, len(words))
 
 	// Try multi-word modifiers first
@@ -66,6 +87,7 @@ func (p *Parser) Parse(signal string) ParsedSignal {
 	}
 
 	// Extract verb (first match wins)
+	verbIdx := -1
 	for i, w := range words {
 		if used[i] {
 			continue
@@ -79,7 +101,30 @@ func (p *Parser) Parse(signal string) ParsedSignal {
 				result.Verb = mapping
 			}
 			used[i] = true
+			verbIdx = i
 			break
+		}
+	}
+
+	// Interrogative detection: if the signal is a question and the action
+	// would be "store", flip to "retrieve". Catches patterns like
+	// "do you remember X?" where "remember" maps to store but the intent
+	// is retrieval.
+	if result.Action == "store" {
+		interrogative := false
+		if verbIdx > 0 {
+			for j := 0; j < verbIdx; j++ {
+				if interrogativeWords[words[j]] {
+					interrogative = true
+					break
+				}
+			}
+		}
+		if !interrogative && strings.HasSuffix(lower, "?") {
+			interrogative = true
+		}
+		if interrogative {
+			result.Action = "retrieve"
 		}
 	}
 

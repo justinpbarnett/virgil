@@ -1,7 +1,6 @@
 name: calendar
 description: Reads events from calendar services.
 category: time
-log_level: ""
 
 triggers:
   exact:
@@ -31,7 +30,6 @@ vocabulary:
   verbs:
     check: calendar
     show: calendar
-    "what's": calendar
   types: {}
   sources:
     calendar: calendar

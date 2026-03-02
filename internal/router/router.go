@@ -56,11 +56,14 @@ func NewRouter(defs []pipe.Definition, missLog *MissLog, logger *slog.Logger) *R
 			r.exactMap[strings.ToLower(exact)] = def.Name
 		}
 
-		// Build keyword inverted index
-		r.pipeKeywords[def.Name] = def.Triggers.Keywords
-		for _, kw := range def.Triggers.Keywords {
-			lower := strings.ToLower(kw)
-			r.keywordIndex[lower] = append(r.keywordIndex[lower], def.Name)
+		// Build keyword inverted index (pre-lowered for scoring)
+		lowered := make([]string, len(def.Triggers.Keywords))
+		for i, kw := range def.Triggers.Keywords {
+			lowered[i] = strings.ToLower(kw)
+		}
+		r.pipeKeywords[def.Name] = lowered
+		for _, lkw := range lowered {
+			r.keywordIndex[lkw] = append(r.keywordIndex[lkw], def.Name)
 		}
 
 		// Build category map
@@ -194,8 +197,8 @@ func (r *Router) scoreParsedMatch(def pipe.Definition, parsed parser.ParsedSigna
 	if parsed.Topic != "" {
 		topicWords := tokenize(parsed.Topic)
 		for _, tw := range topicWords {
-			for _, kw := range def.Triggers.Keywords {
-				if tw == strings.ToLower(kw) {
+			for _, kw := range r.pipeKeywords[def.Name] {
+				if tw == kw {
 					score += 0.5
 					break
 				}
@@ -211,5 +214,9 @@ func (r *Router) scoreParsedMatch(def pipe.Definition, parsed parser.ParsedSigna
 }
 
 func tokenize(s string) []string {
-	return strings.Fields(strings.ToLower(s))
+	fields := strings.Fields(strings.ToLower(s))
+	for i, f := range fields {
+		fields[i] = parser.CleanToken(f)
+	}
+	return fields
 }
