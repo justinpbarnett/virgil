@@ -26,9 +26,10 @@ The calendar pipe requires Google Calendar API credentials.
 Run the token flow to generate `~/.config/virgil/google-token.json`:
 
 ```bash
-# A helper command for this will be added in a future version.
-# For now, use the Google OAuth2 playground or a script to generate the token.
+just auth
 ```
+
+This opens your browser for Google authorization. After you approve, the token is saved automatically.
 
 ### Expected File Locations
 

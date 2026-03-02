@@ -12,5 +12,9 @@ start: build
 server: build
     ./bin/virgil --server
 
+auth:
+    go build -o bin/auth ./cmd/auth
+    ./bin/auth
+
 lint:
     golangci-lint run ./...
