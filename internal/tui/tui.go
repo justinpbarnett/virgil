@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -20,9 +21,14 @@ type model struct {
 	waiting        bool
 	dotPhase       int
 	activeStreamID int
+	cancelFn       context.CancelFunc
+	lastEscTime    time.Time
 }
 
-const maxMessages = 200
+const (
+	maxMessages  = 200
+	escapeWindow = 400 * time.Millisecond
+)
 
 type tickMsg struct{}
 
@@ -67,9 +73,31 @@ func (m model) Init() tea.Cmd {
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
+		if msg.Type != tea.KeyEsc {
+			m.lastEscTime = time.Time{}
+		}
+
 		switch msg.Type {
 		case tea.KeyCtrlC:
 			return m, tea.Quit
+		case tea.KeyEsc:
+			if m.cancelFn == nil {
+				break
+			}
+			now := time.Now()
+			if m.lastEscTime.IsZero() || now.Sub(m.lastEscTime) > escapeWindow {
+				m.lastEscTime = now
+				return m, nil
+			}
+			m.cancelFn()
+			m.activeStreamID++
+			m.waiting = false
+			m.pending.Reset()
+			m.cancelFn = nil
+			m.lastEscTime = time.Time{}
+			m.appendMessage("virgil > [cancelled]")
+			m.appendMessage("")
+			return m, nil
 		case tea.KeyEnter:
 			input := m.textInput.Value()
 			if strings.TrimSpace(input) == "" {
@@ -82,8 +110,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.dotPhase = 0
 			m.activeStreamID++
 			streamID := m.activeStreamID
+			ctx, cancel := context.WithCancel(context.Background())
+			m.cancelFn = cancel
 			return m, tea.Batch(
-				startStream(m.serverAddr, input, streamID),
+				startStream(ctx, m.serverAddr, input, streamID),
 				tickCmd(),
 			)
 		}
@@ -109,6 +139,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.waiting = false
+		m.cancelFn = nil
+		m.lastEscTime = time.Time{}
 		if msg.err != nil {
 			m.appendMessage(fmt.Sprintf("error: %v", msg.err))
 		} else if m.pending.Len() > 0 {
@@ -147,6 +179,10 @@ func (m model) View() string {
 		b.WriteString("\n")
 	}
 
+	if !m.lastEscTime.IsZero() {
+		b.WriteString("press Esc again to cancel\n")
+	}
+
 	b.WriteString(m.textInput.View())
 	b.WriteString("\n")
 
@@ -159,9 +195,9 @@ func tickCmd() tea.Cmd {
 	})
 }
 
-func startStream(addr, text string, streamID int) tea.Cmd {
+func startStream(ctx context.Context, addr, text string, streamID int) tea.Cmd {
 	return func() tea.Msg {
-		reader, err := openSSEStream(addr, text)
+		reader, err := openSSEStream(ctx, addr, text)
 		if err != nil {
 			return streamDoneMsg{streamID: streamID, err: err}
 		}

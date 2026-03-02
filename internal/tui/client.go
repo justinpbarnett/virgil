@@ -3,6 +3,7 @@ package tui
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -66,8 +67,8 @@ type sseReader struct {
 	body    io.ReadCloser
 }
 
-func openSSEStream(serverAddr, text string) (*sseReader, error) {
-	req, err := http.NewRequest("POST", signalURL(serverAddr), signalBody(text))
+func openSSEStream(ctx context.Context, serverAddr, text string) (*sseReader, error) {
+	req, err := http.NewRequestWithContext(ctx, "POST", signalURL(serverAddr), signalBody(text))
 	if err != nil {
 		return nil, fmt.Errorf("creating request: %w", err)
 	}
