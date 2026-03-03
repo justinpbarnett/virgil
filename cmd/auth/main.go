@@ -30,7 +30,12 @@ func main() {
 		os.Exit(1)
 	}
 
-	config, err := google.ConfigFromJSON(credData, "https://www.googleapis.com/auth/calendar.readonly")
+	config, err := google.ConfigFromJSON(credData,
+		"https://www.googleapis.com/auth/calendar.readonly",
+		"https://www.googleapis.com/auth/gmail.readonly",
+		"https://www.googleapis.com/auth/gmail.send",
+		"https://www.googleapis.com/auth/gmail.modify",
+	)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: invalid credentials file: %v\n", err)
 		os.Exit(1)
