@@ -272,6 +272,137 @@ func TestListState(t *testing.T) {
 	}
 }
 
+// --- Invocations tests ---
+
+func TestSaveInvocation(t *testing.T) {
+	s := tempDB(t)
+	if err := s.SaveInvocation("educate", "teach me Go", "What do you already know?"); err != nil {
+		t.Fatalf("SaveInvocation: %v", err)
+	}
+}
+
+func TestSearchInvocations_Basic(t *testing.T) {
+	s := tempDB(t)
+	s.SaveInvocation("educate", "teach me Go concurrency", "What do you know about goroutines?")
+	s.SaveInvocation("educate", "teach me Python", "Let's start with Python basics.")
+	s.SaveInvocation("draft", "write a blog about Go", "Here is a draft blog post about Go.")
+
+	results, err := s.SearchInvocations("Go", "", 10, time.Time{})
+	if err != nil {
+		t.Fatalf("SearchInvocations: %v", err)
+	}
+	if len(results) == 0 {
+		t.Fatal("expected results for 'Go'")
+	}
+}
+
+func TestSearchInvocations_FilterByPipe(t *testing.T) {
+	s := tempDB(t)
+	s.SaveInvocation("educate", "teach me Go", "goroutines question")
+	s.SaveInvocation("draft", "write about Go", "blog about Go")
+
+	results, err := s.SearchInvocations("Go", "educate", 10, time.Time{})
+	if err != nil {
+		t.Fatalf("SearchInvocations: %v", err)
+	}
+	for _, r := range results {
+		if r.Pipe != "educate" {
+			t.Errorf("expected pipe=educate, got %s", r.Pipe)
+		}
+	}
+}
+
+func TestSearchInvocations_FilterBySince(t *testing.T) {
+	s := tempDB(t)
+	s.SaveInvocation("educate", "teach me Go", "goroutines")
+
+	future := time.Now().Add(time.Hour)
+	results, err := s.SearchInvocations("Go", "", 10, future)
+	if err != nil {
+		t.Fatalf("SearchInvocations: %v", err)
+	}
+	if len(results) != 0 {
+		t.Errorf("expected 0 results for future since, got %d", len(results))
+	}
+}
+
+func TestRetrieveContext_WorkingState(t *testing.T) {
+	s := tempDB(t)
+	s.PutState("project", "current", "working on virgil memory refactor")
+
+	results, err := s.RetrieveContext("", []ContextRequest{{Type: "working_state"}}, 500)
+	if err != nil {
+		t.Fatalf("RetrieveContext: %v", err)
+	}
+	if len(results) == 0 {
+		t.Fatal("expected working_state results")
+	}
+	found := false
+	for _, r := range results {
+		if r.Type == "working_state" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("expected entry with type=working_state")
+	}
+}
+
+func TestRetrieveContext_TopicHistory(t *testing.T) {
+	s := tempDB(t)
+	s.SaveInvocation("educate", "teach me Go channels", "What do you know about channels?")
+
+	results, err := s.RetrieveContext("Go", []ContextRequest{{Type: "topic_history"}}, 500)
+	if err != nil {
+		t.Fatalf("RetrieveContext: %v", err)
+	}
+	found := false
+	for _, r := range results {
+		if r.Type == "topic_history" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("expected entry with type=topic_history")
+	}
+}
+
+func TestRetrieveContext_BudgetEnforced(t *testing.T) {
+	s := tempDB(t)
+	// Insert enough content to potentially exceed a small budget
+	for i := 0; i < 10; i++ {
+		s.SaveInvocation("educate", "teach me Go topic "+string(rune('A'+i)), "long answer about Go "+string(rune('A'+i)))
+	}
+
+	results, err := s.RetrieveContext("Go", []ContextRequest{{Type: "topic_history"}}, 50)
+	if err != nil {
+		t.Fatalf("RetrieveContext: %v", err)
+	}
+	totalChars := 0
+	for _, r := range results {
+		totalChars += len(r.Content)
+	}
+	// Budget is 50 tokens = 200 chars
+	if totalChars > 200 {
+		t.Errorf("expected total chars <= 200 (budget), got %d", totalChars)
+	}
+}
+
+func TestRetrieveContext_DisabledReturnsEmpty(t *testing.T) {
+	s := tempDB(t)
+	s.PutState("project", "current", "some state")
+
+	results, err := s.RetrieveContext("", []ContextRequest{}, 500)
+	if err != nil {
+		t.Fatalf("RetrieveContext: %v", err)
+	}
+	if len(results) != 0 {
+		t.Errorf("expected 0 results for empty requests, got %d", len(results))
+	}
+}
+
 func TestListState_Empty(t *testing.T) {
 	s := tempDB(t)
 
