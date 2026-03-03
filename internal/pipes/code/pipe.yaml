@@ -1,0 +1,149 @@
+name: code
+description: Generates source code from specifications and examples.
+category: dev
+streaming: true
+timeout: 120s
+
+triggers:
+  exact:
+    - "write code"
+    - "generate code"
+    - "write a function"
+  keywords:
+    - code
+    - generate
+    - function
+    - module
+    - refactor
+  patterns:
+    - "code {type}"
+    - "generate {type}"
+    - "implement {type} for {topic}"
+    - "write {type} for {topic}"
+    - "refactor {topic}"
+
+flags:
+  type:
+    description: What kind of code to produce.
+    values: [function, module, test, refactor]
+    default: function
+  lang:
+    description: Target programming language.
+    default: ""
+  style:
+    description: Code style preference.
+    values: [idiomatic, minimal, verbose]
+    default: idiomatic
+
+vocabulary:
+  verbs:
+    code: code
+    generate: code
+    refactor: code.refactor
+  types:
+    function: function
+    func: function
+    module: module
+    package: module
+    test: test
+    refactor: refactor
+  sources: {}
+  modifiers: {}
+
+templates:
+  priority: 50
+  entries:
+    - requires: [verb, type, source]
+      plan:
+        - pipe: "{source}"
+          flags: { action: retrieve, sort: recent, limit: "10", topic: "{topic}" }
+        - pipe: "{verb}"
+          flags: { type: "{type}" }
+
+    - requires: [verb, type]
+      plan:
+        - pipe: "{verb}"
+          flags: { type: "{type}", topic: "{topic}" }
+
+    - requires: [verb]
+      plan:
+        - pipe: "{verb}"
+          flags: { type: function }
+
+prompts:
+  system: |
+    You are a precise code generator. You produce clean, compilable,
+    spec-compliant source code.
+
+    Rules:
+    - Follow the target language's idioms and conventions exactly.
+    - Include necessary imports and type definitions.
+    - Handle errors explicitly — no silent failures, no ignored returns.
+    - Name things clearly. Favor readability over brevity.
+    - Do not explain the code. Output only the code itself.
+    - When given existing code as context, match its style — naming
+      conventions, error patterns, import style, comment density.
+    - When given a specification, implement every requirement. Do not
+      skip edge cases. Do not add features not in the spec.
+
+  templates:
+    function: |
+      Write a function based on the following specification.
+
+      Specification:
+      {{.Content}}
+
+      {{if .Topic}}Function purpose: {{.Topic}}{{end}}
+      {{if .Lang}}Language: {{.Lang}}{{end}}
+      {{if .Style}}Style: {{.Style}}{{end}}
+
+      Produce only the function, its doc comment, and any helper types
+      it needs. Include imports if the function requires external packages.
+
+    module: |
+      Write a complete module based on the following specification.
+
+      Specification:
+      {{.Content}}
+
+      {{if .Topic}}Module purpose: {{.Topic}}{{end}}
+      {{if .Lang}}Language: {{.Lang}}{{end}}
+      {{if .Style}}Style: {{.Style}}{{end}}
+
+      Produce a complete, self-contained file: package declaration,
+      imports, type definitions, exported functions, and internal helpers.
+      Order declarations top-down — types first, then constructors,
+      then methods, then helpers.
+
+    test: |
+      Write tests for the following code.
+
+      Source code:
+      {{.Content}}
+
+      {{if .Topic}}Focus on: {{.Topic}}{{end}}
+      {{if .Lang}}Language: {{.Lang}}{{end}}
+      {{if .Style}}Style: {{.Style}}{{end}}
+
+      Produce comprehensive tests:
+      - Happy path for each exported function.
+      - Edge cases: empty input, nil values, boundary conditions.
+      - Error paths: verify error returns and messages.
+      - Use table-driven tests when the language supports them (Go, Rust).
+      - Use descriptive test names that state what is being verified.
+      - Do not test unexported/private functions directly.
+
+    refactor: |
+      Refactor the following code. Preserve its external behavior exactly.
+
+      Source code:
+      {{.Content}}
+
+      {{if .Topic}}Focus: {{.Topic}}{{end}}
+      {{if .Lang}}Language: {{.Lang}}{{end}}
+      {{if .Style}}Target style: {{.Style}}{{end}}
+
+      Improve structure, naming, and clarity. Eliminate duplication.
+      Simplify control flow. Do not change the public API — same
+      function signatures, same types, same behavior. If you find
+      a bug, fix it and note the fix in a comment.
