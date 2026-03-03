@@ -3,6 +3,7 @@ package draft
 import (
 	"context"
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/justinpbarnett/virgil/internal/config"
@@ -16,8 +17,10 @@ func testConfig() config.PipeConfig {
 		Prompts: config.PromptsConfig{
 			System: "You are a professional writer.",
 			Templates: map[string]string{
-				"blog":  "Write a blog post.\n\nSource material:\n{{.Content}}\n\n{{if .Topic}}Focus on: {{.Topic}}{{end}}",
-				"email": "Draft an email.\n\nContext:\n{{.Content}}",
+				"blog":        "Write a blog post.\n\nSource material:\n{{.Content}}\n\n{{if .Topic}}Focus on: {{.Topic}}{{end}}",
+				"email":       "Draft an email.\n\nContext:\n{{.Content}}",
+				"spec-create": "Create spec.\n\nAnalysis:\n{{.Content}}\n\n{{if .CodebaseContext}}Codebase context:\n{{.CodebaseContext}}\n{{end}}",
+				"spec-update": "Update spec.\n\nCurrent spec:\n{{.State}}\n\nNew analysis:\n{{.Content}}",
 			},
 		},
 	}
@@ -177,5 +180,161 @@ func TestDraftTemplateResolution(t *testing.T) {
 				t.Errorf("unexpected error: %v", result.Error)
 			}
 		})
+	}
+}
+
+func TestPreparePrompt_SpecCreate(t *testing.T) {
+	cfg := testConfig()
+	compiled := CompileTemplates(cfg)
+
+	input := envelope.New("study", "analyze")
+	input.Content = "Analysis of the codebase shows..."
+	input.ContentType = "text"
+
+	flags := map[string]string{
+		"type":    "spec",
+		"phase":   "create",
+		"context": "func main() { ... }",
+	}
+
+	_, userPrompt, errEnv := preparePrompt(compiled, cfg, input, flags)
+	if errEnv != nil {
+		t.Fatalf("unexpected error: %v", errEnv)
+	}
+	if !strings.Contains(userPrompt, "Create spec.") {
+		t.Errorf("expected spec-create template, got: %s", userPrompt)
+	}
+	if !strings.Contains(userPrompt, "Analysis of the codebase shows...") {
+		t.Errorf("expected content in prompt, got: %s", userPrompt)
+	}
+	if !strings.Contains(userPrompt, "func main() { ... }") {
+		t.Errorf("expected codebase context in prompt, got: %s", userPrompt)
+	}
+}
+
+func TestPreparePrompt_SpecCreateDefaultPhase(t *testing.T) {
+	cfg := testConfig()
+	compiled := CompileTemplates(cfg)
+
+	input := envelope.New("study", "analyze")
+	input.Content = "Analysis output"
+	input.ContentType = "text"
+
+	// phase absent defaults to create in the pipe config, so the caller
+	// would pass "create". Verify the compound key resolves.
+	flags := map[string]string{
+		"type":  "spec",
+		"phase": "create",
+	}
+
+	_, userPrompt, errEnv := preparePrompt(compiled, cfg, input, flags)
+	if errEnv != nil {
+		t.Fatalf("unexpected error: %v", errEnv)
+	}
+	if !strings.Contains(userPrompt, "Create spec.") {
+		t.Errorf("expected spec-create template, got: %s", userPrompt)
+	}
+}
+
+func TestPreparePrompt_SpecUpdate(t *testing.T) {
+	cfg := testConfig()
+	compiled := CompileTemplates(cfg)
+
+	input := envelope.New("study", "analyze")
+	input.Content = "New findings from round 2"
+	input.ContentType = "text"
+
+	flags := map[string]string{
+		"type":  "spec",
+		"phase": "update",
+		"state": "# Existing Spec\n## Summary\nThis is the current spec.",
+	}
+
+	_, userPrompt, errEnv := preparePrompt(compiled, cfg, input, flags)
+	if errEnv != nil {
+		t.Fatalf("unexpected error: %v", errEnv)
+	}
+	if !strings.Contains(userPrompt, "Update spec.") {
+		t.Errorf("expected spec-update template, got: %s", userPrompt)
+	}
+	if !strings.Contains(userPrompt, "# Existing Spec") {
+		t.Errorf("expected state in prompt, got: %s", userPrompt)
+	}
+	if !strings.Contains(userPrompt, "New findings from round 2") {
+		t.Errorf("expected content in prompt, got: %s", userPrompt)
+	}
+}
+
+func TestPreparePrompt_CompoundKeyFallback(t *testing.T) {
+	cfg := testConfig()
+	compiled := CompileTemplates(cfg)
+
+	input := envelope.New("input", "test")
+	input.Content = "some content"
+	input.ContentType = "text"
+
+	// phase=nonexistent means compound key "spec-nonexistent" won't match.
+	// No plain "spec" template exists either, so it falls back to raw content.
+	flags := map[string]string{
+		"type":  "spec",
+		"phase": "nonexistent",
+	}
+
+	_, userPrompt, errEnv := preparePrompt(compiled, cfg, input, flags)
+	if errEnv != nil {
+		t.Fatalf("unexpected error: %v", errEnv)
+	}
+	// Should fall back to raw content since neither "spec-nonexistent" nor "spec" exist
+	if userPrompt != "some content" {
+		t.Errorf("expected raw content fallback, got: %s", userPrompt)
+	}
+}
+
+func TestPreparePrompt_NonSpecPhaseIgnored(t *testing.T) {
+	cfg := testConfig()
+	compiled := CompileTemplates(cfg)
+
+	input := envelope.New("input", "test")
+	input.Content = "blog material"
+	input.ContentType = "text"
+
+	// type=blog, phase=update => compound key "blog-update" doesn't exist,
+	// falls back to "blog" template.
+	flags := map[string]string{
+		"type":  "blog",
+		"phase": "update",
+	}
+
+	_, userPrompt, errEnv := preparePrompt(compiled, cfg, input, flags)
+	if errEnv != nil {
+		t.Fatalf("unexpected error: %v", errEnv)
+	}
+	if !strings.Contains(userPrompt, "Write a blog post.") {
+		t.Errorf("expected blog template, got: %s", userPrompt)
+	}
+}
+
+func TestTemplateData_NewFields(t *testing.T) {
+	cfg := testConfig()
+	compiled := CompileTemplates(cfg)
+
+	// Verify State is accessible in spec-update template
+	data := templateData{
+		Content: "analysis results",
+		State:   "existing spec document",
+	}
+	result := executeTemplate(compiled, "spec-update", data)
+	if !strings.Contains(result, "existing spec document") {
+		t.Errorf("expected State in output, got: %s", result)
+	}
+
+	// Verify CodebaseContext is accessible in spec-create template
+	data2 := templateData{
+		Content:         "analysis output",
+		CodebaseContext: "relevant code snippets",
+	}
+	result2 := executeTemplate(compiled, "spec-create", data2)
+	if !strings.Contains(result2, "relevant code snippets") {
+		t.Errorf("expected CodebaseContext in output, got: %s", result2)
 	}
 }

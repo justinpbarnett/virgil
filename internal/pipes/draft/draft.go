@@ -1,9 +1,7 @@
 package draft
 
 import (
-	"bytes"
 	"context"
-	"fmt"
 	"log/slog"
 	"text/template"
 	"time"
@@ -12,26 +10,20 @@ import (
 	"github.com/justinpbarnett/virgil/internal/config"
 	"github.com/justinpbarnett/virgil/internal/envelope"
 	"github.com/justinpbarnett/virgil/internal/pipe"
+	"github.com/justinpbarnett/virgil/internal/pipeutil"
 )
 
 type templateData struct {
-	Content string
-	Topic   string
-	Tone    string
-	Length  string
+	Content         string
+	Topic           string
+	Tone            string
+	Length          string
+	State           string // existing document for updates
+	CodebaseContext string // relevant code context
 }
 
 // CompileTemplates pre-parses all prompt templates from the pipe config.
-func CompileTemplates(pipeConfig config.PipeConfig) map[string]*template.Template {
-	compiled := make(map[string]*template.Template)
-	for name, tmplStr := range pipeConfig.Prompts.Templates {
-		t, err := template.New(name).Parse(tmplStr)
-		if err == nil {
-			compiled[name] = t
-		}
-	}
-	return compiled
-}
+var CompileTemplates = pipeutil.CompileTemplates
 
 // preparePrompt extracts content from the input, resolves the template, and
 // returns the system prompt, user prompt, and an error envelope if the input is empty.
@@ -45,15 +37,25 @@ func preparePrompt(compiled map[string]*template.Template, pipeConfig config.Pip
 	}
 
 	systemPrompt = pipeConfig.Prompts.System
-	userPrompt, err := executeTemplate(compiled, flags["type"], templateData{
-		Content: content,
-		Topic:   flags["topic"],
-		Tone:    flags["tone"],
-		Length:  flags["length"],
-	})
-	if err != nil {
-		userPrompt = content
+
+	data := templateData{
+		Content:         content,
+		Topic:           flags["topic"],
+		Tone:            flags["tone"],
+		Length:          flags["length"],
+		State:           flags["state"],
+		CodebaseContext: flags["context"],
 	}
+
+	templateKey := flags["type"]
+	if phase := flags["phase"]; phase != "" && flags["type"] != "" {
+		compound := flags["type"] + "-" + phase
+		if _, ok := compiled[compound]; ok {
+			templateKey = compound
+		}
+	}
+
+	userPrompt = executeTemplate(compiled, templateKey, data)
 	return systemPrompt, userPrompt, nil
 }
 
@@ -140,20 +142,10 @@ func NewStreamHandlerWith(provider bridge.StreamingProvider, pipeConfig config.P
 	}
 }
 
-func executeTemplate(compiled map[string]*template.Template, draftType string, data templateData) (string, error) {
-	tmpl, ok := compiled[draftType]
-	if !ok {
-		if data.Content != "" {
-			return data.Content, nil
-		}
-		return "", fmt.Errorf("no template for type: %s", draftType)
+func executeTemplate(compiled map[string]*template.Template, draftType string, data templateData) string {
+	result, err := pipeutil.ExecuteTemplate(compiled, draftType, data)
+	if err != nil {
+		return data.Content
 	}
-
-	var buf bytes.Buffer
-	if err := tmpl.Execute(&buf, data); err != nil {
-		return "", fmt.Errorf("executing template: %w", err)
-	}
-
-	return buf.String(), nil
+	return result
 }
-

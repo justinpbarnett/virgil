@@ -3,7 +3,6 @@ description: Produces written content from input context and instructions.
 category: comms
 streaming: true
 timeout: 60s
-log_level: ""
 
 triggers:
   exact:
@@ -22,8 +21,12 @@ triggers:
 flags:
   type:
     description: What kind of content to produce.
-    values: [blog, email, pr, memo]
+    values: [blog, email, pr, memo, spec]
     default: ""
+  phase:
+    description: Create new content or update existing. Only used by spec type.
+    values: [create, update]
+    default: create
   tone:
     description: Writing tone.
     values: [formal, casual, technical]
@@ -40,11 +43,14 @@ vocabulary:
     compose: draft
     summarize: draft
     summary: draft
+    spec: draft
+    specify: draft
   types:
     blog: blog
     email: email
     pr: pr
     memo: memo
+    spec: spec
   sources: {}
   modifiers: {}
 
@@ -133,3 +139,41 @@ prompts:
       {{.Content}}
 
       {{if .Topic}}Focus on: {{.Topic}}{{end}}
+
+    spec-create: |
+      Create an implementation specification document from this analysis.
+
+      Analysis:
+      {{.Content}}
+
+      {{if .CodebaseContext}}
+      Codebase context:
+      {{.CodebaseContext}}
+      {{end}}
+
+      Write for builders. No fluff, no motivation sections, no business
+      justification. The document must include: Summary, Scope (in/out/boundary
+      decisions), Architecture (approach, components, interfaces), Implementation
+      Plan (ordered steps, file-level scope), Risks (with mitigations),
+      Decisions (empty initially), Open Questions (each with why-it-matters
+      and known options), and Acceptance Criteria (testable yes/no questions).
+
+      Mark all open questions explicitly. Mark uncertain assumptions with [?].
+      Implementation steps must be independently verifiable.
+
+    spec-update: |
+      Update this specification document with new analysis results.
+
+      Current spec:
+      {{.State}}
+
+      New analysis (resolved questions, implications, updated risks):
+      {{.Content}}
+
+      Rules:
+      - Move resolved questions from Open Questions to Decisions with rationale
+      - Update affected sections (scope, implementation plan, risks)
+      - Add any new open questions
+      - Do not remove or modify decisions from previous rounds
+      - If a new decision contradicts a previous one, flag it explicitly
+      - Keep the document structure intact — update sections surgically
