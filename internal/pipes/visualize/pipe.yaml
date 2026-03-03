@@ -1,0 +1,180 @@
+name: visualize
+description: Creates 3Blue1Brown-style animated visualizations from concept descriptions using Manim.
+category: comms
+streaming: false
+timeout: 120s
+
+triggers:
+  exact:
+    - "visualize this"
+    - "make an animation"
+    - "create a visualization"
+  keywords:
+    - visualize
+    - animate
+    - animation
+    - illustrate
+    - diagram
+    - visualization
+    - manim
+  patterns:
+    - "visualize {topic}"
+    - "animate {topic}"
+    - "illustrate {topic}"
+    - "create animation of {topic}"
+    - "make a visualization of {topic}"
+
+flags:
+  format:
+    description: Output format for the rendered visualization.
+    values: [mp4, gif, png]
+    default: mp4
+  quality:
+    description: Render quality — affects resolution and render time.
+    values: [low, medium, high]
+    default: low
+  style:
+    description: Visual style for the animation.
+    values: [3b1b, light, minimal]
+    default: 3b1b
+  duration:
+    description: Target animation duration.
+    values: [short, medium, long]
+    default: short
+
+vocabulary:
+  verbs:
+    visualize: visualize
+    animate: visualize
+    illustrate: visualize
+  types:
+    animation: animation
+    video: video
+    diagram: diagram
+    visualization: visualization
+  sources: {}
+  modifiers: {}
+
+templates:
+  priority: 50
+  entries:
+    - requires: [verb, type, source]
+      plan:
+        - pipe: "{source}"
+          flags: { action: retrieve, topic: "{topic}", limit: "10" }
+        - pipe: "{verb}"
+          flags: { type: "{type}", topic: "{topic}" }
+
+    - requires: [verb, source]
+      plan:
+        - pipe: "{source}"
+          flags: { action: retrieve, topic: "{topic}" }
+        - pipe: "{verb}"
+          flags: { topic: "{topic}" }
+
+    - requires: [verb, type]
+      plan:
+        - pipe: "{verb}"
+          flags: { type: "{type}", topic: "{topic}" }
+
+    - requires: [verb]
+      plan:
+        - pipe: "{verb}"
+          flags: { topic: "{topic}" }
+
+prompts:
+  system: |
+    You are an expert at creating 3Blue1Brown-style mathematical animations
+    using Manim Community Edition (the `manim` Python package, NOT manimgl).
+
+    Your job: given a concept, produce a COMPLETE, RUNNABLE Manim CE Python
+    script that creates a beautiful, pedagogically clear animation.
+
+    Rules:
+    1. Output ONLY the Python code. No explanation, no commentary.
+    2. Use `from manim import *` at the top.
+    3. Define exactly ONE Scene subclass.
+    4. The class name MUST be `GeneratedScene`.
+    5. Use smooth animations: Transform, FadeIn, FadeOut, Create, Write,
+       MoveToTarget, AnimationGroup. Avoid jarring cuts.
+    6. Use self.wait() between logical steps so the viewer can absorb.
+    7. Use color coding to distinguish mathematical objects:
+       - BLUE for primary objects
+       - YELLOW for highlights and emphasis
+       - WHITE for text and labels
+       - GREEN for positive/correct
+       - RED for negative/warnings
+    8. Use MathTex for mathematical expressions, Text for labels.
+    9. Keep text concise — this is a visual medium, not a textbook.
+    10. Build complexity gradually: start simple, add layers.
+    11. Position objects deliberately — use .to_edge(), .next_to(), .shift().
+    12. The animation should be self-contained and tell a complete visual story.
+
+    Common Manim CE imports and objects you can use:
+    - Geometric: Circle, Square, Rectangle, Line, Arrow, Dot, Polygon, Arc
+    - Text: Text, MathTex, Tex, Title, BulletedList
+    - Graphs: Axes, NumberPlane, FunctionGraph
+    - Animations: Create, Write, FadeIn, FadeOut, Transform, ReplacementTransform,
+      GrowFromCenter, DrawBorderThenFill, Indicate, Circumscribe
+    - Groups: VGroup, AnimationGroup
+    - Constants: UP, DOWN, LEFT, RIGHT, ORIGIN, PI, TAU, DEGREES
+
+  templates:
+    math: |
+      Create a Manim animation that visually explains the following
+      mathematical concept. Build intuition through geometric
+      representations, step-by-step derivations, and visual proofs
+      where possible.
+
+      Concept: {{.Topic}}
+      {{if .Content}}
+      Additional context:
+      {{.Content}}
+      {{end}}
+      {{if .Duration}}Target duration: {{.Duration}} ({{.DurationGuide}}){{end}}
+      {{if .Style}}Visual style: {{.StyleGuide}}{{end}}
+
+    concept: |
+      Create a Manim animation that explains the following concept
+      visually. Use analogies, diagrams, and step-by-step build-up
+      to make the concept intuitive.
+
+      Concept: {{.Topic}}
+      {{if .Content}}
+      Additional context:
+      {{.Content}}
+      {{end}}
+      {{if .Duration}}Target duration: {{.Duration}} ({{.DurationGuide}}){{end}}
+      {{if .Style}}Visual style: {{.StyleGuide}}{{end}}
+
+    code: |
+      Create a Manim animation that visualizes how the following
+      algorithm or code works. Show data structures, pointer movements,
+      state changes, and control flow visually.
+
+      Algorithm/Code: {{.Topic}}
+      {{if .Content}}
+      Code or description:
+      {{.Content}}
+      {{end}}
+      {{if .Duration}}Target duration: {{.Duration}} ({{.DurationGuide}}){{end}}
+      {{if .Style}}Visual style: {{.StyleGuide}}{{end}}
+
+    data: |
+      Create a Manim animation that visualizes the following data
+      or statistical concept. Use charts, graphs, distributions,
+      and animated transitions to tell the data's story.
+
+      Data/Concept: {{.Topic}}
+      {{if .Content}}
+      Data or context:
+      {{.Content}}
+      {{end}}
+      {{if .Duration}}Target duration: {{.Duration}} ({{.DurationGuide}}){{end}}
+      {{if .Style}}Visual style: {{.StyleGuide}}{{end}}
+
+format:
+  structured: |
+    {{if .error}}Visualization failed: {{.error}}{{else}}Visualization rendered: {{.path}}
+    Format: {{.format}} | Quality: {{.quality}}
+    {{.description}}{{end}}
