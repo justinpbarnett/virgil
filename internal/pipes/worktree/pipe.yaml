@@ -1,0 +1,41 @@
+name: worktree
+description: Creates an isolated git worktree for safe, branch-based development.
+category: dev
+
+triggers:
+  exact:
+    - "create worktree"
+  keywords:
+    - worktree
+    - branch
+    - isolate
+  patterns:
+    - "create worktree for {topic}"
+    - "worktree {topic}"
+
+flags:
+  branch:
+    description: Branch name to create. Derived from input if omitted.
+    default: ""
+  base:
+    description: Base ref to branch from.
+    default: HEAD
+  path:
+    description: Parent directory for the worktree. Defaults to .worktrees/ in the repo root.
+    default: ""
+
+vocabulary:
+  verbs:
+    worktree: worktree
+    isolate: worktree
+  types: {}
+  sources: {}
+  modifiers: {}
+
+templates:
+  priority: 30
+  entries:
+    - requires: [verb]
+      plan:
+        - pipe: worktree
+          flags: {}
