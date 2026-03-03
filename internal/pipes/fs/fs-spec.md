@@ -37,6 +37,8 @@ internal/pipes/fs/
 name: fs
 description: Reads, writes, and lists files within allowed project paths.
 category: dev
+streaming: false
+timeout: 30s
 
 triggers:
   exact:
@@ -74,10 +76,16 @@ flags:
     description: Glob pattern for filtering files in list mode.
     default: ""
 
+format:
+  list: |
+    {{if eq .Count 0}}No files found.{{else}}{{.Count}} item{{if gt .Count 1}}s{{end}}:{{range .Items}}
+    - {{if .is_dir}}[dir] {{end}}{{.name}} ({{.size}} bytes){{end}}{{end}}
+  structured: |
+    Wrote {{.bytes_written}} bytes to {{.path}}
+
 vocabulary:
   verbs:
     read: fs.read
-    write: fs.write
     list: fs.list
     find: fs.list
     save: fs.write
@@ -97,12 +105,12 @@ templates:
   entries:
     - requires: [verb, source, type]
       plan:
-        - pipe: fs
+        - pipe: "{source}"
           flags: { action: "{verb}", path: "{topic}" }
 
     - requires: [verb, source]
       plan:
-        - pipe: fs
+        - pipe: "{source}"
           flags: { action: "{verb}" }
 ```
 
