@@ -1,0 +1,52 @@
+name: publish
+description: Commits changes, pushes to remote, and creates or updates a pull request.
+category: dev
+streaming: false
+timeout: 60s
+
+triggers:
+  exact:
+    - "publish changes"
+    - "create pr"
+  keywords:
+    - publish
+    - push
+    - pr
+    - pull request
+  patterns:
+    - "publish {topic}"
+    - "create pr for {topic}"
+
+flags:
+  draft:
+    description: Whether to create the PR as a draft.
+    values: ["true", "false"]
+    default: "false"
+  update-strategy:
+    description: How to update the branch on subsequent pushes.
+    values: [force-push, amend]
+    default: force-push
+  base:
+    description: Base branch for the PR.
+    default: main
+  cwd:
+    description: Working directory (worktree path).
+    default: ""
+
+vocabulary:
+  verbs:
+    publish: publish
+    push: publish
+    ship: publish
+  types:
+    changes: changes
+  sources: {}
+  modifiers: {}
+
+templates:
+  priority: 40
+  entries:
+    - requires: [verb]
+      plan:
+        - pipe: publish
+          flags: {}
