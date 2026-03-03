@@ -14,7 +14,17 @@ build-pipes:
 test:
     go test ./... -v -count=1
 
-start: build stop
+start: build
+    #!/usr/bin/env sh
+    pid_file="$HOME/.local/share/virgil/virgil.pid"
+    if [ -f "$pid_file" ]; then
+        pid=$(cat "$pid_file")
+        if kill -0 "$pid" 2>/dev/null; then
+            kill "$pid"
+            sleep 0.5
+        fi
+        rm -f "$pid_file"
+    fi
     ./bin/virgil
 
 server: build stop
