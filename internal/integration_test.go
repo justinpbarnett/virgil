@@ -91,7 +91,7 @@ func setupIntegrationServer(t *testing.T) http.Handler {
 	if missLog != nil {
 		t.Cleanup(func() { missLog.Close() })
 	}
-	rt := router.NewRouter(reg.Definitions(), missLog, nil)
+	rt := router.NewRouter(reg.Definitions(), missLog, nil, nil)
 
 	// Build planner
 	pl := planner.New(cfg.Templates, cfg.Vocabulary.Sources, nil)
@@ -266,7 +266,7 @@ func TestIntegration_MissLogStructure(t *testing.T) {
 
 	missLog, _ := router.NewMissLog(missLogPath)
 	defer missLog.Close()
-	rt := router.NewRouter(reg.Definitions(), missLog, nil)
+	rt := router.NewRouter(reg.Definitions(), missLog, nil, nil)
 	pl := planner.New(cfg.Templates, cfg.Vocabulary.Sources, nil)
 
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn}))

@@ -205,6 +205,24 @@ func TestParsePunctuationStripped(t *testing.T) {
 	}
 }
 
+func TestParseWhQuestionDetected(t *testing.T) {
+	p := New(testVocab())
+	result := p.Parse("what's a complicated workflow that would be cool to visualize?")
+
+	if !result.IsQuestion {
+		t.Error("expected IsQuestion=true for wh-question")
+	}
+}
+
+func TestParseCommandNotQuestion(t *testing.T) {
+	p := New(testVocab())
+	result := p.Parse("draft a blog post about OAuth")
+
+	if result.IsQuestion {
+		t.Error("expected IsQuestion=false for imperative command")
+	}
+}
+
 func TestParseRawPreserved(t *testing.T) {
 	p := New(testVocab())
 	result := p.Parse("Draft A Blog Post")

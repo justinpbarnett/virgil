@@ -5,13 +5,14 @@ import (
 )
 
 type ParsedSignal struct {
-	Verb     string // pipe name (resolved from vocabulary)
-	Action   string // extracted from pipe.action mapping, empty otherwise
-	Type     string
-	Source   string
-	Modifier string
-	Topic    string
-	Raw      string
+	Verb       string // pipe name (resolved from vocabulary)
+	Action     string // extracted from pipe.action mapping, empty otherwise
+	Type       string
+	Source     string
+	Modifier   string
+	Topic      string
+	Raw        string
+	IsQuestion bool // true when signal is a wh-question, not a command
 }
 
 type Parser struct {
@@ -33,6 +34,12 @@ var stopWords = map[string]bool{
 	"can": true, "does": true, "did": true, "will": true,
 	"you": true, "could": true, "would": true, "should": true,
 	"are": true, "was": true, "were": true, "has": true, "have": true,
+}
+
+// whWords are wh-question starters used to detect question signals.
+var whWords = map[string]bool{
+	"what": true, "what's": true, "how": true, "when": true,
+	"where": true, "who": true, "why": true, "which": true,
 }
 
 // interrogativeWords are words that, when appearing before a verb,
@@ -59,6 +66,11 @@ func (p *Parser) Parse(signal string) ParsedSignal {
 		words[i] = CleanToken(w)
 	}
 	used := make([]bool, len(words))
+
+	// Detect wh-questions: starts with a wh-word and ends with "?"
+	if len(words) > 0 && whWords[words[0]] && strings.HasSuffix(strings.TrimSpace(lower), "?") {
+		result.IsQuestion = true
+	}
 
 	// Try multi-word modifiers first
 	for phrase, canonical := range p.vocab.Modifiers {
