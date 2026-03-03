@@ -39,12 +39,15 @@ func (p *Planner) Plan(route router.RouteResult, parsed parser.ParsedSignal) run
 	}
 
 	// No template match — single step plan for the routed pipe
-	flags := make(map[string]string, 2)
+	flags := make(map[string]string, 3)
 	if parsed.Action != "" {
 		flags["action"] = parsed.Action
 	}
 	if parsed.Topic != "" {
 		flags["topic"] = parsed.Topic
+	}
+	if parsed.Modifier != "" {
+		flags["modifier"] = parsed.Modifier
 	}
 
 	plan := runtime.Plan{

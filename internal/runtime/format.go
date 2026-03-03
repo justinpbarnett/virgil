@@ -63,9 +63,15 @@ func formatTerminal(env envelope.Envelope, pipe string, formats map[string]map[s
 // For list content: provides .Items (the slice), .Count (length), and .Signal.
 // For structured content: provides map fields directly plus .Signal.
 func prepareTemplateData(env envelope.Envelope) map[string]any {
-	data := make(map[string]any, 4)
+	data := make(map[string]any, 6)
 	if env.Args != nil {
 		data["Signal"] = env.Args["signal"]
+		// For calendar pipe, pass range or modifier so template can adjust messaging
+		if range_ := env.Args["range"]; range_ != "" {
+			data["Range"] = range_
+		} else if modifier := env.Args["modifier"]; modifier != "" {
+			data["Range"] = modifier
+		}
 	}
 
 	switch env.ContentType {

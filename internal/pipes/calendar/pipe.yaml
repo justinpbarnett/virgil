@@ -28,7 +28,7 @@ flags:
 
 format:
   list: |
-    {{if eq .Count 0}}Your calendar is clear.{{else}}You have {{.Count}} event{{if gt .Count 1}}s{{end}} today:{{range .Items}}
+    {{if eq .Count 0}}Your calendar is clear.{{else}}You have {{.Count}} event{{if gt .Count 1}}s{{end}}{{if eq .Range "tomorrow"}} tomorrow{{else if eq .Range "this-week"}} this week{{else}} today{{end}}:{{range .Items}}
     - {{.title}} at {{.start}}{{if .end}} - {{.end}}{{end}}{{if .location}} ({{.location}}){{end}}{{end}}{{end}}
 
 vocabulary:
