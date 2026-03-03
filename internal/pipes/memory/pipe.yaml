@@ -1,7 +1,6 @@
 name: memory
 description: Stores and retrieves information from local memory.
 category: memory
-log_level: ""
 
 triggers:
   exact:
@@ -22,7 +21,7 @@ triggers:
 flags:
   action:
     description: Whether to store or retrieve.
-    values: [store, retrieve]
+    values: [store, retrieve, working-state]
     default: retrieve
   query:
     description: Search terms for retrieval.
@@ -34,6 +33,16 @@ flags:
     description: Sort order for results.
     values: [recent, relevant]
     default: relevant
+  key:
+    description: Key for working state operations.
+    default: ""
+  namespace:
+    description: Namespace for working state scoping.
+    default: ""
+  op:
+    description: Working state sub-operation.
+    values: [put, get, delete, list]
+    default: get
 
 vocabulary:
   verbs:
