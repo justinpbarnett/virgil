@@ -1,0 +1,95 @@
+name: jira
+description: Retrieves, comments on, and updates Jira issues via the REST API.
+category: dev
+streaming: false
+timeout: 30s
+
+triggers:
+  exact:
+    - "check jira"
+    - "get jira ticket"
+  keywords:
+    - jira
+    - ticket
+    - issue
+    - sprint
+    - backlog
+    - story
+    - epic
+    - bug
+  patterns:
+    - "get {topic}"
+    - "update {topic}"
+    - "comment on {topic}"
+    - "show me {topic}"
+
+flags:
+  action:
+    description: What operation to perform.
+    values: [get, comment, update]
+    default: get
+
+  id:
+    description: Jira issue key (e.g., PROJ-123).
+    default: ""
+    required: true
+
+  fields:
+    description: Comma-separated list of fields to return on get, or JSON object of fields to set on update.
+    default: ""
+
+  comment:
+    description: Comment body text to post (used with action=comment).
+    default: ""
+
+  expand:
+    description: Comma-separated list of sections to expand on get.
+    values: [comments, attachments, changelog, all]
+    default: "comments,attachments"
+
+format:
+  structured: |
+    [{{.key}}] {{.summary}}
+    Status: {{.status}}  Priority: {{.priority}}  Assignee: {{.assignee}}
+    {{if .labels}}Labels: {{range $i, $l := .labels}}{{if $i}}, {{end}}{{$l}}{{end}}{{end}}
+    {{if .description}}
+    Description:
+    {{.description}}
+    {{end}}
+    {{if .comments}}
+    Comments ({{len .comments}}):{{range .comments}}
+      — {{.author}} ({{.created}}): {{.body}}{{end}}
+    {{end}}
+    {{if .attachments}}
+    Attachments ({{len .attachments}}):{{range .attachments}}
+      - {{.filename}} ({{.mimeType}}, {{.size}} bytes) {{.url}}{{end}}
+    {{end}}
+
+vocabulary:
+  verbs:
+    jira: jira.get
+  types:
+    ticket: ticket
+    issue: issue
+    story: story
+    epic: epic
+    bug: bug
+    task: task
+  sources:
+    jira: jira
+    tickets: jira
+    issues: jira
+  modifiers: {}
+
+templates:
+  priority: 50
+  entries:
+    - requires: [verb, source, topic]
+      plan:
+        - pipe: jira
+          flags: { action: get, id: "{topic}" }
+
+    - requires: [verb, source]
+      plan:
+        - pipe: jira
+          flags: { action: get }
