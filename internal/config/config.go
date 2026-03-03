@@ -199,6 +199,7 @@ type TemplatesConfig struct {
 }
 
 type TemplateEntry struct {
+	Pipe     string     `yaml:"-"` // set by config loader; restricts template to a specific routed pipe
 	Requires []string   `yaml:"requires"`
 	Plan     []PlanStep `yaml:"plan"`
 }
@@ -348,7 +349,9 @@ func mergeTemplates(cfg *Config) {
 
 	cfg.Templates.Templates = make([]TemplateEntry, len(all))
 	for i, pe := range all {
-		cfg.Templates.Templates[i] = pe.entry
+		e := pe.entry
+		e.Pipe = pe.pipeName
+		cfg.Templates.Templates[i] = e
 	}
 }
 

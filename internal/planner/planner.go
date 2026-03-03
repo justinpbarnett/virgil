@@ -28,8 +28,11 @@ func New(templates config.TemplatesConfig, sources map[string]string, logger *sl
 }
 
 func (p *Planner) Plan(route router.RouteResult, parsed parser.ParsedSignal) runtime.Plan {
-	// Try template matching (component-presence-based)
+	// Try template matching (component-presence-based, scoped to routed pipe)
 	for _, tmpl := range p.templates {
+		if tmpl.Pipe != "" && tmpl.Pipe != route.Pipe {
+			continue
+		}
 		if p.matchesRequirements(tmpl.Requires, parsed) {
 			plan := p.resolveTemplate(tmpl, parsed)
 			p.logger.Info("planned", "steps", len(plan.Steps))
