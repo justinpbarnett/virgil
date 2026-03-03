@@ -34,7 +34,7 @@ func (s *Server) handleSignal(w http.ResponseWriter, r *http.Request) {
 
 	// Parse → Route → Plan → Execute
 	parsed := s.parser.Parse(req.Text)
-	route := s.router.Route(req.Text, parsed)
+	route := s.router.Route(r.Context(), req.Text, parsed)
 
 	s.logger.Debug("signal parsed",
 		"verb", parsed.Verb,

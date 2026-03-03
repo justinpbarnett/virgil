@@ -32,7 +32,7 @@ func testServer(t *testing.T) *Server {
 	})
 
 	defs := reg.Definitions()
-	rt := router.NewRouter(defs, nil, nil)
+	rt := router.NewRouter(defs, nil, nil, nil)
 	p := parser.New(parser.LoadVocabulary(config.VocabularyConfig{}))
 	pl := planner.New(config.TemplatesConfig{}, nil, nil)
 	run := runtime.New(reg, nil, nil)
