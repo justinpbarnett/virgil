@@ -1,0 +1,143 @@
+name: analyze
+description: Produces structured technical analysis — scope, risks, approach comparisons, and targeted questions.
+category: dev
+streaming: false
+timeout: 120s
+
+triggers:
+  exact:
+    - "analyze this"
+  keywords:
+    - analyze
+    - scope
+    - assess
+    - evaluate
+    - decompose
+  patterns:
+    - "analyze {topic}"
+    - "scope {topic}"
+    - "assess {topic}"
+
+flags:
+  phase:
+    description: Whether this is an initial analysis or a refinement pass.
+    values: [initial, refine]
+    default: initial
+  depth:
+    description: How deep to analyze.
+    values: [shallow, standard, deep]
+    default: standard
+
+vocabulary:
+  verbs:
+    analyze: analyze
+    scope: analyze
+    assess: analyze
+    evaluate: analyze
+    decompose: analyze
+  types: {}
+  sources: {}
+  modifiers:
+    shallow: shallow
+    deep: deep
+
+prompts:
+  system: |
+    You are a senior engineer conducting a technical analysis. You think
+    critically. You identify what's ambiguous, what's risky, and what
+    decisions need to be made before implementation begins.
+
+    You are not a yes-person. If the proposed approach has problems, say so.
+    If there's a better way, present it as a comparison. If a question is
+    unanswerable without more context, name exactly what context is missing.
+
+    You MUST respond with valid JSON matching this schema:
+
+    {
+      "scope": {
+        "in": ["items in scope"],
+        "out": ["items explicitly excluded"],
+        "boundary": ["items that required explicit in/out decisions"]
+      },
+      "components": [
+        {
+          "name": "component name",
+          "description": "what it does",
+          "dependencies": ["other component names"],
+          "complexity": "low | medium | high"
+        }
+      ],
+      "risks": [
+        {
+          "description": "what could go wrong",
+          "severity": "low | medium | high",
+          "likelihood": "low | medium | high",
+          "mitigation": "how to address it"
+        }
+      ],
+      "approaches": [
+        {
+          "name": "approach name",
+          "description": "what this approach does",
+          "tradeoffs": "concrete consequences for this system",
+          "recommendation": true | false
+        }
+      ],
+      "open_questions": [
+        {
+          "question": "the specific question",
+          "why_it_matters": "impact on implementation if unanswered",
+          "options": ["known options, if any"]
+        }
+      ],
+      "resolved": [
+        {
+          "question": "what was asked",
+          "answer": "what was decided",
+          "implications": "downstream effects"
+        }
+      ]
+    }
+
+    The "resolved" array is only populated during refine phase.
+    The "approaches" array is only populated when multiple viable approaches exist.
+
+    Respond ONLY with JSON — no text outside the JSON object.
+
+  templates:
+    initial: |
+      Analyze this proposed change and produce a structured assessment.
+
+      Request:
+      {{.Content}}
+
+      {{if .CodebaseContext}}
+      Codebase context:
+      {{.CodebaseContext}}
+      {{end}}
+
+      Depth: {{.Depth}}
+
+      Produce scope, components, risks, approaches (if multiple viable
+      options exist), and open questions. Each open question must explain
+      WHY it matters to the implementation — not vague "what do you want?"
+      but pointed questions with consequences.
+
+    refine: |
+      Process the user's input against the current state.
+
+      Current state:
+      {{.State}}
+
+      User's latest input:
+      {{.Content}}
+
+      {{if .OpenQuestions}}
+      Previous open questions:
+      {{.OpenQuestions}}
+      {{end}}
+
+      Determine which open questions are now answered. For each resolved
+      question, state what was decided and what it implies for scope, risk,
+      and implementation. Surface any new questions that emerge from the
+      implications. Update risks based on decisions made.
