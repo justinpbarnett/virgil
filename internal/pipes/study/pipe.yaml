@@ -1,0 +1,101 @@
+name: study
+description: Gathers and compresses relevant context from a source within a token budget.
+category: research
+timeout: 30s
+
+triggers:
+  exact:
+    - "study the codebase"
+    - "gather context"
+  keywords:
+    - study
+    - context
+    - gather
+    - understand
+    - analyze
+    - codebase
+  patterns:
+    - "study {source}"
+    - "study {source} for {topic}"
+    - "gather context from {source} about {topic}"
+    - "understand {topic} in {source}"
+
+flags:
+  source:
+    description: What to study.
+    values: [codebase, memory, files, web]
+    default: codebase
+  role:
+    description: Perspective shaping what's relevant.
+    values: [builder, reviewer, planner, debugger, general]
+    default: general
+  budget:
+    description: Maximum token count for the output context.
+    default: "8000"
+  depth:
+    description: How deep to follow the dependency graph from the entry point.
+    values: [shallow, normal, deep]
+    default: normal
+  entry:
+    description: Starting point — a file path, symbol name, directory, or query string.
+    default: ""
+  compression:
+    description: Maximum compression tier allowed.
+    values: [none, structural, ai]
+    default: ai
+
+format:
+  structured: |
+    {{.summary}}{{if .items}}
+    {{range .items}}
+    --- {{.path}}{{if .symbol}} ({{.symbol}}, {{.kind}}){{end}} [{{.tokens}} tokens] ---
+    {{.content}}
+    {{end}}{{end}}{{if .ai_summaries}}{{range .ai_summaries}}
+    [Summary: {{.theme}}] {{.content}}
+    {{end}}{{end}}
+
+vocabulary:
+  verbs:
+    study: study
+    gather: study
+    understand: study
+    analyze: study
+    investigate: study
+  types: {}
+  sources:
+    codebase: codebase
+    code: codebase
+    repo: codebase
+    files: files
+    docs: files
+    notes: memory
+  modifiers:
+    shallow: shallow
+    deep: deep
+
+prompts:
+  system: |
+    You are a technical summarizer. You compress code and technical
+    content into dense, information-rich summaries. You preserve
+    type names, function signatures, key constants, and architectural
+    relationships. You never invent information not present in the source.
+    You optimize for maximum information per token.
+  templates:
+    summarize_group: |
+      Summarize the following {{.ItemCount}} code items into a dense
+      paragraph of approximately {{.TargetTokens}} tokens.
+
+      Preserve: type names, function signatures, interface definitions,
+      key constants, error types, and dependency relationships.
+
+      Remove: implementation details, comments, formatting, boilerplate.
+
+      Items:
+      {{range .Items}}
+      --- {{.Path}} ({{.Symbol}}, {{.Kind}}) ---
+      {{.Content}}
+      {{end}}
+
+      Produce a single dense paragraph. No headers, no bullets, no code blocks.
+      Just information-dense prose that a developer can read to understand
+      what these components do and how they relate.
