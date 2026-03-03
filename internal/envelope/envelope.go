@@ -74,6 +74,14 @@ func FatalError(message string) *EnvelopeError {
 	}
 }
 
+// WarnError returns a warning-level EnvelopeError.
+func WarnError(message string) *EnvelopeError {
+	return &EnvelopeError{
+		Message:  message,
+		Severity: SeverityWarn,
+	}
+}
+
 // NewRetryableError creates an envelope representing a retryable error from a named pipe.
 func NewRetryableError(pipe, message string) Envelope {
 	out := New(pipe, "error")
