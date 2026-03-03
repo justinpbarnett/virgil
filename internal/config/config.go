@@ -104,6 +104,7 @@ func (l LogLevel) String() string {
 type Config struct {
 	Server       ServerConfig          `yaml:"server"`
 	Provider     ProviderConfig        `yaml:"provider"`
+	Identity     string                `yaml:"identity"`
 	LogLevel     LogLevel              `yaml:"log_level"`
 	DatabasePath string                `yaml:"database_path"`
 	ConfigDir    string                `yaml:"-"`
