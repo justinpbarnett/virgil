@@ -23,11 +23,14 @@ type Plan struct {
 }
 
 type Runtime struct {
-	registry *pipe.Registry
-	observer Observer
-	logger   *slog.Logger
-	level    config.LogLevel
-	formats  map[string]map[string]*template.Template
+	registry     *pipe.Registry
+	observer     Observer
+	logger       *slog.Logger
+	level        config.LogLevel
+	formats      map[string]map[string]*template.Template
+	injector     MemoryInjector
+	saver        MemorySaver
+	memoryConfigs map[string]config.MemoryConfig
 }
 
 func New(registry *pipe.Registry, observer Observer, logger *slog.Logger) *Runtime {
@@ -61,6 +64,32 @@ func NewWithFormats(registry *pipe.Registry, observer Observer, logger *slog.Log
 	return rt, nil
 }
 
+// WithMemory configures memory injection and auto-save on the runtime.
+func (r *Runtime) WithMemory(injector MemoryInjector, saver MemorySaver, memConfigs map[string]config.MemoryConfig) {
+	r.injector = injector
+	r.saver = saver
+	r.memoryConfigs = memConfigs
+}
+
+func (r *Runtime) injectMemory(step Step, env envelope.Envelope) envelope.Envelope {
+	if r.injector == nil {
+		return env
+	}
+	return r.injector.InjectContext(env, r.memoryConfigs[step.Pipe])
+}
+
+func (r *Runtime) autoSave(pipe, signal string, result envelope.Envelope) {
+	if r.saver == nil {
+		return
+	}
+	output := envelope.ContentToText(result.Content, result.ContentType)
+	go func() {
+		if err := r.saver.SaveInvocation(pipe, signal, output); err != nil {
+			r.logger.Warn("auto-save failed", "error", err)
+		}
+	}()
+}
+
 func (r *Runtime) logEnvelope(label string, env envelope.Envelope) {
 	if r.level < config.Verbose {
 		return
@@ -92,6 +121,8 @@ func (r *Runtime) runStep(step Step, current envelope.Envelope) envelope.Envelop
 		return current
 	}
 
+	current = r.injectMemory(step, current)
+
 	r.logEnvelope("step input", current)
 
 	flags := mergeFlags(current.Args, step.Flags)
@@ -113,6 +144,7 @@ func (r *Runtime) runStep(step Step, current envelope.Envelope) envelope.Envelop
 func (r *Runtime) Execute(plan Plan, seed envelope.Envelope) envelope.Envelope {
 	start := time.Now()
 	current := seed
+	seedSignal := envelope.ContentToText(seed.Content, seed.ContentType)
 
 	if len(plan.Steps) == 0 {
 		current.Duration = time.Since(start)
@@ -135,12 +167,16 @@ func (r *Runtime) Execute(plan Plan, seed envelope.Envelope) envelope.Envelope {
 	current = formatTerminal(current, lastPipe, r.formats)
 	current.Duration = time.Since(start)
 	r.logger.Info("plan complete", "duration", current.Duration.String())
+
+	r.autoSave(lastPipe, seedSignal, current)
+
 	return current
 }
 
 func (r *Runtime) ExecuteStream(ctx context.Context, plan Plan, seed envelope.Envelope, sink func(chunk string)) envelope.Envelope {
 	start := time.Now()
 	current := seed
+	seedSignal := envelope.ContentToText(seed.Content, seed.ContentType)
 
 	if len(plan.Steps) == 0 {
 		current.Duration = time.Since(start)
@@ -156,6 +192,8 @@ func (r *Runtime) ExecuteStream(ctx context.Context, plan Plan, seed envelope.En
 		// For the last step, try the stream handler
 		if i == lastIdx {
 			if sh, ok := r.registry.GetStream(step.Pipe); ok {
+				current = r.injectMemory(step, current)
+
 				flags := mergeFlags(current.Args, step.Flags)
 
 				stepStart := time.Now()
@@ -177,6 +215,9 @@ func (r *Runtime) ExecuteStream(ctx context.Context, plan Plan, seed envelope.En
 				result = formatTerminal(result, step.Pipe, r.formats)
 				result.Duration = time.Since(start)
 				r.logger.Info("plan complete", "duration", result.Duration.String())
+
+				r.autoSave(step.Pipe, seedSignal, result)
+
 				return result
 			}
 		}
@@ -189,8 +230,12 @@ func (r *Runtime) ExecuteStream(ctx context.Context, plan Plan, seed envelope.En
 		}
 	}
 
-	current = formatTerminal(current, plan.Steps[lastIdx].Pipe, r.formats)
+	lastPipe := plan.Steps[lastIdx].Pipe
+	current = formatTerminal(current, lastPipe, r.formats)
 	current.Duration = time.Since(start)
 	r.logger.Info("plan complete", "duration", current.Duration.String())
+
+	r.autoSave(lastPipe, seedSignal, current)
+
 	return current
 }
