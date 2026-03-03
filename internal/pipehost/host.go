@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 
 	"github.com/justinpbarnett/virgil/internal/bridge"
 	"github.com/justinpbarnett/virgil/internal/config"
@@ -26,6 +27,7 @@ const (
 	EnvProviderBinary = "VIRGIL_PROVIDER_BINARY"
 	EnvLogLevel       = "VIRGIL_LOG_LEVEL"
 	EnvMaxTurns       = "VIRGIL_MAX_TURNS"
+	EnvIdentity       = "VIRGIL_IDENTITY"
 )
 
 // NewPipeLogger creates an slog.Logger for a pipe subprocess.
@@ -151,5 +153,19 @@ func LoadPipeConfigFrom(path string) (config.PipeConfig, error) {
 	if err := config.UnmarshalPipeConfig(data, &pc); err != nil {
 		return config.PipeConfig{}, fmt.Errorf("parsing pipe.yaml: %w", err)
 	}
+	injectIdentity(&pc)
 	return pc, nil
+}
+
+func injectIdentity(pc *config.PipeConfig) {
+	identity := strings.TrimSpace(os.Getenv(EnvIdentity))
+	if identity == "" {
+		return
+	}
+	if pc.Prompts.System != "" {
+		pc.Prompts.System = identity + "\n\n" + pc.Prompts.System
+	}
+	for k, v := range pc.Prompts.Templates {
+		pc.Prompts.Templates[k] = identity + "\n\n" + v
+	}
 }

@@ -191,6 +191,7 @@ func pipeEnv(cfg *config.Config, cfgDir string) []string {
 		pipehost.EnvUserDir+"="+config.UserDir(),
 		pipehost.EnvProvider+"="+cfg.Provider.Name,
 		pipehost.EnvProviderBinary+"="+cfg.Provider.Binary,
+		pipehost.EnvIdentity+"="+cfg.Identity,
 	)
 	return env
 }
