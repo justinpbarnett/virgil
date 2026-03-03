@@ -49,7 +49,7 @@ func ParseLogLevel(s string) LogLevel {
 
 // UnmarshalYAML decodes a YAML string directly into a typed LogLevel.
 // An empty or absent field leaves the value unchanged (stays at Unset).
-func (l *LogLevel) UnmarshalYAML(unmarshal func(interface{}) error) error {
+func (l *LogLevel) UnmarshalYAML(unmarshal func(any) error) error {
 	var s string
 	if err := unmarshal(&s); err != nil {
 		return err
@@ -112,6 +112,17 @@ type Config struct {
 	Templates    TemplatesConfig       `yaml:"-"`
 }
 
+// RawFormats extracts the per-pipe format templates from all configured pipes.
+func (c Config) RawFormats() map[string]map[string]string {
+	raw := make(map[string]map[string]string)
+	for name, pc := range c.Pipes {
+		if len(pc.Format) > 0 {
+			raw[name] = pc.Format
+		}
+	}
+	return raw
+}
+
 type ServerConfig struct {
 	Host string `yaml:"host"`
 	Port int    `yaml:"port"`
@@ -135,6 +146,7 @@ type PipeConfig struct {
 	Triggers     pipe.Triggers         `yaml:"triggers"`
 	Flags        map[string]pipe.Flag  `yaml:"flags"`
 	Prompts      PromptsConfig         `yaml:"prompts"`
+	Format       map[string]string     `yaml:"format"`
 	Vocabulary   VocabularyConfig      `yaml:"vocabulary"`
 	Templates    TemplateContrib       `yaml:"templates"`
 	Dir          string                `yaml:"-"`
@@ -384,29 +396,29 @@ func (pc PipeConfig) TimeoutDuration() time.Duration {
 // This is where user-specific files like credentials and tokens are stored,
 // independent of which config directory the server resolves for pipe definitions.
 func UserDir() string {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return filepath.Join(".", ".config", "virgil")
-	}
-	return filepath.Join(home, ".config", "virgil")
+	return homeRelDir(".config", "virgil")
 }
 
 // DataDir returns the path to the shared virgil data directory (~/.local/share/virgil).
 func DataDir() string {
+	return homeRelDir(".local", "share", "virgil")
+}
+
+func homeRelDir(parts ...string) string {
 	home, err := os.UserHomeDir()
 	if err != nil {
-		return filepath.Join(".", ".local", "share", "virgil")
+		return filepath.Join(append([]string{"."}, parts...)...)
 	}
-	return filepath.Join(home, ".local", "share", "virgil")
+	return filepath.Join(append([]string{home}, parts...)...)
 }
 
 func expandHome(path string) string {
-	if len(path) > 1 && path[:2] == "~/" {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return path
-		}
-		return filepath.Join(home, path[2:])
+	if !strings.HasPrefix(path, "~/") {
+		return path
 	}
-	return path
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return path
+	}
+	return filepath.Join(home, path[2:])
 }

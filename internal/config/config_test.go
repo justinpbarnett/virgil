@@ -689,6 +689,51 @@ func TestEffectiveMaxTurns(t *testing.T) {
 	}
 }
 
+func TestLoadPipeFormatTemplates(t *testing.T) {
+	configDir := t.TempDir()
+	pipesDir := t.TempDir()
+
+	writeFile(t, configDir, "virgil.yaml", `
+server:
+  host: localhost
+  port: 7890
+`)
+
+	writeFile(t, filepath.Join(pipesDir, "calendar"), "pipe.yaml", `
+name: calendar
+description: Calendar pipe
+category: time
+triggers:
+  exact: []
+  keywords: [calendar]
+  patterns: []
+format:
+  list: |
+    {{.Count}} events today
+  structured: |
+    Event: {{.title}}
+`)
+
+	cfg, err := Load(configDir, pipesDir)
+	if err != nil {
+		t.Fatalf("failed to load config: %v", err)
+	}
+
+	calCfg, ok := cfg.Pipes["calendar"]
+	if !ok {
+		t.Fatal("expected calendar pipe config")
+	}
+	if len(calCfg.Format) != 2 {
+		t.Fatalf("expected 2 format entries, got %d", len(calCfg.Format))
+	}
+	if !strings.Contains(calCfg.Format["list"], "Count") {
+		t.Errorf("expected list format to contain 'Count', got: %s", calCfg.Format["list"])
+	}
+	if !strings.Contains(calCfg.Format["structured"], "title") {
+		t.Errorf("expected structured format to contain 'title', got: %s", calCfg.Format["structured"])
+	}
+}
+
 func TestPipeConfigModelAndMaxTurnsFromYAML(t *testing.T) {
 	var pc PipeConfig
 	data := []byte(`
