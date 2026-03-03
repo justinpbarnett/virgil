@@ -21,9 +21,10 @@ func main() {
 	}
 
 	systemPrompt := pc.Prompts.System
+	prompts := chat.CompileSystemPrompts(pc)
 
 	logger.Info("initialized")
-	pipehost.RunWithStreaming(provider, chat.NewHandler(provider, systemPrompt, logger), func(sp bridge.StreamingProvider) pipe.StreamHandler {
-		return chat.NewStreamHandler(sp, systemPrompt, logger)
+	pipehost.RunWithStreaming(provider, chat.NewHandler(provider, systemPrompt, prompts, logger), func(sp bridge.StreamingProvider) pipe.StreamHandler {
+		return chat.NewStreamHandler(sp, systemPrompt, prompts, logger)
 	})
 }

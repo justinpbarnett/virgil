@@ -4,12 +4,46 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"maps"
 	"time"
 
 	"github.com/justinpbarnett/virgil/internal/bridge"
+	"github.com/justinpbarnett/virgil/internal/config"
 	"github.com/justinpbarnett/virgil/internal/envelope"
 	"github.com/justinpbarnett/virgil/internal/pipe"
 )
+
+// CompileSystemPrompts extracts system prompt templates from the pipe config.
+// These are plain strings (not Go templates) since system prompts don't need
+// variable interpolation — context comes from the user prompt side.
+func CompileSystemPrompts(pipeConfig config.PipeConfig) map[string]string {
+	return maps.Clone(pipeConfig.Prompts.Templates)
+}
+
+// resolveSystemPrompt selects a system prompt based on role and phase flags.
+// Resolution order: compound key (role-phase), role alone, then basePrompt.
+// The general/default role always returns the basePrompt.
+func resolveSystemPrompt(prompts map[string]string, basePrompt string, flags map[string]string) string {
+	role := flags["role"]
+	if role == "" || role == "general" {
+		return basePrompt
+	}
+
+	// Try compound key: role-phase
+	if phase := flags["phase"]; phase != "" {
+		if p, ok := prompts[role+"-"+phase]; ok {
+			return p
+		}
+	}
+
+	// Try role alone
+	if p, ok := prompts[role]; ok {
+		return p
+	}
+
+	// Fall back to base
+	return basePrompt
+}
 
 // prepareChat extracts user content and creates the output envelope.
 // Returns the output envelope, the user content, and whether the content was empty.
@@ -40,7 +74,7 @@ func chatError(err error) *envelope.EnvelopeError {
 	return envelope.ClassifyError("chat failed", err)
 }
 
-func NewStreamHandler(provider bridge.StreamingProvider, systemPrompt string, logger *slog.Logger) pipe.StreamHandler {
+func NewStreamHandler(provider bridge.StreamingProvider, systemPrompt string, prompts map[string]string, logger *slog.Logger) pipe.StreamHandler {
 	if logger == nil {
 		logger = slog.Default()
 	}
@@ -53,7 +87,8 @@ func NewStreamHandler(provider bridge.StreamingProvider, systemPrompt string, lo
 		ctx, cancel := context.WithTimeout(ctx, 60*time.Second)
 		defer cancel()
 
-		result, err := provider.CompleteStream(ctx, systemPrompt, content, sink)
+		resolved := resolveSystemPrompt(prompts, systemPrompt, flags)
+		result, err := provider.CompleteStream(ctx, resolved, content, sink)
 		if err != nil {
 			logger.Error("chat failed", "error", err)
 			out.Error = chatError(err)
@@ -70,7 +105,7 @@ func NewStreamHandler(provider bridge.StreamingProvider, systemPrompt string, lo
 	}
 }
 
-func NewHandler(provider bridge.Provider, systemPrompt string, logger *slog.Logger) pipe.Handler {
+func NewHandler(provider bridge.Provider, systemPrompt string, prompts map[string]string, logger *slog.Logger) pipe.Handler {
 	if logger == nil {
 		logger = slog.Default()
 	}
@@ -83,7 +118,8 @@ func NewHandler(provider bridge.Provider, systemPrompt string, logger *slog.Logg
 		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 		defer cancel()
 
-		result, err := provider.Complete(ctx, systemPrompt, content)
+		resolved := resolveSystemPrompt(prompts, systemPrompt, flags)
+		result, err := provider.Complete(ctx, resolved, content)
 		if err != nil {
 			logger.Error("chat failed", "error", err)
 			out.Error = chatError(err)
