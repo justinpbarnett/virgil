@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/justinpbarnett/virgil/internal/bridge"
 	"github.com/justinpbarnett/virgil/internal/config"
 	"github.com/justinpbarnett/virgil/internal/parser"
 	"github.com/justinpbarnett/virgil/internal/pipe"
@@ -18,6 +19,7 @@ import (
 	"github.com/justinpbarnett/virgil/internal/router"
 	"github.com/justinpbarnett/virgil/internal/runtime"
 	"github.com/justinpbarnett/virgil/internal/server"
+	"github.com/justinpbarnett/virgil/internal/store"
 	"github.com/justinpbarnett/virgil/internal/tui"
 )
 
@@ -157,7 +159,21 @@ func runServer(cfgDir string, logger *slog.Logger) error {
 		defer missLog.Close()
 	}
 
-	rt := router.NewRouter(reg.Definitions(), missLog, logger)
+	var classifier *router.Classifier
+	classifierProvider, err := bridge.NewProvider(bridge.ProviderConfig{
+		Name:     cfg.Provider.Name,
+		Model:    "haiku",
+		Binary:   cfg.Provider.Binary,
+		MaxTurns: 1,
+		Logger:   logger,
+	})
+	if err != nil {
+		logger.Warn("classifier provider unavailable, Layer 4 AI routing disabled", "error", err)
+	} else {
+		classifier = router.NewClassifier(classifierProvider, reg.Definitions(), logger)
+	}
+
+	rt := router.NewRouter(reg.Definitions(), missLog, classifier, logger)
 
 	// Build planner
 	pl := planner.New(cfg.Templates, cfg.Vocabulary.Sources, logger)
@@ -167,6 +183,26 @@ func runServer(cfgDir string, logger *slog.Logger) error {
 	run, err := runtime.NewWithFormats(reg, observer, logger, cfg.LogLevel, cfg.RawFormats())
 	if err != nil {
 		return fmt.Errorf("building runtime: %w", err)
+	}
+
+	// Wire memory infrastructure if database is configured
+	if cfg.DatabasePath != "" {
+		st, err := store.Open(cfg.DatabasePath)
+		if err != nil {
+			logger.Warn("memory infrastructure unavailable", "error", err)
+		} else {
+			defer st.Close()
+			memConfigs := make(map[string]config.MemoryConfig)
+			for name, pc := range cfg.Pipes {
+				memConfigs[name] = pc.Memory
+			}
+			run.WithMemory(
+				runtime.NewStoreMemoryInjector(st),
+				runtime.NewStoreMemorySaver(st),
+				memConfigs,
+			)
+			logger.Info("memory infrastructure enabled")
+		}
 	}
 
 	// 4. Start HTTP server
