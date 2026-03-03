@@ -33,6 +33,11 @@ const (
 	SSEContentType = "text/event-stream"
 )
 
+type MemoryEntry struct {
+	Type    string `json:"type"`
+	Content string `json:"content"`
+}
+
 type Envelope struct {
 	Pipe        string            `json:"pipe"`
 	Action      string            `json:"action"`
@@ -42,6 +47,7 @@ type Envelope struct {
 	Content     any               `json:"content"`
 	ContentType string            `json:"content_type"`
 	Error       *EnvelopeError    `json:"error"`
+	Memory      []MemoryEntry     `json:"memory,omitempty"`
 }
 
 type EnvelopeError struct {

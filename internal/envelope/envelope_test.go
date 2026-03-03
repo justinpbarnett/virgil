@@ -137,6 +137,45 @@ func TestContentToText_Structured(t *testing.T) {
 	}
 }
 
+func TestMemoryEntryJSONRoundTrip(t *testing.T) {
+	e := New("draft", "generate")
+	e.Memory = []MemoryEntry{
+		{Type: "topic_history", Content: "previous session about Go"},
+		{Type: "working_state", Content: "current project: virgil"},
+	}
+
+	data, err := json.Marshal(e)
+	if err != nil {
+		t.Fatalf("marshal failed: %v", err)
+	}
+
+	var decoded Envelope
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatalf("unmarshal failed: %v", err)
+	}
+
+	if len(decoded.Memory) != 2 {
+		t.Fatalf("expected 2 memory entries, got %d", len(decoded.Memory))
+	}
+	if decoded.Memory[0].Type != "topic_history" {
+		t.Errorf("expected type=topic_history, got %s", decoded.Memory[0].Type)
+	}
+	if decoded.Memory[1].Content != "current project: virgil" {
+		t.Errorf("expected content match, got %s", decoded.Memory[1].Content)
+	}
+}
+
+func TestMemoryOmittedWhenEmpty(t *testing.T) {
+	e := New("chat", "respond")
+	data, err := json.Marshal(e)
+	if err != nil {
+		t.Fatalf("marshal failed: %v", err)
+	}
+	if strings.Contains(string(data), "memory") {
+		t.Errorf("expected memory field to be omitted when empty, got: %s", string(data))
+	}
+}
+
 func TestContentToText_Nil(t *testing.T) {
 	result := ContentToText(nil, "text")
 	if result != "" {
