@@ -12,7 +12,6 @@ triggers:
     - context
     - gather
     - understand
-    - analyze
     - codebase
   patterns:
     - "study {source}"
@@ -59,7 +58,6 @@ vocabulary:
     study: study
     gather: study
     understand: study
-    analyze: study
     investigate: study
   types: {}
   sources:
