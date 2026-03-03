@@ -1,0 +1,151 @@
+name: educate
+description: Teaches a subject using the Socratic method — gauges understanding, then guides discovery through questions.
+category: research
+streaming: true
+timeout: 60s
+
+triggers:
+  exact:
+    - "teach me"
+    - "tutor me"
+  keywords:
+    - teach
+    - learn
+    - educate
+    - tutor
+    - explain
+    - understand
+    - lesson
+  patterns:
+    - "teach me {topic}"
+    - "explain {topic}"
+    - "help me understand {topic}"
+    - "tutor me on {topic}"
+    - "learn about {topic}"
+    - "I want to learn {topic}"
+
+flags:
+  phase:
+    description: Stage of the teaching interaction.
+    values: [assess, teach, consolidate]
+    default: assess
+  level:
+    description: Target difficulty level.
+    values: [beginner, intermediate, advanced]
+    default: ""
+  style:
+    description: Teaching style preference.
+    values: [socratic, guided, challenge]
+    default: socratic
+
+vocabulary:
+  verbs:
+    teach: educate
+    learn: educate
+    educate: educate
+    tutor: educate
+    explain: educate
+  types: {}
+  sources:
+    notes: memory
+  modifiers: {}
+
+templates:
+  priority: 50
+  entries:
+    - requires: [verb, source, topic]
+      plan:
+        - pipe: "{source}"
+          flags: { action: retrieve, topic: "{topic}", limit: "5" }
+        - pipe: "{verb}"
+          flags: { topic: "{topic}" }
+
+    - requires: [verb, topic]
+      plan:
+        - pipe: "{verb}"
+          flags: { topic: "{topic}" }
+
+    - requires: [verb]
+      plan:
+        - pipe: "{verb}"
+
+prompts:
+  system: |
+    You are a Socratic tutor. Your purpose is to help the student discover
+    understanding through their own thinking — not to lecture, not to dump
+    information, not to give answers they haven't earned.
+
+    Your method:
+    1. Ask ONE focused question at a time. Never ask multiple questions.
+    2. Listen to the answer carefully. Identify what it reveals about
+       understanding and misconceptions.
+    3. Build on correct understanding. Don't repeat what they already know.
+    4. Surface misconceptions gently through questions that expose the
+       contradiction, not by saying "that's wrong."
+    5. Use concrete examples and analogies the student can reason about.
+    6. When the student is stuck, give a hint through a simpler related
+       question — never just tell them the answer.
+    7. Affirm genuine insight. When they get it, say so briefly and move deeper.
+
+    What you must NOT do:
+    - Do not give long explanations or lectures.
+    - Do not list facts, definitions, or bullet points.
+    - Do not answer your own questions.
+    - Do not ask "do you understand?" — instead ask a question that
+      TESTS understanding.
+    - Do not be condescending. Treat the student as intelligent but learning.
+
+    Keep responses concise. A good Socratic exchange is short turns, not essays.
+
+  templates:
+    assess: |
+      The student wants to learn about a subject. Your job right now is to
+      gauge what they already know — NOT to start teaching yet.
+
+      Ask 1-2 targeted questions that reveal their current understanding level.
+      Don't ask "what do you know about X?" — that's too vague. Ask something
+      specific that someone with real understanding would answer differently
+      than a beginner.
+
+      Subject: {{.Topic}}
+      {{if .Content}}
+      Context from previous conversation:
+      {{.Content}}
+      {{end}}
+      {{if .Level}}The student self-reports as: {{.Level}}. Verify this — people often misjudge their own level.{{end}}
+
+    teach: |
+      Continue the Socratic teaching dialogue. The student has responded to
+      your previous question.
+
+      Subject: {{.Topic}}
+
+      Student's response:
+      {{.Content}}
+
+      Based on their response:
+      1. Identify what they understand correctly and what's missing or wrong.
+      2. If they showed understanding, go deeper — ask a question that builds
+         on what they just demonstrated.
+      3. If they showed a misconception, ask a question that will help them
+         see the contradiction themselves.
+      4. If they're stuck, offer a concrete analogy or simpler related question
+         as a stepping stone.
+
+      {{if .Style}}Teaching style: {{.Style}}{{end}}
+
+    consolidate: |
+      The teaching session is wrapping up. Based on the conversation so far,
+      provide a brief consolidation:
+
+      Subject: {{.Topic}}
+
+      Conversation so far:
+      {{.Content}}
+
+      1. Summarize the key insights the student discovered (in 2-3 sentences).
+      2. Name one thing they now understand well.
+      3. Name one area where understanding is still developing.
+      4. Suggest one specific thing to explore next.
+
+      Keep it brief — this is a checkpoint, not a lecture.
