@@ -1,6 +1,7 @@
 package router
 
 import (
+	"context"
 	"log/slog"
 	"strings"
 
@@ -24,16 +25,17 @@ type RouteResult struct {
 
 type Router struct {
 	exactMap     map[string]string            // signal → pipe name
-	keywordIndex map[string][]string           // keyword → []pipe names
-	pipeKeywords map[string][]string           // pipe name → []keywords
-	categories   map[string][]pipe.Definition  // category → []definitions
+	keywordIndex map[string][]string          // keyword → []pipe names
+	pipeKeywords map[string][]string          // pipe name → []keywords
+	categories   map[string][]pipe.Definition // category → []definitions
 	definitions  map[string]pipe.Definition
 	missLog      *MissLog
+	classifier   *Classifier
 	threshold    float64
 	logger       *slog.Logger
 }
 
-func NewRouter(defs []pipe.Definition, missLog *MissLog, logger *slog.Logger) *Router {
+func NewRouter(defs []pipe.Definition, missLog *MissLog, classifier *Classifier, logger *slog.Logger) *Router {
 	if logger == nil {
 		logger = slog.Default()
 	}
@@ -44,6 +46,7 @@ func NewRouter(defs []pipe.Definition, missLog *MissLog, logger *slog.Logger) *R
 		categories:   make(map[string][]pipe.Definition),
 		definitions:  make(map[string]pipe.Definition),
 		missLog:      missLog,
+		classifier:   classifier,
 		threshold:    0.6,
 		logger:       logger,
 	}
@@ -74,7 +77,7 @@ func NewRouter(defs []pipe.Definition, missLog *MissLog, logger *slog.Logger) *R
 	return r
 }
 
-func (r *Router) Route(signal string, parsed parser.ParsedSignal) RouteResult {
+func (r *Router) Route(ctx context.Context, signal string, parsed parser.ParsedSignal) RouteResult {
 	lower := strings.ToLower(signal)
 
 	// Layer 1: Exact match
@@ -120,40 +123,45 @@ func (r *Router) Route(signal string, parsed parser.ParsedSignal) RouteResult {
 		return result
 	}
 
-	// Layer 3: Category narrowing
-	if bestPipe != "" {
-		def := r.definitions[bestPipe]
-		categoryPipes := r.categories[def.Category]
+	// Wh-questions skip Layer 3: the verb/source match is too aggressive
+	// for questions (e.g. "what would be cool to visualize?" matched
+	// visualize via verb). Questions still reach Layer 4 (fallback/AI).
+	if !parsed.IsQuestion {
+		// Layer 3: Category narrowing
+		if bestPipe != "" {
+			def := r.definitions[bestPipe]
+			categoryPipes := r.categories[def.Category]
 
-		for _, cp := range categoryPipes {
-			// Score using parsed components
-			confidence := r.scoreParsedMatch(cp, parsed)
-			if confidence > bestScore {
-				bestScore = confidence
-				bestPipe = cp.Name
+			for _, cp := range categoryPipes {
+				// Score using parsed components
+				confidence := r.scoreParsedMatch(cp, parsed)
+				if confidence > bestScore {
+					bestScore = confidence
+					bestPipe = cp.Name
+				}
+			}
+
+			if bestScore >= r.threshold {
+				result := RouteResult{Pipe: bestPipe, Confidence: bestScore, Layer: LayerCategory}
+				r.logger.Info("routed", "pipe", result.Pipe, "layer", result.Layer)
+				return result
 			}
 		}
 
-		if bestScore >= r.threshold {
-			result := RouteResult{Pipe: bestPipe, Confidence: bestScore, Layer: LayerCategory}
-			r.logger.Info("routed", "pipe", result.Pipe, "layer", result.Layer)
-			return result
+		// Also try parsed verb/source directly if they match a pipe.
+		for _, candidate := range []string{parsed.Verb, parsed.Source} {
+			if candidate == "" {
+				continue
+			}
+			if _, ok := r.definitions[candidate]; ok {
+				result := RouteResult{Pipe: candidate, Confidence: 0.8, Layer: LayerCategory}
+				r.logger.Info("routed", "pipe", result.Pipe, "layer", result.Layer)
+				return result
+			}
 		}
 	}
 
-	// Also try parsed verb/source directly if they match a pipe
-	for _, candidate := range []string{parsed.Verb, parsed.Source} {
-		if candidate == "" {
-			continue
-		}
-		if _, ok := r.definitions[candidate]; ok {
-			result := RouteResult{Pipe: candidate, Confidence: 0.8, Layer: LayerCategory}
-			r.logger.Info("routed", "pipe", result.Pipe, "layer", result.Layer)
-			return result
-		}
-	}
-
-	// Layer 4: Stub fallback
+	// Layer 4: AI classification
 	var keywordsNotFound []string
 	for _, w := range words {
 		if _, ok := r.keywordIndex[w]; !ok {
@@ -161,13 +169,26 @@ func (r *Router) Route(signal string, parsed parser.ParsedSignal) RouteResult {
 		}
 	}
 
+	aiPipe := "chat"
+	aiConf := 0.0
+	if r.classifier != nil {
+		aiPipe, aiConf = r.classifier.Classify(ctx, signal)
+	}
+
 	if r.missLog != nil {
 		r.missLog.Log(MissEntry{
 			Signal:           signal,
 			KeywordsFound:    keywordsFound,
 			KeywordsNotFound: keywordsNotFound,
-			FallbackPipe:     "chat",
+			FallbackPipe:     aiPipe,
+			AIConfidence:     aiConf,
 		})
+	}
+
+	if aiPipe != "chat" {
+		result := RouteResult{Pipe: aiPipe, Confidence: aiConf, Layer: LayerFallback}
+		r.logger.Info("routed", "pipe", result.Pipe, "layer", result.Layer)
+		return result
 	}
 
 	r.logger.Warn("miss", "signal", signal)
