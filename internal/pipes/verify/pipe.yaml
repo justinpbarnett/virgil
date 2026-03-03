@@ -1,0 +1,54 @@
+name: verify
+description: Runs tests and validates implementation against the build plan.
+category: dev
+streaming: false
+timeout: 120s
+
+triggers:
+  exact:
+    - "run tests"
+    - "verify build"
+  keywords:
+    - verify
+    - test
+    - validate
+    - check
+  patterns:
+    - "verify {topic}"
+    - "test {topic}"
+
+flags:
+  suite:
+    description: Which test suite to run. Auto-detected from project config if omitted.
+    default: auto
+  lint:
+    description: Whether to run linters.
+    values: ["true", "false"]
+    default: "true"
+  plan-check:
+    description: Whether to verify the implementation matches the declared plan.
+    values: ["true", "false"]
+    default: "false"
+  cwd:
+    description: Working directory (worktree path).
+    default: ""
+
+vocabulary:
+  verbs:
+    verify: verify
+    validate: verify
+    check: verify
+  types:
+    tests: tests
+    lint: lint
+    all: all
+  sources: {}
+  modifiers: {}
+
+templates:
+  priority: 40
+  entries:
+    - requires: [verb]
+      plan:
+        - pipe: verify
+          flags: {}
