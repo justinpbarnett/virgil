@@ -2,7 +2,7 @@
 
 This document defines the design of Virgil's terminal user interface — the primary client. It covers visual structure, interaction patterns, the three operating modes, and the principles that govern every pixel and every keystroke.
 
-For the philosophy behind Virgil, see `virgil.md`. For architecture, see `ARCHITECTURE.md`. For the server API the TUI connects to, see (future) `api.md`.
+For the philosophy behind Virgil, see `virgil.md`. For architecture, see `architecture.md`. For the server API the TUI connects to, see (future) `api.md`.
 
 ---
 

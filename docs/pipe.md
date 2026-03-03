@@ -2,7 +2,7 @@
 
 This document defines what a pipe is, what it must provide, and how to build one. It is the reference standard for anyone creating a new pipe for Virgil.
 
-For the philosophy behind pipes, see `virgil.md`. For architectural decisions, see `ARCHITECTURE.md`.
+For the philosophy behind pipes, see `virgil.md`. For architectural decisions, see `architecture.md`.
 
 ---
 
@@ -165,7 +165,8 @@ templates:
     - requires: [verb, type, source]
       plan:
         - pipe: "{source}"
-          flags: { action: retrieve, sort: recent, limit: "10", topic: "{topic}" }
+          flags:
+            { action: retrieve, sort: recent, limit: "10", topic: "{topic}" }
         - pipe: "{verb}"
           flags: { type: "{type}" }
 
@@ -185,6 +186,33 @@ At startup, all pipe template contributions are merged and sorted: priority asce
 
 Templates are optional — pipes with no composition patterns (e.g., `chat`) omit this section entirely.
 
+### Format (Optional)
+
+```yaml
+format:
+  list: |
+    {{if eq .Count 0}}Your calendar is clear.{{else}}You have {{.Count}} event{{if gt .Count 1}}s{{end}} today:{{range .Items}}
+    - {{.title}} at {{.start}}{{if .end}} - {{.end}}{{end}}{{if .location}} ({{.location}}){{end}}{{end}}{{end}}
+```
+
+Format declares Go `text/template` strings keyed by `content_type` that the runtime applies at the terminal boundary — only when the envelope is the last in a pipeline and its `content_type` isn't already `text`. The pipe handler never formats its own output; formatting is metadata the runtime reads, not logic the pipe executes.
+
+**Schema:** `format:` is a map with content type keys (`list`, `structured`) and template string values.
+
+**Template data available:**
+
+- `.Items` — the content slice (for `list` content type)
+- `.Count` — length of the items slice (for `list` content type)
+- `.Signal` — the original user input (from `env.Args["signal"]`)
+- For `structured` content type, the map fields are available directly plus `.Signal`
+
+**Rules:**
+
+- `content_type: text` is never formatted — it's already human-readable
+- Mid-pipeline envelopes are never formatted — formatting only happens at the terminal boundary, preserving structured data for downstream pipes
+- Templates use Go `text/template` with `Option("missingkey=zero")` so missing fields render as zero values rather than errors
+- Pipes without a `format` section behave exactly as before — format templates are additive
+
 ### Provider (Non-Deterministic Pipes Only)
 
 Non-deterministic pipes need an AI provider to do their work. The provider configuration is set at the server level in `virgil.yaml` and passed to all pipe subprocesses via environment variables:
@@ -197,7 +225,7 @@ Inside a Go pipe subprocess, `pipehost.BuildProviderFromEnv()` reads these varia
 
 Deterministic pipes ignore these variables entirely — they don't call AI models.
 
-**Per-pipe provider overrides** are an architectural intent (see `ARCHITECTURE.md` decision #6) but are not yet implemented in the pipe.yaml schema. Currently, all non-deterministic pipes use the same server-level provider.
+**Per-pipe provider overrides** are an architectural intent (see `architecture.md` decision #6) but are not yet implemented in the pipe.yaml schema. Currently, all non-deterministic pipes use the same server-level provider.
 
 ### Prompts (Non-Deterministic Pipes Only)
 
@@ -251,7 +279,7 @@ Deterministic pipes omit this section entirely.
 
 ### Metrics (Planned)
 
-Per-pipe metrics configuration is part of the architectural design (see `ARCHITECTURE.md` decisions #18 and #20) but is not yet parsed from `pipe.yaml`. The runtime will eventually provide default KPIs for every pipe (acceptance rate, error rate, duration) and allow pipes to override or extend with domain-specific KPIs.
+Per-pipe metrics configuration is part of the architectural design (see `architecture.md` decisions #18 and #20) but is not yet parsed from `pipe.yaml`. The runtime will eventually provide default KPIs for every pipe (acceptance rate, error rate, duration) and allow pipes to override or extend with domain-specific KPIs.
 
 The planned schema:
 
@@ -324,7 +352,7 @@ error:         null on success, error info on failure
 
 Currently, pipes receive all their context through the input envelope — whatever the planner assembled upstream is in the envelope's `content` field. There is no in-process memory interface available to subprocess pipes.
 
-The planned design (see `ARCHITECTURE.md` decisions #24-26) adds two capabilities:
+The planned design (see `architecture.md` decisions #24-26) adds two capabilities:
 
 **Context assembly** — The planner will assemble a base context per-invocation using a retrieval strategy matched to the signal type. This context will be delivered to the pipe through the envelope, so no protocol change is needed.
 
@@ -383,8 +411,13 @@ Every pipe runs as a subprocess executable. The main virgil binary discovers pip
 
 ```json
 {
-  "envelope": {"pipe": "signal", "action": "input", "content": "...", "content_type": "text"},
-  "flags": {"action": "retrieve", "limit": "10"},
+  "envelope": {
+    "pipe": "signal",
+    "action": "input",
+    "content": "...",
+    "content_type": "text"
+  },
+  "flags": { "action": "retrieve", "limit": "10" },
   "stream": false
 }
 ```
@@ -424,8 +457,8 @@ One JSON object per line. `chunk` lines are streamed to the user. The final `env
 `pipe.yaml` supports these fields for subprocess control:
 
 ```yaml
-streaming: false    # whether this pipe supports streaming (default false)
-timeout: 30s        # subprocess timeout (default 30s)
+streaming: false # whether this pipe supports streaming (default false)
+timeout: 30s # subprocess timeout (default 30s)
 ```
 
 The system discovers the pipe's executable at `{pipe_dir}/run` by convention. If the executable exists and is executable, the pipe is registered. If not, it is skipped with a warning.
@@ -535,6 +568,11 @@ flags:
   calendar:
     description: Which calendar to use.
     default: primary
+
+format:
+  list: |
+    {{if eq .Count 0}}Your calendar is clear.{{else}}You have {{.Count}} event{{if gt .Count 1}}s{{end}} today:{{range .Items}}
+    - {{.title}} at {{.start}}{{if .end}} - {{.end}}{{end}}{{if .location}} ({{.location}}){{end}}{{end}}{{end}}
 
 vocabulary:
   verbs:
@@ -649,7 +687,8 @@ templates:
     - requires: [verb, type, source]
       plan:
         - pipe: "{source}"
-          flags: { action: retrieve, sort: recent, limit: "10", topic: "{topic}" }
+          flags:
+            { action: retrieve, sort: recent, limit: "10", topic: "{topic}" }
         - pipe: "{verb}"
           flags: { type: "{type}" }
 
@@ -758,6 +797,8 @@ Pipes don't know about each other. But for composition to work, there are conven
 
 A pipe should use the most specific content type that fits. If you're returning calendar events, use `list` — not `text` with events formatted as prose. If you're returning a review with categories and severity ratings, use `structured` — not `text` with the structure embedded in prose.
 
+Pipes producing `list` or `structured` content should consider declaring format templates (see [Format](#format-optional)) so the runtime can present them as readable text at the terminal boundary.
+
 ### Designing for Composition
 
 When building a pipe, consider how its output will be consumed:
@@ -846,6 +887,7 @@ Definition
   ☐  category is correct
   ☐  triggers cover the common ways a user would invoke this
   ☐  flags have descriptions and sensible defaults
+  ☐  (optional) format templates declared for non-text content types
   ☐  (non-deterministic) prompts are tested against real inputs
   ☐  (non-deterministic) streaming and timeout set in pipe.yaml
 

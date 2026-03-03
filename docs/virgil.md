@@ -6,7 +6,7 @@ Named for Dante's guide through the _Divine Comedy_ — not the hero, but the on
 
 Virgil is a personal intent compiler. It takes raw signal — text, voice, ambient data — classifies what you want, decomposes it into a plan, and chains solved problems together to produce the outcome.
 
-For specific technology choices, rationale, and open questions, see `ARCHITECTURE.md`.
+For specific technology choices, rationale, and open questions, see `architecture.md`.
 
 Every interaction follows the same loop:
 

@@ -2,7 +2,7 @@
 
 This document defines what a pipeline is, what it must provide, and how to build one. It is the reference standard for anyone creating a new pipeline for Virgil.
 
-For the philosophy behind pipelines, see `virgil.md`. For architectural decisions, see `ARCHITECTURE.md`. For the atomic units that pipelines compose, see `pipe.md`.
+For the philosophy behind pipelines, see `virgil.md`. For architectural decisions, see `architecture.md`. For the atomic units that pipelines compose, see `pipe.md`.
 
 ---
 
