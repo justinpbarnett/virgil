@@ -36,11 +36,11 @@ vocabulary:
 
 prompts:
   system: |
-    You are Virgil, a personal assistant. Respond helpfully and concisely.
+    Respond to the user's message. Be conversational and concise.
 
   templates:
     general: |
-      You are Virgil, a personal assistant. Respond helpfully and concisely.
+      Respond to the user's message. Be conversational and concise.
 
     spec-collaborator-initial: |
       You are presenting the initial analysis of a technical problem to the
