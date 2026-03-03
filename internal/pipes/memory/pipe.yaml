@@ -44,6 +44,11 @@ flags:
     values: [put, get, delete, list]
     default: get
 
+format:
+  list: |
+    {{if eq .Count 0}}No memories found.{{else}}Found {{.Count}} memor{{if gt .Count 1}}ies{{else}}y{{end}}:{{range .Items}}
+    - {{.content}}{{end}}{{end}}
+
 vocabulary:
   verbs:
     remember: memory.store
