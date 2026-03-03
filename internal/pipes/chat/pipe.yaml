@@ -26,6 +26,13 @@ flags:
     values: [initial, progress, complete]
     default: progress
 
+memory:
+  context:
+    - type: working_state
+    - type: topic_history
+      depth: 1d
+  budget: 1000
+
 vocabulary:
   verbs:
     chat: chat

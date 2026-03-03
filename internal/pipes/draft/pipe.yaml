@@ -36,6 +36,13 @@ flags:
     values: [short, medium, long]
     default: medium
 
+memory:
+  context:
+    - type: user_preferences
+    - type: topic_history
+      depth: 7d
+  budget: 1500
+
 vocabulary:
   verbs:
     draft: draft

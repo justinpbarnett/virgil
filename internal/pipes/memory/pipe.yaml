@@ -1,11 +1,12 @@
 name: memory
-description: Stores and retrieves information from local memory.
+description: Explicitly stores, retrieves, and forgets information from local memory. For automatic context injection, pipes declare memory needs in pipe.yaml and the runtime satisfies them.
 category: memory
 
 triggers:
   exact:
     - "remember this"
     - "what do I know"
+    - "forget this"
   keywords:
     - remember
     - recall
@@ -17,6 +18,7 @@ triggers:
     - "remember {topic}"
     - "recall {topic}"
     - "what do I know about {topic}"
+    - "forget {topic}"
 
 flags:
   action:

@@ -38,6 +38,13 @@ flags:
     values: [socratic, guided, challenge]
     default: socratic
 
+memory:
+  context:
+    - type: topic_history
+      depth: 30d
+    - type: user_preferences
+  budget: 2000
+
 vocabulary:
   verbs:
     teach: educate
@@ -46,20 +53,12 @@ vocabulary:
     tutor: educate
     explain: educate
   types: {}
-  sources:
-    notes: memory
+  sources: {}
   modifiers: {}
 
 templates:
   priority: 50
   entries:
-    - requires: [verb, source, topic]
-      plan:
-        - pipe: "{source}"
-          flags: { action: retrieve, topic: "{topic}", limit: "5" }
-        - pipe: "{verb}"
-          flags: { topic: "{topic}" }
-
     - requires: [verb, topic]
       plan:
         - pipe: "{verb}"
