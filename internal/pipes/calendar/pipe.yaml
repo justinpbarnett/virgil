@@ -26,9 +26,13 @@ flags:
     description: Which calendar to use.
     default: primary
 
+format:
+  list: |
+    {{if eq .Count 0}}Your calendar is clear.{{else}}You have {{.Count}} event{{if gt .Count 1}}s{{end}} today:{{range .Items}}
+    - {{.title}} at {{.start}}{{if .end}} - {{.end}}{{end}}{{if .location}} ({{.location}}){{end}}{{end}}{{end}}
+
 vocabulary:
   verbs:
-    check: calendar
     show: calendar
   types: {}
   sources:
