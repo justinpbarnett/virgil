@@ -39,10 +39,8 @@ timeout: 90s
 triggers:
   exact:
     - "review this"
-    - "check this"
   keywords:
     - review
-    - check
     - evaluate
     - audit
     - verify
@@ -50,7 +48,6 @@ triggers:
     - assess
   patterns:
     - "review {type}"
-    - "check {type} for {topic}"
     - "review {source} against {topic}"
 
 flags:
@@ -72,7 +69,6 @@ flags:
 vocabulary:
   verbs:
     review: review
-    check: review
     evaluate: review
     audit: review
     verify: review
