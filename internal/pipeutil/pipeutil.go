@@ -70,19 +70,26 @@ func ExecuteTemplate(compiled map[string]*template.Template, key string, data an
 	return buf.String(), nil
 }
 
-// StripMarkdownFences removes ```json or ``` fences from AI model output.
+// StripMarkdownFences removes ``` fences from AI model output, including any
+// language specifier on the opening fence line (e.g. ```json, ```python).
 func StripMarkdownFences(s string) string {
 	s = strings.TrimSpace(s)
-	if strings.HasPrefix(s, "```json") {
-		s = strings.TrimPrefix(s, "```json")
-		s = strings.TrimSuffix(s, "```")
-		s = strings.TrimSpace(s)
-	} else if strings.HasPrefix(s, "```") {
-		s = strings.TrimPrefix(s, "```")
-		s = strings.TrimSuffix(s, "```")
-		s = strings.TrimSpace(s)
+	if !strings.HasPrefix(s, "```") {
+		return s
 	}
-	return s
+	// Strip opening fence line (includes language tag like ```python or ```json)
+	newline := strings.Index(s, "\n")
+	if newline != -1 {
+		s = s[newline+1:]
+	} else {
+		// Single-line fence with no content (e.g. "```json") — nothing to keep.
+		return ""
+	}
+	// Strip closing fence
+	if idx := strings.LastIndex(s, "```"); idx != -1 {
+		s = s[:idx]
+	}
+	return strings.TrimSpace(s)
 }
 
 // FlagOrDefault returns the flag value if present, otherwise the default.
