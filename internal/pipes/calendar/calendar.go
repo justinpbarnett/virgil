@@ -44,11 +44,10 @@ func NewHandler(client CalendarClient, logger *slog.Logger) pipe.Handler {
 
 		rangeFlag := flags["range"]
 		if rangeFlag == "" {
-			// Fall back to modifier if range is not explicitly set
 			rangeFlag = flags["modifier"]
-		}
-		if rangeFlag == "" {
-			rangeFlag = "today"
+			if rangeFlag == "" {
+				rangeFlag = "today"
+			}
 		}
 
 		timeMin, timeMax := resolveRange(rangeFlag)

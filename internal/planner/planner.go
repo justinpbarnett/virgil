@@ -39,6 +39,7 @@ func (p *Planner) Plan(route router.RouteResult, parsed parser.ParsedSignal) run
 	}
 
 	// No template match — single step plan for the routed pipe
+	// Capacity hint: up to 3 entries (action, topic, modifier).
 	flags := make(map[string]string, 3)
 	if parsed.Action != "" {
 		flags["action"] = parsed.Action
