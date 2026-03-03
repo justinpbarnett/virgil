@@ -82,19 +82,7 @@ vocabulary:
 templates:
   priority: 50
   entries:
-    - requires: [verb, type, source]
-      plan:
-        - pipe: "{source}"
-          flags: { action: read }
-        - pipe: "{verb}"
-          flags: { type: "{type}" }
-
     - requires: [verb, source]
       plan:
         - pipe: "{source}"
           flags: { action: list }
-
-    - requires: [verb, type]
-      plan:
-        - pipe: "{verb}"
-          flags: { type: "{type}" }
