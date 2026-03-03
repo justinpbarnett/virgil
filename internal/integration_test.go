@@ -1,13 +1,16 @@
 package internal
 
 import (
+	"context"
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/justinpbarnett/virgil/internal/config"
 	"github.com/justinpbarnett/virgil/internal/envelope"
@@ -23,10 +26,6 @@ import (
 	"github.com/justinpbarnett/virgil/internal/server"
 	"github.com/justinpbarnett/virgil/internal/store"
 	"github.com/justinpbarnett/virgil/internal/testutil"
-
-	"context"
-	"log/slog"
-	"time"
 )
 
 // Mock calendar client
@@ -83,7 +82,7 @@ func setupIntegrationServer(t *testing.T) http.Handler {
 	}
 
 	if chatCfg, ok := cfg.Pipes["chat"]; ok {
-		reg.Register(chatCfg.ToDefinition(), chatPipe.NewHandler(provider, chatCfg.Prompts.System, nil))
+		reg.Register(chatCfg.ToDefinition(), chatPipe.NewHandler(provider, chatCfg.Prompts.System, chatCfg.Prompts.Templates, nil))
 	}
 
 	// Build router
@@ -97,10 +96,13 @@ func setupIntegrationServer(t *testing.T) http.Handler {
 	// Build planner
 	pl := planner.New(cfg.Templates, cfg.Vocabulary.Sources, nil)
 
-	// Build runtime
+	// Build runtime with format templates
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelDebug}))
 	observer := runtime.NewLogObserver(logger, config.Debug)
-	run := runtime.New(reg, observer, logger)
+	run, err := runtime.NewWithFormats(reg, observer, logger, config.Debug, cfg.RawFormats())
+	if err != nil {
+		t.Fatalf("failed to build runtime: %v", err)
+	}
 
 	// Build server
 	srv := server.New(server.Deps{
@@ -115,7 +117,8 @@ func setupIntegrationServer(t *testing.T) http.Handler {
 	return srv.Handler()
 }
 
-func sendSignal(handler http.Handler, text string) envelope.Envelope {
+func sendSignal(t *testing.T, handler http.Handler, text string) envelope.Envelope {
+	t.Helper()
 	body := strings.NewReader(`{"text":"` + text + `"}`)
 	req := httptest.NewRequest("POST", "/signal", body)
 	req.Header.Set("Content-Type", "application/json")
@@ -123,76 +126,92 @@ func sendSignal(handler http.Handler, text string) envelope.Envelope {
 	handler.ServeHTTP(w, req)
 
 	var env envelope.Envelope
-	json.Unmarshal(w.Body.Bytes(), &env)
+	if err := json.Unmarshal(w.Body.Bytes(), &env); err != nil {
+		t.Fatalf("failed to unmarshal response: %v", err)
+	}
 	return env
 }
 
-// Scenario 1: "what's on my calendar today" → calendar retrieves, chat synthesizes
+// Scenario 1: "what's on my calendar today" → calendar retrieves events, formatted to text
 func TestIntegration_CalendarToday(t *testing.T) {
 	handler := setupIntegrationServer(t)
-	result := sendSignal(handler, "what's on my calendar today")
+	result := sendSignal(t, handler, "what's on my calendar today")
 
 	if result.Error != nil {
 		t.Fatalf("unexpected error: %v", result.Error)
 	}
-	if result.Pipe != "chat" {
-		t.Errorf("expected final pipe=chat (synthesis), got %s", result.Pipe)
+	if result.Pipe != "calendar" {
+		t.Errorf("expected final pipe=calendar, got %s", result.Pipe)
 	}
 	if result.ContentType != "text" {
-		t.Errorf("expected content_type=text, got %s", result.ContentType)
+		t.Errorf("expected content_type=text (formatted), got %s", result.ContentType)
+	}
+	s, ok := result.Content.(string)
+	if !ok {
+		t.Fatalf("expected string content, got %T", result.Content)
+	}
+	if !strings.Contains(s, "3 events") {
+		t.Errorf("expected '3 events' in output, got: %s", s)
+	}
+	if !strings.Contains(s, "Standup") {
+		t.Errorf("expected 'Standup' in output, got: %s", s)
 	}
 }
 
-// Scenario 2: "remember that OAuth uses short-lived tokens" → memory stores, chat synthesizes
+// Scenario 2: "remember that OAuth uses short-lived tokens" → memory stores (already text, no formatting)
 func TestIntegration_MemoryStore(t *testing.T) {
 	handler := setupIntegrationServer(t)
-	result := sendSignal(handler, "remember that OAuth uses short-lived tokens")
+	result := sendSignal(t, handler, "remember that OAuth uses short-lived tokens")
 
 	if result.Error != nil {
 		t.Fatalf("unexpected error: %v", result.Error)
 	}
-	if result.Pipe != "chat" {
-		t.Errorf("expected final pipe=chat (synthesis), got %s", result.Pipe)
+	if result.Pipe != "memory" {
+		t.Errorf("expected final pipe=memory, got %s", result.Pipe)
 	}
 	if result.ContentType != "text" {
 		t.Errorf("expected content_type=text, got %s", result.ContentType)
 	}
 }
 
-// Scenario 3: "what do I know about OAuth" → memory retrieves, chat synthesizes
+// Scenario 3: "what do I know about OAuth" → memory retrieves, formatted to text
 func TestIntegration_MemoryRetrieve(t *testing.T) {
 	handler := setupIntegrationServer(t)
 
 	// First store something
-	sendSignal(handler, "remember that OAuth uses short-lived tokens")
+	sendSignal(t, handler, "remember that OAuth uses short-lived tokens")
 
 	// Then retrieve
-	result := sendSignal(handler, "what do I know about OAuth")
+	result := sendSignal(t, handler, "what do I know about OAuth")
 
 	if result.Error != nil {
 		t.Fatalf("unexpected error: %v", result.Error)
 	}
-	if result.Pipe != "chat" {
-		t.Errorf("expected final pipe=chat (synthesis), got %s", result.Pipe)
+	if result.Pipe != "memory" {
+		t.Errorf("expected final pipe=memory, got %s", result.Pipe)
 	}
 	if result.ContentType != "text" {
-		t.Errorf("expected content_type=text (synthesized), got %s", result.ContentType)
+		t.Errorf("expected content_type=text (formatted), got %s", result.ContentType)
 	}
-	if result.Content == nil || result.Content == "" {
-		t.Error("expected non-empty synthesized content")
+	s, ok := result.Content.(string)
+	if !ok {
+		t.Fatalf("expected string content, got %T", result.Content)
+	}
+	if !strings.Contains(s, "Found") {
+		t.Errorf("expected 'Found' in output, got: %s", s)
 	}
 }
 
-// Scenario 4: "draft a blog post about my notes on OAuth" → memory.retrieve | draft | chat
+// Scenario 4: "draft a blog post about my notes on OAuth" → memory.retrieve | draft
 func TestIntegration_DraftFromNotes(t *testing.T) {
 	handler := setupIntegrationServer(t)
 
 	// Store some notes first
-	sendSignal(handler, "remember that OAuth uses short-lived tokens")
-	sendSignal(handler, "remember that OAuth refresh tokens should be rotated")
+	sendSignal(t, handler, "remember that OAuth uses short-lived tokens")
+	sendSignal(t, handler, "remember that OAuth refresh tokens should be rotated")
 
 	// Draft from notes
-	result := sendSignal(handler, "draft a blog post about my notes on OAuth")
+	result := sendSignal(t, handler, "draft a blog post about my notes on OAuth")
 
 	if result.Error != nil {
 		t.Fatalf("unexpected error: %v", result.Error)
@@ -200,15 +219,15 @@ func TestIntegration_DraftFromNotes(t *testing.T) {
 	if result.ContentType != "text" {
 		t.Errorf("expected content_type=text, got %s", result.ContentType)
 	}
-	if result.Pipe != "chat" {
-		t.Errorf("expected final pipe=chat (synthesis), got %s", result.Pipe)
+	if result.Pipe != "draft" {
+		t.Errorf("expected final pipe=draft, got %s", result.Pipe)
 	}
 }
 
 // Scenario 5: "xyzzy foobar nonsense" → falls through to chat, miss logged
 func TestIntegration_FallbackToChat(t *testing.T) {
 	handler := setupIntegrationServer(t)
-	result := sendSignal(handler, "xyzzy foobar nonsense")
+	result := sendSignal(t, handler, "xyzzy foobar nonsense")
 
 	if result.Error != nil {
 		t.Fatalf("unexpected error: %v", result.Error)
@@ -242,7 +261,7 @@ func TestIntegration_MissLogStructure(t *testing.T) {
 
 	reg := pipe.NewRegistry()
 	if chatCfg, ok := cfg.Pipes["chat"]; ok {
-		reg.Register(chatCfg.ToDefinition(), chatPipe.NewHandler(provider, chatCfg.Prompts.System, nil))
+		reg.Register(chatCfg.ToDefinition(), chatPipe.NewHandler(provider, chatCfg.Prompts.System, chatCfg.Prompts.Templates, nil))
 	}
 
 	missLog, _ := router.NewMissLog(missLogPath)
@@ -264,7 +283,7 @@ func TestIntegration_MissLogStructure(t *testing.T) {
 	handler := srv.Handler()
 
 	// Send unrecognized signal
-	sendSignal(handler, "completely unknown gibberish")
+	sendSignal(t, handler, "completely unknown gibberish")
 
 	// Read miss log
 	data, err := os.ReadFile(missLogPath)
