@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func tempDB(t *testing.T) *Store {
@@ -127,5 +128,223 @@ func TestSearchPreservesTags(t *testing.T) {
 	}
 	if len(results[0].Tags) != 2 {
 		t.Errorf("expected 2 tags, got %d", len(results[0].Tags))
+	}
+}
+
+// --- Working State tests ---
+
+func TestPutState_Insert(t *testing.T) {
+	s := tempDB(t)
+
+	if err := s.PutState("spec", "oauth-login", "# OAuth Login Spec"); err != nil {
+		t.Fatalf("PutState: %v", err)
+	}
+
+	content, found, err := s.GetState("spec", "oauth-login")
+	if err != nil {
+		t.Fatalf("GetState: %v", err)
+	}
+	if !found {
+		t.Fatal("expected entry to be found")
+	}
+	if content != "# OAuth Login Spec" {
+		t.Fatalf("got content %q, want %q", content, "# OAuth Login Spec")
+	}
+}
+
+func TestPutState_Update(t *testing.T) {
+	s := tempDB(t)
+
+	if err := s.PutState("spec", "oauth-login", "v1"); err != nil {
+		t.Fatalf("PutState v1: %v", err)
+	}
+
+	time.Sleep(10 * time.Millisecond)
+
+	if err := s.PutState("spec", "oauth-login", "v2"); err != nil {
+		t.Fatalf("PutState v2: %v", err)
+	}
+
+	content, found, err := s.GetState("spec", "oauth-login")
+	if err != nil {
+		t.Fatalf("GetState: %v", err)
+	}
+	if !found {
+		t.Fatal("expected entry to be found")
+	}
+	if content != "v2" {
+		t.Fatalf("got content %q, want %q", content, "v2")
+	}
+
+	// Verify only one row exists (upsert, not duplicate insert)
+	entries, err := s.ListState("spec")
+	if err != nil {
+		t.Fatalf("ListState: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("expected 1 entry after upsert, got %d", len(entries))
+	}
+}
+
+func TestGetState_NotFound(t *testing.T) {
+	s := tempDB(t)
+
+	content, found, err := s.GetState("spec", "nonexistent")
+	if err != nil {
+		t.Fatalf("GetState: %v", err)
+	}
+	if found {
+		t.Fatal("expected not found")
+	}
+	if content != "" {
+		t.Fatalf("expected empty content, got %q", content)
+	}
+}
+
+func TestDeleteState(t *testing.T) {
+	s := tempDB(t)
+
+	if err := s.PutState("spec", "oauth-login", "content"); err != nil {
+		t.Fatalf("PutState: %v", err)
+	}
+
+	if err := s.DeleteState("spec", "oauth-login"); err != nil {
+		t.Fatalf("DeleteState: %v", err)
+	}
+
+	_, found, err := s.GetState("spec", "oauth-login")
+	if err != nil {
+		t.Fatalf("GetState: %v", err)
+	}
+	if found {
+		t.Fatal("expected entry to be deleted")
+	}
+}
+
+func TestDeleteState_NotFound(t *testing.T) {
+	s := tempDB(t)
+
+	if err := s.DeleteState("spec", "nonexistent"); err != nil {
+		t.Fatalf("DeleteState on nonexistent key: %v", err)
+	}
+}
+
+func TestListState(t *testing.T) {
+	s := tempDB(t)
+
+	if err := s.PutState("spec", "a", "content-a"); err != nil {
+		t.Fatalf("PutState a: %v", err)
+	}
+	time.Sleep(10 * time.Millisecond)
+	if err := s.PutState("spec", "b", "content-b"); err != nil {
+		t.Fatalf("PutState b: %v", err)
+	}
+	time.Sleep(10 * time.Millisecond)
+	if err := s.PutState("spec", "c", "content-c"); err != nil {
+		t.Fatalf("PutState c: %v", err)
+	}
+
+	entries, err := s.ListState("spec")
+	if err != nil {
+		t.Fatalf("ListState: %v", err)
+	}
+	if len(entries) != 3 {
+		t.Fatalf("expected 3 entries, got %d", len(entries))
+	}
+
+	// Should be ordered by updated_at DESC (c, b, a)
+	if entries[0].Key != "c" {
+		t.Fatalf("expected first entry key 'c', got %q", entries[0].Key)
+	}
+	if entries[1].Key != "b" {
+		t.Fatalf("expected second entry key 'b', got %q", entries[1].Key)
+	}
+	if entries[2].Key != "a" {
+		t.Fatalf("expected third entry key 'a', got %q", entries[2].Key)
+	}
+
+	// Verify content and namespace
+	if entries[0].Content != "content-c" {
+		t.Fatalf("expected content 'content-c', got %q", entries[0].Content)
+	}
+	if entries[0].Namespace != "spec" {
+		t.Fatalf("expected namespace 'spec', got %q", entries[0].Namespace)
+	}
+}
+
+func TestListState_Empty(t *testing.T) {
+	s := tempDB(t)
+
+	entries, err := s.ListState("empty-namespace")
+	if err != nil {
+		t.Fatalf("ListState: %v", err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("expected 0 entries, got %d", len(entries))
+	}
+}
+
+func TestNamespaceIsolation(t *testing.T) {
+	s := tempDB(t)
+
+	if err := s.PutState("ns1", "key", "content-ns1"); err != nil {
+		t.Fatalf("PutState ns1: %v", err)
+	}
+	if err := s.PutState("ns2", "key", "content-ns2"); err != nil {
+		t.Fatalf("PutState ns2: %v", err)
+	}
+
+	// Get from ns1
+	content, found, err := s.GetState("ns1", "key")
+	if err != nil {
+		t.Fatalf("GetState ns1: %v", err)
+	}
+	if !found {
+		t.Fatal("expected ns1 entry to be found")
+	}
+	if content != "content-ns1" {
+		t.Fatalf("ns1: got %q, want %q", content, "content-ns1")
+	}
+
+	// Get from ns2
+	content, found, err = s.GetState("ns2", "key")
+	if err != nil {
+		t.Fatalf("GetState ns2: %v", err)
+	}
+	if !found {
+		t.Fatal("expected ns2 entry to be found")
+	}
+	if content != "content-ns2" {
+		t.Fatalf("ns2: got %q, want %q", content, "content-ns2")
+	}
+
+	// Delete from ns1 shouldn't affect ns2
+	if err := s.DeleteState("ns1", "key"); err != nil {
+		t.Fatalf("DeleteState ns1: %v", err)
+	}
+
+	_, found, err = s.GetState("ns2", "key")
+	if err != nil {
+		t.Fatalf("GetState ns2 after ns1 delete: %v", err)
+	}
+	if !found {
+		t.Fatal("ns2 entry should still exist after ns1 delete")
+	}
+
+	// List should only show entries in the given namespace
+	entries, err := s.ListState("ns1")
+	if err != nil {
+		t.Fatalf("ListState ns1: %v", err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("expected 0 entries in ns1 after delete, got %d", len(entries))
+	}
+
+	entries, err = s.ListState("ns2")
+	if err != nil {
+		t.Fatalf("ListState ns2: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("expected 1 entry in ns2, got %d", len(entries))
 	}
 }
