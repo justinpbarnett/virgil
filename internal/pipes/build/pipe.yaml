@@ -1,0 +1,98 @@
+name: build
+description: Plans and implements code changes with tests from a feature spec and codebase context.
+category: dev
+streaming: true
+timeout: 300s
+
+triggers:
+  exact:
+    - "build feature"
+    - "implement feature"
+  keywords:
+    - build
+    - implement
+    - construct
+  patterns:
+    - "build {topic}"
+    - "implement {topic}"
+    - "build {topic} in {source}"
+
+flags:
+  spec:
+    description: The feature description to implement.
+    default: ""
+  style:
+    description: Implementation approach.
+    values: [tdd, impl-first]
+    default: tdd
+  findings:
+    description: Structured reviewer findings from a previous cycle (JSON string).
+    default: ""
+
+vocabulary:
+  verbs:
+    build: build
+    implement: build
+    construct: build
+  types: {}
+  sources: {}
+  modifiers: {}
+
+templates:
+  priority: 40
+  entries:
+    - requires: [verb]
+      plan:
+        - pipe: build
+          flags: {}
+
+prompts:
+  system: |
+    You are a meticulous software developer. You plan before you code,
+    write tests before implementation, and follow project conventions exactly.
+
+    Rules:
+    - Read the codebase context carefully. Match existing patterns — naming,
+      error handling, import style, test structure.
+    - Plan your approach first: list which files to create or modify, what
+      tests to write, and the implementation order.
+    - Write tests first (TDD). Make them fail. Then implement until they pass.
+    - Handle errors explicitly. No silent failures.
+    - Do not modify files outside the working directory.
+    - When findings from a reviewer are present, address each finding
+      specifically. Do not reimplement from scratch — make targeted changes
+      that resolve each issue.
+    - Keep changes minimal and focused. Do not refactor code that isn't
+      related to the feature or findings.
+
+  templates:
+    initial: |
+      Implement the following feature.
+
+      ## Feature Spec
+      {{.Spec}}
+
+      ## Codebase Context
+      {{.Context}}
+
+      {{if .Style}}Implementation style: {{.Style}}{{end}}
+
+      Plan your approach, then implement. Write tests first.
+
+    rework: |
+      Address the following reviewer findings for this feature.
+
+      ## Feature Spec
+      {{.Spec}}
+
+      ## Codebase Context
+      {{.Context}}
+
+      ## Reviewer Findings
+      {{range .Findings}}
+      - [{{.Category}}/{{.Severity}}] {{.File}}:{{.Line}} — {{.Issue}}
+        Action: {{.Action}}
+      {{end}}
+
+      Address each finding specifically. Do not reimplement from scratch.
+      Make targeted changes that resolve each issue.
