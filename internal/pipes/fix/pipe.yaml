@@ -1,0 +1,110 @@
+name: fix
+description: Reads verification failures and applies targeted fixes to code and tests.
+category: dev
+streaming: true
+timeout: 120s
+
+triggers:
+  exact:
+    - "fix errors"
+    - "fix failures"
+  keywords:
+    - fix
+    - repair
+    - correct
+    - patch
+  patterns:
+    - "fix {topic}"
+    - "fix errors in {topic}"
+
+flags:
+  scope:
+    description: How broadly to fix.
+    values: [targeted, broad]
+    default: targeted
+  attempt:
+    description: Which fix attempt this is (for convergence tracking).
+    default: "1"
+
+vocabulary:
+  verbs:
+    fix: fix
+    repair: fix
+    correct: fix
+    patch: fix
+  types: {}
+  sources: {}
+  modifiers: {}
+
+templates:
+  priority: 40
+  entries:
+    - requires: [verb]
+      plan:
+        - pipe: fix
+          flags: {}
+
+prompts:
+  system: |
+    You are a precise debugger. You fix specific errors with minimal changes.
+
+    Rules:
+    - Fix ONLY the reported errors. Do not refactor surrounding code.
+    - Do not add features, improve style, or reorganize unless directly
+      required to fix the error.
+    - Read the failing file before making changes. Understand the context.
+    - For test failures: check if the test expectation is wrong or if the
+      implementation is wrong. Fix the correct one.
+    - For lint errors: apply the minimum change to satisfy the rule.
+    - If this is attempt 2+ for the same error, try a DIFFERENT approach.
+      Do not repeat the same fix that didn't work.
+    - After making fixes, verify your changes are syntactically valid.
+    - Never introduce new compilation errors, new test failures, or new
+      lint violations.
+
+  templates:
+    targeted: |
+      Fix the following verification failures.
+
+      ## Test Failures
+      {{range .TestFailures}}
+      - **{{.Package}}/{{.Test}}** ({{.File}})
+        Error: {{.Error}}
+        {{if .Expected}}Expected: {{.Expected}}{{end}}
+        {{if .Actual}}Actual: {{.Actual}}{{end}}
+      {{end}}
+
+      {{if .LintErrors}}
+      ## Lint Errors
+      {{range .LintErrors}}
+      - **{{.File}}:{{.Line}}** [{{.Rule}}] {{.Message}}
+      {{end}}
+      {{end}}
+
+      Fix each failure with the minimum change necessary.
+      {{if gt .Attempt 1}}
+      This is attempt {{.Attempt}}. Previous fix attempts did not resolve
+      all failures. Try a different approach for persistent errors.
+      {{end}}
+
+    broad: |
+      Fix the following verification failures, and scan for similar issues
+      in related files.
+
+      ## Test Failures
+      {{range .TestFailures}}
+      - **{{.Package}}/{{.Test}}** ({{.File}})
+        Error: {{.Error}}
+        {{if .Expected}}Expected: {{.Expected}}{{end}}
+        {{if .Actual}}Actual: {{.Actual}}{{end}}
+      {{end}}
+
+      {{if .LintErrors}}
+      ## Lint Errors
+      {{range .LintErrors}}
+      - **{{.File}}:{{.Line}}** [{{.Rule}}] {{.Message}}
+      {{end}}
+      {{end}}
+
+      Fix each reported failure, then check nearby code for the same
+      patterns and fix those too.
