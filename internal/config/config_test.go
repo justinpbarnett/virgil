@@ -734,6 +734,85 @@ format:
 	}
 }
 
+func TestMemoryConfigParsing(t *testing.T) {
+	var pc PipeConfig
+	data := []byte(`
+name: educate
+memory:
+  context:
+    - type: topic_history
+      depth: 30d
+    - type: user_preferences
+  budget: 2000
+`)
+	if err := UnmarshalPipeConfig(data, &pc); err != nil {
+		t.Fatalf("unmarshal error: %v", err)
+	}
+	if len(pc.Memory.Context) != 2 {
+		t.Fatalf("expected 2 context entries, got %d", len(pc.Memory.Context))
+	}
+	if pc.Memory.Context[0].Type != "topic_history" {
+		t.Errorf("expected type=topic_history, got %s", pc.Memory.Context[0].Type)
+	}
+	if pc.Memory.Context[0].Depth != "30d" {
+		t.Errorf("expected depth=30d, got %s", pc.Memory.Context[0].Depth)
+	}
+	if pc.Memory.Context[1].Type != "user_preferences" {
+		t.Errorf("expected type=user_preferences, got %s", pc.Memory.Context[1].Type)
+	}
+	if pc.Memory.Budget != 2000 {
+		t.Errorf("expected budget=2000, got %d", pc.Memory.Budget)
+	}
+	if pc.Memory.Disabled {
+		t.Error("expected disabled=false")
+	}
+}
+
+func TestMemoryConfigDisabled(t *testing.T) {
+	var pc PipeConfig
+	data := []byte(`
+name: calendar
+memory:
+  disabled: true
+`)
+	if err := UnmarshalPipeConfig(data, &pc); err != nil {
+		t.Fatalf("unmarshal error: %v", err)
+	}
+	if !pc.Memory.Disabled {
+		t.Error("expected disabled=true")
+	}
+}
+
+func TestDefaultMemoryConfig(t *testing.T) {
+	cfg := DefaultMemoryConfig()
+	if len(cfg.Context) != 1 {
+		t.Fatalf("expected 1 context entry, got %d", len(cfg.Context))
+	}
+	if cfg.Context[0].Type != "working_state" {
+		t.Errorf("expected type=working_state, got %s", cfg.Context[0].Type)
+	}
+	if cfg.Budget != 500 {
+		t.Errorf("expected budget=500, got %d", cfg.Budget)
+	}
+	if cfg.Disabled {
+		t.Error("expected disabled=false")
+	}
+}
+
+func TestMemoryConfigAbsentGivesZeroValue(t *testing.T) {
+	var pc PipeConfig
+	data := []byte(`name: chat`)
+	if err := UnmarshalPipeConfig(data, &pc); err != nil {
+		t.Fatalf("unmarshal error: %v", err)
+	}
+	if pc.Memory.Disabled {
+		t.Error("expected disabled=false when absent")
+	}
+	if len(pc.Memory.Context) != 0 {
+		t.Errorf("expected no context entries when absent, got %d", len(pc.Memory.Context))
+	}
+}
+
 func TestPipeConfigModelAndMaxTurnsFromYAML(t *testing.T) {
 	var pc PipeConfig
 	data := []byte(`

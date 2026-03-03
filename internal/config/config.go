@@ -135,6 +135,25 @@ type ProviderConfig struct {
 	Binary string `yaml:"binary"`
 }
 
+type MemoryContextEntry struct {
+	Type  string `yaml:"type"`
+	Depth string `yaml:"depth"`
+}
+
+type MemoryConfig struct {
+	Context  []MemoryContextEntry `yaml:"context"`
+	Budget   int                  `yaml:"budget"`
+	Disabled bool                 `yaml:"disabled"`
+}
+
+// DefaultMemoryConfig returns the default memory config for pipes that don't declare one.
+func DefaultMemoryConfig() MemoryConfig {
+	return MemoryConfig{
+		Context: []MemoryContextEntry{{Type: "working_state"}},
+		Budget:  500,
+	}
+}
+
 type PipeConfig struct {
 	Name         string                `yaml:"name"`
 	Description  string                `yaml:"description"`
@@ -150,6 +169,7 @@ type PipeConfig struct {
 	Format       map[string]string     `yaml:"format"`
 	Vocabulary   VocabularyConfig      `yaml:"vocabulary"`
 	Templates    TemplateContrib       `yaml:"templates"`
+	Memory       MemoryConfig          `yaml:"memory"`
 	Dir          string                `yaml:"-"`
 }
 
