@@ -2,8 +2,10 @@ package runtime
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"maps"
+	"text/template"
 	"time"
 
 	"github.com/justinpbarnett/virgil/internal/config"
@@ -25,6 +27,7 @@ type Runtime struct {
 	observer Observer
 	logger   *slog.Logger
 	level    config.LogLevel
+	formats  map[string]map[string]*template.Template
 }
 
 func New(registry *pipe.Registry, observer Observer, logger *slog.Logger) *Runtime {
@@ -44,6 +47,18 @@ func NewWithLevel(registry *pipe.Registry, observer Observer, logger *slog.Logge
 		logger:   logger,
 		level:    level,
 	}
+}
+
+func NewWithFormats(registry *pipe.Registry, observer Observer, logger *slog.Logger, level config.LogLevel, rawFormats map[string]map[string]string) (*Runtime, error) {
+	rt := NewWithLevel(registry, observer, logger, level)
+	if len(rawFormats) > 0 {
+		compiled, err := compileFormats(rawFormats)
+		if err != nil {
+			return nil, fmt.Errorf("compiling format templates: %w", err)
+		}
+		rt.formats = compiled
+	}
+	return rt, nil
 }
 
 func (r *Runtime) logEnvelope(label string, env envelope.Envelope) {
@@ -94,10 +109,17 @@ func (r *Runtime) Execute(plan Plan, seed envelope.Envelope) envelope.Envelope {
 	start := time.Now()
 	current := seed
 
+	if len(plan.Steps) == 0 {
+		current.Duration = time.Since(start)
+		return current
+	}
+
 	r.logger.Info("plan started", "steps", len(plan.Steps))
 	r.logEnvelope("seed envelope", seed)
 
+	var lastPipe string
 	for _, step := range plan.Steps {
+		lastPipe = step.Pipe
 		current = r.runStep(step, current)
 		if isFatal(current) {
 			current.Duration = time.Since(start)
@@ -105,6 +127,7 @@ func (r *Runtime) Execute(plan Plan, seed envelope.Envelope) envelope.Envelope {
 		}
 	}
 
+	current = formatTerminal(current, lastPipe, r.formats)
 	current.Duration = time.Since(start)
 	r.logger.Info("plan complete", "duration", current.Duration.String())
 	return current
@@ -113,6 +136,12 @@ func (r *Runtime) Execute(plan Plan, seed envelope.Envelope) envelope.Envelope {
 func (r *Runtime) ExecuteStream(ctx context.Context, plan Plan, seed envelope.Envelope, sink func(chunk string)) envelope.Envelope {
 	start := time.Now()
 	current := seed
+
+	if len(plan.Steps) == 0 {
+		current.Duration = time.Since(start)
+		return current
+	}
+
 	lastIdx := len(plan.Steps) - 1
 
 	r.logger.Info("plan started", "steps", len(plan.Steps), "streaming", true)
@@ -129,6 +158,7 @@ func (r *Runtime) ExecuteStream(ctx context.Context, plan Plan, seed envelope.En
 				stepDuration := time.Since(stepStart)
 
 				r.observer.OnTransition(step.Pipe, result, stepDuration)
+				result = formatTerminal(result, step.Pipe, r.formats)
 				result.Duration = time.Since(start)
 				r.logger.Info("plan complete", "duration", result.Duration.String())
 				return result
@@ -143,6 +173,7 @@ func (r *Runtime) ExecuteStream(ctx context.Context, plan Plan, seed envelope.En
 		}
 	}
 
+	current = formatTerminal(current, plan.Steps[lastIdx].Pipe, r.formats)
 	current.Duration = time.Since(start)
 	r.logger.Info("plan complete", "duration", current.Duration.String())
 	return current

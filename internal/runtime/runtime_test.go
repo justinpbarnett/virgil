@@ -1,9 +1,11 @@
 package runtime
 
 import (
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/justinpbarnett/virgil/internal/config"
 	"github.com/justinpbarnett/virgil/internal/envelope"
 	"github.com/justinpbarnett/virgil/internal/pipe"
 )
@@ -217,5 +219,101 @@ func TestExecuteFlagsPassedToPipe(t *testing.T) {
 	}
 	if receivedFlags["key"] != "value" {
 		t.Errorf("expected key=value, got %s", receivedFlags["key"])
+	}
+}
+
+func TestExecuteTerminalFormatting(t *testing.T) {
+	reg := pipe.NewRegistry()
+	reg.Register(pipe.Definition{Name: "calendar"}, func(input envelope.Envelope, flags map[string]string) envelope.Envelope {
+		out := envelope.New("calendar", "list")
+		out.ContentType = envelope.ContentList
+		out.Content = []map[string]any{
+			{"title": "Standup", "start": "10:00 AM"},
+		}
+		return out
+	})
+
+	rawFormats := map[string]map[string]string{
+		"calendar": {
+			"list": `{{.Count}} event{{if gt .Count 1}}s{{end}}: {{range .Items}}{{.title}}{{end}}`,
+		},
+	}
+	rt, err := NewWithFormats(reg, nil, nil, config.Info, rawFormats)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	result := rt.Execute(Plan{Steps: []Step{{Pipe: "calendar"}}}, envelope.New("input", "test"))
+
+	if result.ContentType != envelope.ContentText {
+		t.Errorf("expected content_type=text, got %s", result.ContentType)
+	}
+	s, ok := result.Content.(string)
+	if !ok {
+		t.Fatalf("expected string content, got %T", result.Content)
+	}
+	if !strings.Contains(s, "1 event") {
+		t.Errorf("expected '1 event' in output, got: %s", s)
+	}
+}
+
+func TestExecuteMidPipelineNotFormatted(t *testing.T) {
+	reg := pipe.NewRegistry()
+	reg.Register(pipe.Definition{Name: "calendar"}, func(input envelope.Envelope, flags map[string]string) envelope.Envelope {
+		out := envelope.New("calendar", "list")
+		out.ContentType = envelope.ContentList
+		out.Content = []map[string]any{
+			{"title": "Standup", "start": "10:00 AM"},
+		}
+		return out
+	})
+	reg.Register(pipe.Definition{Name: "draft"}, func(input envelope.Envelope, flags map[string]string) envelope.Envelope {
+		out := envelope.New("draft", "generate")
+		out.ContentType = envelope.ContentText
+		// Verify the input is still structured, not formatted text
+		if _, ok := input.Content.([]map[string]any); !ok {
+			out.Content = "ERROR: expected list input"
+		} else {
+			out.Content = "draft output"
+		}
+		return out
+	})
+
+	rawFormats := map[string]map[string]string{
+		"calendar": {
+			"list": `{{.Count}} events formatted`,
+		},
+	}
+	rt, err := NewWithFormats(reg, nil, nil, config.Info, rawFormats)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	result := rt.Execute(Plan{Steps: []Step{
+		{Pipe: "calendar"},
+		{Pipe: "draft"},
+	}}, envelope.New("input", "test"))
+
+	if result.Content != "draft output" {
+		t.Errorf("expected 'draft output', got '%v'", result.Content)
+	}
+}
+
+func TestExecuteNoFormatsBackwardsCompatible(t *testing.T) {
+	reg := pipe.NewRegistry()
+	reg.Register(pipe.Definition{Name: "calendar"}, func(input envelope.Envelope, flags map[string]string) envelope.Envelope {
+		out := envelope.New("calendar", "list")
+		out.ContentType = envelope.ContentList
+		out.Content = []any{"event1", "event2"}
+		return out
+	})
+
+	rt := New(reg, nil, nil)
+
+	result := rt.Execute(Plan{Steps: []Step{{Pipe: "calendar"}}}, envelope.New("input", "test"))
+
+	// No formats → content type unchanged
+	if result.ContentType != envelope.ContentList {
+		t.Errorf("expected content_type=list (unchanged), got %s", result.ContentType)
 	}
 }

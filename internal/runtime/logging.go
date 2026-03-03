@@ -49,16 +49,11 @@ func (o *LogObserver) OnTransition(pipe string, env envelope.Envelope, duration 
 		return
 	}
 
-	status := "ok"
-	if hasError {
-		status = env.Error.Severity
-	}
-
 	// Info: short log
 	if hasError {
 		o.logger.Error("pipe error", "pipe", pipe, "duration", duration.String(), "error", env.Error.Message)
 	} else {
-		o.logger.Info("pipe ok", "pipe", pipe, "duration", duration.String(), "status", status)
+		o.logger.Info("pipe ok", "pipe", pipe, "duration", duration.String())
 	}
 
 	// Debug: full envelope JSON
