@@ -31,16 +31,14 @@ func main() {
 	// Resolve config directory
 	cfgDir := *configDir
 	if cfgDir == "" {
-		home, _ := os.UserHomeDir()
-		cfgDir = filepath.Join(home, ".config", "virgil")
+		cfgDir = config.UserDir()
 		if _, err := os.Stat(filepath.Join(cfgDir, "virgil.yaml")); os.IsNotExist(err) {
 			cfgDir = "config"
 		}
 	}
 
 	// Set up logging
-	logLevel := slog.LevelInfo
-	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: logLevel}))
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
 
 	if *serverMode {
 		if err := runServer(cfgDir, logger); err != nil {
@@ -63,7 +61,10 @@ func main() {
 	serverAddr := net.JoinHostPort(cfg.Server.Host, strconv.Itoa(cfg.Server.Port))
 
 	// Ensure server is running
-	binary, _ := os.Executable()
+	binary, err := os.Executable()
+	if err != nil {
+		logger.Warn("could not determine executable path", "error", err)
+	}
 	if err := tui.EnsureServer(binary, serverAddr); err != nil {
 		logger.Warn("auto-start failed, attempting inline", "error", err)
 	}
@@ -161,9 +162,12 @@ func runServer(cfgDir string, logger *slog.Logger) error {
 	// Build planner
 	pl := planner.New(cfg.Templates, cfg.Vocabulary.Sources, logger)
 
-	// Build runtime
+	// Build runtime with format templates
 	observer := runtime.NewLogObserver(logger, cfg.LogLevel)
-	run := runtime.NewWithLevel(reg, observer, logger, cfg.LogLevel)
+	run, err := runtime.NewWithFormats(reg, observer, logger, cfg.LogLevel, cfg.RawFormats())
+	if err != nil {
+		return fmt.Errorf("building runtime: %w", err)
+	}
 
 	// 4. Start HTTP server
 	srv := server.New(server.Deps{
