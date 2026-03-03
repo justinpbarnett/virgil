@@ -101,6 +101,11 @@ func (r *Runtime) runStep(step Step, current envelope.Envelope) envelope.Envelop
 	stepDuration := time.Since(stepStart)
 	result.Duration = stepDuration
 
+	if err := envelope.Validate(result); err != nil {
+		r.logger.Error("envelope validation failed", "pipe", step.Pipe, "error", err)
+		result.Error = envelope.FatalError("validation: " + err.Error())
+	}
+
 	r.observer.OnTransition(step.Pipe, result, stepDuration)
 	return result
 }
@@ -157,7 +162,18 @@ func (r *Runtime) ExecuteStream(ctx context.Context, plan Plan, seed envelope.En
 				result := sh(ctx, current, flags, sink)
 				stepDuration := time.Since(stepStart)
 
+				if err := envelope.Validate(result); err != nil {
+					r.logger.Error("envelope validation failed", "pipe", step.Pipe, "error", err)
+					result.Error = envelope.FatalError("validation: " + err.Error())
+				}
+
 				r.observer.OnTransition(step.Pipe, result, stepDuration)
+
+				if isFatal(result) {
+					result.Duration = time.Since(start)
+					return result
+				}
+
 				result = formatTerminal(result, step.Pipe, r.formats)
 				result.Duration = time.Since(start)
 				r.logger.Info("plan complete", "duration", result.Duration.String())

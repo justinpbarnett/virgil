@@ -45,7 +45,7 @@ func TestSubprocessHandler_HappyPath(t *testing.T) {
 	dir := t.TempDir()
 	exe := writeScript(t, dir, "run", `#!/bin/sh
 cat <<'EOF'
-{"pipe":"echo","action":"respond","args":{},"content":"it works","content_type":"text","error":null}
+{"pipe":"echo","action":"respond","args":{},"timestamp":"2024-01-01T00:00:00Z","content":"it works","content_type":"text","error":null}
 EOF
 `)
 
@@ -126,7 +126,7 @@ func TestSubprocessHandler_NonZeroExitWithValidEnvelope(t *testing.T) {
 	dir := t.TempDir()
 	exe := writeScript(t, dir, "run", `#!/bin/sh
 cat <<'EOF'
-{"pipe":"fail","action":"error","args":{},"content":null,"content_type":"","error":{"message":"handled error","severity":"error","retryable":true}}
+{"pipe":"fail","action":"error","args":{},"timestamp":"2024-01-01T00:00:00Z","content":null,"content_type":"","error":{"message":"handled error","severity":"error","retryable":true}}
 EOF
 exit 1
 `)
@@ -150,7 +150,7 @@ func TestSubprocessStreamHandler_HappyPath(t *testing.T) {
 	exe := writeScript(t, dir, "run", `#!/bin/sh
 echo '{"chunk":"First "}'
 echo '{"chunk":"Second "}'
-echo '{"envelope":{"pipe":"stream","action":"done","args":{},"content":"First Second ","content_type":"text","error":null}}'
+echo '{"envelope":{"pipe":"stream","action":"done","args":{},"timestamp":"2024-01-01T00:00:00Z","content":"First Second ","content_type":"text","error":null}}'
 `)
 
 	h := SubprocessStreamHandler(testConfig("stream", exe, dir, 5*time.Second))
@@ -198,7 +198,7 @@ func TestSubprocessHandler_ReadsStdin(t *testing.T) {
 # Read stdin, extract the envelope pipe field, echo it back
 INPUT=$(cat)
 PIPE=$(echo "$INPUT" | grep -o '"pipe":"[^"]*"' | head -1 | cut -d'"' -f4)
-echo "{\"pipe\":\"echo\",\"action\":\"respond\",\"args\":{},\"content\":\"got: $PIPE\",\"content_type\":\"text\",\"error\":null}"
+echo "{\"pipe\":\"echo\",\"action\":\"respond\",\"args\":{},\"timestamp\":\"2024-01-01T00:00:00Z\",\"content\":\"got: $PIPE\",\"content_type\":\"text\",\"error\":null}"
 `)
 
 	h := SubprocessHandler(testConfig("echo", exe, dir, 5*time.Second))
