@@ -1,0 +1,75 @@
+name: fs
+description: Reads, writes, and lists files within allowed project paths.
+category: dev
+streaming: false
+timeout: 30s
+
+triggers:
+  exact:
+    - "list files"
+    - "read file"
+    - "write file"
+    - "show files"
+  keywords:
+    - file
+    - files
+    - read
+    - write
+    - list
+    - directory
+    - folder
+    - path
+    - glob
+  patterns:
+    - "read {path}"
+    - "list files in {path}"
+    - "write to {path}"
+    - "find files matching {pattern}"
+
+flags:
+  action:
+    description: What operation to perform.
+    values: [read, write, list]
+    default: list
+  path:
+    description: File or directory path (relative to project root or an allowed safe path).
+    default: "."
+  pattern:
+    description: Glob pattern for filtering files in list mode.
+    default: ""
+
+format:
+  list: |
+    {{if eq .Count 0}}No files found.{{else}}{{.Count}} item{{if gt .Count 1}}s{{end}}:{{range .Items}}
+    - {{if .is_dir}}[dir] {{end}}{{.name}} ({{.size}} bytes){{end}}{{end}}
+  structured: |
+    Wrote {{.bytes_written}} bytes to {{.path}}
+
+vocabulary:
+  verbs:
+    read: fs.read
+    list: fs.list
+    find: fs.list
+    save: fs.write
+    persist: fs.write
+  types:
+    file: file
+    directory: directory
+    folder: directory
+  sources:
+    filesystem: fs
+    disk: fs
+  modifiers: {}
+
+templates:
+  priority: 40
+  entries:
+    - requires: [verb, source, type]
+      plan:
+        - pipe: "{source}"
+          flags: { action: "{verb}", path: "{topic}" }
+
+    - requires: [verb, source]
+      plan:
+        - pipe: "{source}"
+          flags: { action: "{verb}" }
