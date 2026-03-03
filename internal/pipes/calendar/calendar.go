@@ -22,6 +22,7 @@ type Event struct {
 	Start    string `json:"start"`
 	End      string `json:"end"`
 	Location string `json:"location"`
+	Time     string `json:"time"`
 }
 
 type CalendarClient interface {
@@ -124,6 +125,36 @@ func NewGoogleClient(configDir string) (*GoogleCalendarClient, error) {
 	}, nil
 }
 
+func formatEventTime(start, end string) string {
+	startTime, err := time.Parse(time.RFC3339, start)
+	if err != nil {
+		// All-day event: date-only "2006-01-02"
+		t, err := time.Parse("2006-01-02", start)
+		if err != nil {
+			return start
+		}
+		return t.Format("Mon, Jan 2")
+	}
+
+	if end == "" {
+		return startTime.Format("Mon, Jan 2, 3:04 PM")
+	}
+
+	endTime, err := time.Parse(time.RFC3339, end)
+	if err != nil {
+		return startTime.Format("Mon, Jan 2, 3:04 PM")
+	}
+
+	if startTime.Format("2006-01-02") == endTime.Format("2006-01-02") {
+		if (startTime.Hour() < 12) == (endTime.Hour() < 12) {
+			return startTime.Format("Mon, Jan 2, 3:04") + "–" + endTime.Format("3:04 PM")
+		}
+		return startTime.Format("Mon, Jan 2, 3:04 PM") + "–" + endTime.Format("3:04 PM")
+	}
+
+	return startTime.Format("Mon, Jan 2, 3:04 PM") + " – " + endTime.Format("Mon, Jan 2, 3:04 PM")
+}
+
 func (g *GoogleCalendarClient) GetEvents(ctx context.Context, calendarID string, timeMin, timeMax time.Time) ([]Event, error) {
 	u := &url.URL{
 		Scheme: "https",
@@ -186,6 +217,7 @@ func (g *GoogleCalendarClient) GetEvents(ctx context.Context, calendarID string,
 			Start:    start,
 			End:      end,
 			Location: item.Location,
+			Time:     formatEventTime(start, end),
 		}
 	}
 
