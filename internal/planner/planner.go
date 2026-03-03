@@ -27,14 +27,11 @@ func New(templates config.TemplatesConfig, sources map[string]string, logger *sl
 	}
 }
 
-const synthesizer = "chat"
-
 func (p *Planner) Plan(route router.RouteResult, parsed parser.ParsedSignal) runtime.Plan {
 	// Try template matching (component-presence-based)
 	for _, tmpl := range p.templates {
 		if p.matchesRequirements(tmpl.Requires, parsed) {
 			plan := p.resolveTemplate(tmpl, parsed)
-			plan = p.ensureSynthesis(plan)
 			p.logger.Info("planned", "steps", len(plan.Steps))
 			p.logger.Debug("template matched", "requires", tmpl.Requires, "steps", len(plan.Steps))
 			return plan
@@ -42,7 +39,7 @@ func (p *Planner) Plan(route router.RouteResult, parsed parser.ParsedSignal) run
 	}
 
 	// No template match — single step plan for the routed pipe
-	flags := make(map[string]string)
+	flags := make(map[string]string, 2)
 	if parsed.Action != "" {
 		flags["action"] = parsed.Action
 	}
@@ -55,24 +52,8 @@ func (p *Planner) Plan(route router.RouteResult, parsed parser.ParsedSignal) run
 			{Pipe: route.Pipe, Flags: flags},
 		},
 	}
-	plan = p.ensureSynthesis(plan)
 	p.logger.Info("planned", "steps", len(plan.Steps))
 	p.logger.Debug("no template, single step", "pipe", route.Pipe)
-	return plan
-}
-
-// ensureSynthesis appends a chat step to any plan that doesn't already
-// end with one. This turns raw pipe output (lists, structured data) into
-// a natural-language response by giving chat the original signal plus
-// the upstream context.
-func (p *Planner) ensureSynthesis(plan runtime.Plan) runtime.Plan {
-	if len(plan.Steps) == 0 {
-		return plan
-	}
-	if plan.Steps[len(plan.Steps)-1].Pipe == synthesizer {
-		return plan
-	}
-	plan.Steps = append(plan.Steps, runtime.Step{Pipe: synthesizer})
 	return plan
 }
 
@@ -109,7 +90,7 @@ func (p *Planner) resolveTemplate(tmpl config.TemplateEntry, parsed parser.Parse
 
 	for _, planStep := range tmpl.Plan {
 		pipeName := p.resolveVar(planStep.Pipe, parsed)
-		flags := make(map[string]string)
+		flags := make(map[string]string, len(planStep.Flags)+2)
 
 		for k, v := range planStep.Flags {
 			flags[k] = p.resolveVar(v, parsed)
@@ -165,10 +146,8 @@ func (p *Planner) resolveVar(s string, parsed parser.ParsedSignal) string {
 
 	// Resolve source: map source name to pipe name
 	sourcePipe := parsed.Source
-	if p.sources != nil {
-		if mapped, ok := p.sources[parsed.Source]; ok {
-			sourcePipe = mapped
-		}
+	if mapped, ok := p.sources[parsed.Source]; ok {
+		sourcePipe = mapped
 	}
 	s = strings.ReplaceAll(s, "{source}", sourcePipe)
 
