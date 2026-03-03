@@ -90,6 +90,45 @@ Same files as Calendar — no additional credential files needed:
   google-token.json          # OAuth2 access/refresh token (updated with Gmail scopes)
 ```
 
+## Jira API Setup
+
+The jira pipe requires a personal access token and a credentials file.
+
+### 1. Generate an API Token
+
+**Jira Cloud** (`yourco.atlassian.net`):
+
+1. Go to [Atlassian account settings](https://id.atlassian.com/manage-profile/security/api-tokens)
+2. Click **Create API token**
+3. Give it a label (e.g., "virgil") and copy the token
+
+**Jira Server / Data Center** (self-hosted):
+
+1. Log in to your Jira instance
+2. Navigate to your profile → **Personal Access Tokens**
+3. Click **Create token**, give it a name, and copy the token
+
+### 2. Create the Credentials File
+
+Create `~/.config/virgil/jira.json`:
+
+```json
+{
+  "base_url": "https://yourco.atlassian.net",
+  "email": "you@example.com",
+  "token": "your-api-token"
+}
+```
+
+For Jira Server / Data Center, `email` is still required in the file but is unused — only the Bearer token is sent. You can set it to any non-empty string.
+
+### Expected File Location
+
+```
+~/.config/virgil/
+  jira.json   # Jira credentials
+```
+
 ## Claude CLI Setup
 
 The draft and chat pipes require the Claude CLI for AI completions.
