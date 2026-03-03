@@ -1,0 +1,63 @@
+name: shell
+description: Runs a shell command and captures stdout/stderr.
+category: dev
+
+triggers:
+  exact:
+    - "run command"
+    - "execute command"
+  keywords:
+    - shell
+    - run
+    - execute
+    - vet
+  patterns:
+    - "run {type}"
+    - "execute {type}"
+    - "build {topic}"
+    - "test {topic}"
+
+flags:
+  cmd:
+    description: The shell command to execute.
+    required: true
+
+  cwd:
+    description: Working directory for command execution.
+    default: ""
+
+  timeout:
+    description: Maximum execution time (Go duration string).
+    default: "30s"
+
+vocabulary:
+  verbs:
+    run: shell
+    execute: shell
+    test: shell
+    vet: shell
+    lint: shell
+  types:
+    build: build
+    vet: vet
+  sources: {}
+  modifiers: {}
+
+format:
+  structured: |
+    {{if .stdout}}{{.stdout}}{{end}}{{if .stderr}}
+    stderr: {{.stderr}}{{end}}{{if and .exit_code (ne .exit_code 0)}}
+    exit code: {{.exit_code}}{{end}}
+
+templates:
+  priority: 40
+  entries:
+    - requires: [verb, type]
+      plan:
+        - pipe: "{verb}"
+          flags: { cmd: "{type}" }
+
+    - requires: [verb]
+      plan:
+        - pipe: "{verb}"
+          flags: {}
