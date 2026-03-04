@@ -24,6 +24,7 @@ import (
 	"github.com/justinpbarnett/virgil/internal/server"
 	"github.com/justinpbarnett/virgil/internal/store"
 	"github.com/justinpbarnett/virgil/internal/tui"
+	"github.com/justinpbarnett/virgil/internal/voice"
 )
 
 const defaultPipesDir = "internal/pipes"
@@ -31,6 +32,7 @@ const defaultPipesDir = "internal/pipes"
 func main() {
 	configDir := flag.String("config", "", "config directory path")
 	serverMode := flag.Bool("server", false, "run in server-only mode")
+	voiceMode := flag.Bool("voice", false, "run voice daemon")
 	flag.Parse()
 
 	// Resolve config directory
@@ -48,6 +50,14 @@ func main() {
 	if *serverMode {
 		if err := runServer(cfgDir, logger); err != nil {
 			logger.Error("server failed", "error", err)
+			os.Exit(1)
+		}
+		return
+	}
+
+	if *voiceMode {
+		if err := runVoiceDaemon(cfgDir, logger); err != nil {
+			logger.Error("voice daemon failed", "error", err)
 			os.Exit(1)
 		}
 		return
@@ -98,6 +108,42 @@ func main() {
 			os.Exit(1)
 		}
 	}
+}
+
+func runVoiceDaemon(cfgDir string, logger *slog.Logger) error {
+	voiceCfg, err := config.LoadVoiceConfig(config.UserDir())
+	if err != nil {
+		return fmt.Errorf("loading voice config: %w", err)
+	}
+	if voiceCfg == nil {
+		return fmt.Errorf("voice.json not found in %s — see docs/setup.md for setup instructions", config.UserDir())
+	}
+	if err := voiceCfg.Validate(); err != nil {
+		return err
+	}
+
+	cfg, err := config.Load(cfgDir, defaultPipesDir)
+	if err != nil {
+		return fmt.Errorf("loading config: %w", err)
+	}
+	serverAddr := net.JoinHostPort(cfg.Server.Host, strconv.Itoa(cfg.Server.Port))
+
+	binary, err := os.Executable()
+	if err != nil {
+		logger.Warn("could not determine executable path", "error", err)
+	}
+	if err := tui.EnsureServer(binary, serverAddr); err != nil {
+		logger.Warn("auto-start failed", "error", err)
+	}
+
+	daemon, err := voice.NewDaemon(voiceCfg, serverAddr)
+	if err != nil {
+		return fmt.Errorf("initializing voice daemon: %w", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	return daemon.Run(ctx)
 }
 
 func runServer(cfgDir string, logger *slog.Logger) error {
