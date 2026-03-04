@@ -6,6 +6,7 @@ import (
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/glamour"
+	"github.com/muesli/reflow/wordwrap"
 )
 
 // StreamEntryKind classifies an entry in the message stream.
@@ -38,14 +39,9 @@ type Stream struct {
 // NewStream returns an initialised Stream bound to the given theme.
 func NewStream(theme *Theme) Stream {
 	vp := viewport.New(0, 0)
-	r, _ := glamour.NewTermRenderer(
-		glamour.WithAutoStyle(),
-		glamour.WithWordWrap(0),
-	)
 	return Stream{
 		viewport:  vp,
 		theme:     theme,
-		renderer:  r,
 		maxBuffer: 5000,
 		atBottom:  true,
 	}
@@ -70,6 +66,15 @@ func (s *Stream) Append(kind StreamEntryKind, text string) {
 func (s *Stream) SetSize(width, height int) {
 	s.viewport.Width = width
 	s.viewport.Height = height
+	if width > 0 {
+		r, err := glamour.NewTermRenderer(
+			glamour.WithAutoStyle(),
+			glamour.WithWordWrap(width),
+		)
+		if err == nil {
+			s.renderer = r
+		}
+	}
 	s.render()
 }
 
@@ -102,25 +107,26 @@ func (s *Stream) render() {
 			b.WriteByte('\n')
 		}
 		var styled string
+		w := s.viewport.Width
 		switch e.Kind {
 		case KindInput:
-			styled = s.theme.UserInput.Render(e.Text)
+			styled = s.theme.UserInput.Render(wordwrap.String(e.Text, w))
 		case KindResponse:
 			if s.renderer != nil {
 				if rendered, err := s.renderer.Render(e.Text); err == nil {
 					styled = strings.TrimSpace(rendered)
 				} else {
-					styled = s.theme.Response.Render(e.Text)
+					styled = s.theme.Response.Render(wordwrap.String(e.Text, w))
 				}
 			} else {
-				styled = s.theme.Response.Render(e.Text)
+				styled = s.theme.Response.Render(wordwrap.String(e.Text, w))
 			}
 		case KindNotification:
-			styled = s.theme.Notification.Render(e.Text)
+			styled = s.theme.Notification.Render(wordwrap.String(e.Text, w))
 		case KindError:
-			styled = s.theme.Error.Render(e.Text)
+			styled = s.theme.Error.Render(wordwrap.String(e.Text, w))
 		default:
-			styled = e.Text
+			styled = wordwrap.String(e.Text, w)
 		}
 		b.WriteString(styled)
 	}
