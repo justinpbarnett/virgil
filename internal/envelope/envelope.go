@@ -30,8 +30,13 @@ const (
 const (
 	SSEEventChunk  = "chunk"
 	SSEEventDone   = "done"
+	SSEEventStep   = "step"
+	SSEEventRoute  = "route"
 	SSEContentType = "text/event-stream"
 )
+
+// FlagModelOverride is the envelope Args key for overriding the model on a per-request basis.
+const FlagModelOverride = "_model"
 
 type MemoryEntry struct {
 	ID      string `json:"id,omitempty"`

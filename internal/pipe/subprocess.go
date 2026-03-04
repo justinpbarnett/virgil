@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os/exec"
+	"strings"
 	"time"
 
 	"github.com/justinpbarnett/virgil/internal/envelope"
@@ -60,13 +61,31 @@ type SubprocessConfig struct {
 }
 
 // buildCmd creates a configured exec.Cmd for a subprocess invocation.
-func (sc SubprocessConfig) buildCmd(ctx context.Context, reqBytes []byte) *exec.Cmd {
+func (sc SubprocessConfig) buildCmd(ctx context.Context, reqBytes []byte, modelOverride string) *exec.Cmd {
 	cmd := exec.CommandContext(ctx, sc.Executable)
 	cmd.Dir = sc.WorkDir
 	cmd.Stdin = bytes.NewReader(reqBytes)
-	cmd.Env = sc.Env
+	if modelOverride != "" {
+		cmd.Env = overrideModelEnv(sc.Env, modelOverride)
+	} else {
+		cmd.Env = sc.Env
+	}
 	cmd.WaitDelay = 500 * time.Millisecond
 	return cmd
+}
+
+// overrideModelEnv returns a copy of env with VIRGIL_MODEL set to model.
+func overrideModelEnv(env []string, model string) []string {
+	const prefix = "VIRGIL_MODEL="
+	result := make([]string, len(env))
+	copy(result, env)
+	for i, e := range result {
+		if strings.HasPrefix(e, prefix) {
+			result[i] = prefix + model
+			return result
+		}
+	}
+	return append(result, prefix+model)
 }
 
 // marshalRequest serializes a SubprocessRequest, returning an error envelope on failure.
@@ -143,7 +162,7 @@ func SubprocessHandler(cfg SubprocessConfig) Handler {
 		ctx, cancel := context.WithTimeout(context.Background(), cfg.Timeout)
 		defer cancel()
 
-		cmd := cfg.buildCmd(ctx, reqBytes)
+		cmd := cfg.buildCmd(ctx, reqBytes, flags[envelope.FlagModelOverride])
 
 		stdout := &limitedBuffer{max: maxOutputBytes}
 		stderr := &limitedBuffer{max: maxOutputBytes}
@@ -199,7 +218,7 @@ func SubprocessStreamHandler(cfg SubprocessConfig) StreamHandler {
 		ctx, cancel := context.WithTimeout(ctx, cfg.Timeout)
 		defer cancel()
 
-		cmd := cfg.buildCmd(ctx, reqBytes)
+		cmd := cfg.buildCmd(ctx, reqBytes, flags[envelope.FlagModelOverride])
 
 		stdoutPipe, err := cmd.StdoutPipe()
 		if err != nil {
