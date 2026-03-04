@@ -130,7 +130,7 @@ func TestValidationStreamTerminalBadEnvelope(t *testing.T) {
 
 	result := rt.ExecuteStream(context.Background(), Plan{Steps: []Step{
 		{Pipe: "stream-bad"},
-	}}, envelope.New("input", "test"), func(_ string) {})
+	}}, envelope.New("input", "test"), func(_ StreamEvent) {})
 
 	if result.Error == nil {
 		t.Fatal("expected fatal error from stream validation, got nil")
@@ -167,8 +167,10 @@ func TestValidationStreamTerminalGoodEnvelope(t *testing.T) {
 	var chunks []string
 	result := rt.ExecuteStream(context.Background(), Plan{Steps: []Step{
 		{Pipe: "stream-good"},
-	}}, envelope.New("input", "test"), func(c string) {
-		chunks = append(chunks, c)
+	}}, envelope.New("input", "test"), func(e StreamEvent) {
+		if e.Type == "chunk" {
+			chunks = append(chunks, e.Data)
+		}
 	})
 
 	if result.Error != nil {

@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"maps"
@@ -20,6 +21,12 @@ type Step struct {
 
 type Plan struct {
 	Steps []Step
+}
+
+// StreamEvent is sent by ExecuteStream to report chunks and step transitions.
+type StreamEvent struct {
+	Type string // "chunk" or "step"
+	Data string
 }
 
 type Runtime struct {
@@ -112,11 +119,12 @@ func isFatal(env envelope.Envelope) bool {
 	return env.Error != nil && env.Error.Severity == envelope.SeverityFatal
 }
 
-// extractContextIDs collects non-empty IDs from memory entries.
+// extractContextIDs collects IDs from store-backed memory entries.
+// Codebase entries are excluded because their IDs are file paths, not memory row IDs.
 func extractContextIDs(entries []envelope.MemoryEntry) []string {
 	ids := make([]string, 0, len(entries))
 	for _, e := range entries {
-		if e.ID != "" {
+		if e.ID != "" && e.Type != "codebase" {
 			ids = append(ids, e.ID)
 		}
 	}
@@ -187,7 +195,7 @@ func (r *Runtime) Execute(plan Plan, seed envelope.Envelope) envelope.Envelope {
 	return current
 }
 
-func (r *Runtime) ExecuteStream(ctx context.Context, plan Plan, seed envelope.Envelope, sink func(chunk string)) envelope.Envelope {
+func (r *Runtime) ExecuteStream(ctx context.Context, plan Plan, seed envelope.Envelope, sink func(StreamEvent)) envelope.Envelope {
 	start := time.Now()
 	current := seed
 	seedSignal := envelope.ContentToText(seed.Content, seed.ContentType)
@@ -202,6 +210,10 @@ func (r *Runtime) ExecuteStream(ctx context.Context, plan Plan, seed envelope.En
 	r.logger.Info("plan started", "steps", len(plan.Steps), "streaming", true)
 	r.logEnvelope("seed envelope", seed)
 
+	chunkSink := func(chunk string) {
+		sink(StreamEvent{Type: envelope.SSEEventChunk, Data: chunk})
+	}
+
 	for i, step := range plan.Steps {
 		// For the last step, try the stream handler
 		if i == lastIdx {
@@ -212,7 +224,7 @@ func (r *Runtime) ExecuteStream(ctx context.Context, plan Plan, seed envelope.En
 				flags := mergeFlags(injected.Args, step.Flags)
 
 				stepStart := time.Now()
-				result := sh(ctx, injected, flags, sink)
+				result := sh(ctx, injected, flags, chunkSink)
 				stepDuration := time.Since(stepStart)
 
 				if err := envelope.Validate(result); err != nil {
@@ -252,12 +264,20 @@ func (r *Runtime) ExecuteStream(ctx context.Context, plan Plan, seed envelope.En
 		}
 
 		// Non-terminal step
+		stepStart := time.Now()
 		injected := r.injectMemory(step, current)
 		current = r.runStep(step, injected)
+		stepDuration := time.Since(stepStart)
 		if isFatal(current) {
 			current.Duration = time.Since(start)
 			return current
 		}
+
+		stepData, _ := json.Marshal(map[string]string{"pipe": step.Pipe, "duration": stepDuration.String()})
+		sink(StreamEvent{
+			Type: envelope.SSEEventStep,
+			Data: string(stepData),
+		})
 	}
 
 	// Unreachable with non-empty plan, but handle defensively
