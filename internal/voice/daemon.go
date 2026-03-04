@@ -223,7 +223,7 @@ func (d *Daemon) stopAndSubmit(ctx context.Context) {
 		return
 	}
 	d.logger.Printf("transcript: %s", transcript)
-	d.postVoiceInput(ctx, transcript)
+	d.postSignalSSE(ctx, transcript)
 }
 
 func (d *Daemon) postVoiceInput(ctx context.Context, text string) {
