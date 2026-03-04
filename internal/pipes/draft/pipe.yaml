@@ -2,7 +2,7 @@ name: draft
 description: Produces written content from input context and instructions.
 category: comms
 streaming: true
-timeout: 60s
+timeout: 3m
 
 triggers:
   exact:

@@ -67,6 +67,10 @@ func NewHandler(client CalendarClient, logger *slog.Logger) pipe.Handler {
 			return out
 		}
 
+		if rangeFlag == "next" && len(events) > 1 {
+			events = events[:1]
+		}
+
 		logger.Info("fetched", "count", len(events))
 		out.Content = events
 		out.ContentType = envelope.ContentList
@@ -80,6 +84,9 @@ func resolveRange(r string) (time.Time, time.Time) {
 	today := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
 
 	switch r {
+	case "next":
+		// Search from now through the end of the week so we find the next upcoming event.
+		return now, today.Add(7 * 24 * time.Hour)
 	case "tomorrow":
 		start := today.Add(24 * time.Hour)
 		return start, start.Add(24 * time.Hour)

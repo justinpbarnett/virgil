@@ -60,10 +60,13 @@ func prepareChat(input envelope.Envelope, flags map[string]string) (envelope.Env
 		return out, "", true
 	}
 
+	signal := flags["signal"]
+	hasPipelineSynthesis := signal != "" && signal != content
+
 	// Pipeline synthesis: when an upstream pipe transformed the content,
 	// combine the original signal with the pipe output so the model can
 	// answer the question using the retrieved context.
-	if signal := flags["signal"]; signal != "" && signal != content {
+	if hasPipelineSynthesis {
 		content = fmt.Sprintf("The user said: %q\n\nContext:\n%s\n\nRespond to the user based on the above context. Be concise and natural.", signal, content)
 	}
 
@@ -72,7 +75,12 @@ func prepareChat(input envelope.Envelope, flags map[string]string) (envelope.Env
 		for _, m := range input.Memory {
 			parts = append(parts, m.Content)
 		}
-		content = "Memory context:\n" + strings.Join(parts, "\n---\n") + "\n\n---\n\n" + content
+		memContext := strings.Join(parts, "\n---\n")
+		if hasPipelineSynthesis {
+			content = "Codebase context:\n" + memContext + "\n\n---\n\n" + content
+		} else {
+			content = fmt.Sprintf("The user said: %q\n\nRelevant codebase context:\n%s\n\nAnswer the user's question using the context above. Be concise and natural.", content, memContext)
+		}
 	}
 
 	return out, content, false
@@ -93,7 +101,7 @@ func NewStreamHandler(provider bridge.StreamingProvider, systemPrompt string, pr
 			return out
 		}
 
-		ctx, cancel := context.WithTimeout(ctx, 60*time.Second)
+		ctx, cancel := context.WithTimeout(ctx, 150*time.Second)
 		defer cancel()
 
 		resolved := resolveSystemPrompt(prompts, systemPrompt, flags)
@@ -124,7 +132,7 @@ func NewHandler(provider bridge.Provider, systemPrompt string, prompts map[strin
 			return out
 		}
 
-		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), 150*time.Second)
 		defer cancel()
 
 		resolved := resolveSystemPrompt(prompts, systemPrompt, flags)

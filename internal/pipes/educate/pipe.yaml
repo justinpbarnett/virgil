@@ -2,7 +2,7 @@ name: educate
 description: Teaches a subject using the Socratic method — gauges understanding, then guides discovery through questions.
 category: research
 streaming: true
-timeout: 60s
+timeout: 3m
 
 triggers:
   exact:

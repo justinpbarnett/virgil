@@ -28,7 +28,7 @@ flags:
 
 format:
   list: |-
-    {{if eq .Count 0}}Your calendar is clear.{{else}}You have {{.Count}} event{{if gt .Count 1}}s{{end}}{{if eq .Range "tomorrow"}} tomorrow{{else if eq .Range "this-week"}} this week{{else}} today{{end}}:{{range .Items}}
+    {{if eq .Count 0}}Your calendar is clear.{{else}}You have {{.Count}} event{{if gt .Count 1}}s{{end}}{{if eq .Range "tomorrow"}} tomorrow{{else if eq .Range "this-week"}} this week{{else if eq .Range "next"}} coming up{{else}} today{{end}}:{{range .Items}}
     - {{.title}}{{if .time}} — {{.time}}{{end}}{{if .location}} ({{.location}}){{end}}{{end}}{{end}}
 
 memory:
@@ -41,6 +41,7 @@ vocabulary:
   sources:
     calendar: calendar
   modifiers:
+    next: next
     recent: recent
     today: today
     tomorrow: tomorrow

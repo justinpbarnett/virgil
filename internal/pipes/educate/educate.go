@@ -84,7 +84,7 @@ func NewHandler(provider bridge.Provider, pc config.PipeConfig, compiled map[str
 			return out
 		}
 
-		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), 150*time.Second)
 		defer cancel()
 
 		logger.Debug("educating", "phase", flags["phase"], "prompt_len", len(userPrompt))
@@ -119,7 +119,7 @@ func NewStreamHandler(provider bridge.StreamingProvider, pc config.PipeConfig, c
 			return out
 		}
 
-		ctx, cancel := context.WithTimeout(ctx, 60*time.Second)
+		ctx, cancel := context.WithTimeout(ctx, 150*time.Second)
 		defer cancel()
 
 		logger.Debug("educating", "phase", flags["phase"], "prompt_len", len(userPrompt))
