@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"fmt"
+	"io"
 	"io/fs"
 	"log/slog"
 	"os"
@@ -17,8 +18,60 @@ import (
 // maxCandidatesPerMethod caps how many candidates a single discovery method returns.
 const maxCandidatesPerMethod = 50
 
+// maxCandidatesPerFile caps line-match candidates contributed by a single file.
+// Without this, a file with many occurrences of a common term (e.g. import paths
+// containing the project name) can exhaust the candidate budget alone.
+const maxCandidatesPerFile = 3
+
 // maxTotalCandidates caps the deduplicated total across all methods.
 const maxTotalCandidates = 100
+
+// queryStopWords are terms that are structurally necessary in natural language
+// but carry no signal for code search — articles, prepositions, auxiliaries,
+// question words, and pronouns. Filtering them prevents common words like "in"
+// from matching every Go file via import paths.
+var queryStopWords = map[string]bool{
+	// articles / prepositions / conjunctions
+	"a": true, "an": true, "the": true,
+	"in": true, "on": true, "at": true, "to": true, "for": true,
+	"of": true, "by": true, "as": true, "with": true, "from": true,
+	"into": true, "onto": true, "upon": true, "about": true, "than": true,
+	"and": true, "or": true, "but": true, "nor": true, "so": true,
+	"yet": true, "not": true,
+	// pronouns
+	"i": true, "me": true, "my": true, "we": true, "our": true,
+	"you": true, "your": true, "it": true, "its": true,
+	"he": true, "she": true, "they": true, "them": true,
+	"this": true, "that": true, "these": true, "those": true,
+	// be auxiliaries
+	"is": true, "are": true, "was": true, "were": true,
+	"be": true, "been": true, "being": true,
+	// have auxiliaries
+	"have": true, "has": true, "had": true,
+	// do auxiliaries
+	"do": true, "does": true, "did": true,
+	// modals
+	"can": true, "could": true, "will": true, "would": true,
+	"shall": true, "should": true, "may": true, "might": true, "must": true,
+	// question words
+	"how": true, "what": true, "when": true, "where": true,
+	"which": true, "who": true, "why": true,
+}
+
+// filterStopWords returns terms with stop words removed. If all terms are stop
+// words, the original slice is returned unchanged so the query still executes.
+func filterStopWords(terms []string) []string {
+	filtered := terms[:0:0]
+	for _, t := range terms {
+		if !queryStopWords[t] {
+			filtered = append(filtered, t)
+		}
+	}
+	if len(filtered) == 0 {
+		return terms
+	}
+	return filtered
+}
 
 // SourceBackend discovers and extracts content from a specific source type.
 type SourceBackend interface {
@@ -61,7 +114,7 @@ func (b *codebaseBackend) Discover(ctx context.Context, query, entry, depth stri
 	}
 
 	var candidates []Candidate
-	terms := strings.Fields(strings.ToLower(searchTerms))
+	terms := filterStopWords(strings.Fields(strings.ToLower(searchTerms)))
 
 	err := filepath.WalkDir(searchRoot, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
@@ -106,7 +159,10 @@ func (b *codebaseBackend) Discover(ctx context.Context, query, entry, depth stri
 		}
 
 		if len(matches) > 0 {
-			for _, m := range matches {
+			for i, m := range matches {
+				if i >= maxCandidatesPerFile {
+					break
+				}
 				if len(candidates) >= maxCandidatesPerMethod {
 					break
 				}
@@ -189,7 +245,17 @@ func (b *codebaseBackend) Extract(ctx context.Context, candidates []Candidate, r
 			absPath = filepath.Join(b.root, filePath)
 		}
 
-		content, err := os.ReadFile(absPath)
+		f, err := os.Open(absPath)
+		if err != nil {
+			b.logger.Debug("skipping unreadable file", "path", filePath, "error", err)
+			continue
+		}
+		content, err := io.ReadAll(f)
+		var modTime time.Time
+		if info, statErr := f.Stat(); statErr == nil {
+			modTime = info.ModTime()
+		}
+		f.Close()
 		if err != nil {
 			b.logger.Debug("skipping unreadable file", "path", filePath, "error", err)
 			continue
@@ -197,11 +263,6 @@ func (b *codebaseBackend) Extract(ctx context.Context, candidates []Candidate, r
 
 		lines := strings.Split(string(content), "\n")
 		lang := languageFromPath(filePath)
-		info, _ := os.Stat(absPath)
-		var modTime time.Time
-		if info != nil {
-			modTime = info.ModTime()
-		}
 
 		for _, c := range fileCandidates {
 			item := b.extractCandidate(c, lines, filePath, lang, modTime, role)
@@ -520,7 +581,7 @@ func (b *fileBackend) Discover(ctx context.Context, query, entry, _ string) ([]C
 	}
 
 	var candidates []Candidate
-	terms := strings.Fields(strings.ToLower(query))
+	terms := filterStopWords(strings.Fields(strings.ToLower(query)))
 
 	err := filepath.WalkDir(searchRoot, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
@@ -586,18 +647,23 @@ func (b *fileBackend) Extract(ctx context.Context, candidates []Candidate, _ str
 			absPath = filepath.Join(b.root, c.Location.Path)
 		}
 
-		content, err := os.ReadFile(absPath)
+		f, err := os.Open(absPath)
+		if err != nil {
+			b.logger.Debug("skipping unreadable file", "path", c.Location.Path, "error", err)
+			continue
+		}
+		content, err := io.ReadAll(f)
+		var modTime time.Time
+		if fInfo, statErr := f.Stat(); statErr == nil {
+			modTime = fInfo.ModTime()
+		}
+		f.Close()
 		if err != nil {
 			b.logger.Debug("skipping unreadable file", "path", c.Location.Path, "error", err)
 			continue
 		}
 
 		text := string(content)
-		info, _ := os.Stat(absPath)
-		var modTime time.Time
-		if info != nil {
-			modTime = info.ModTime()
-		}
 
 		items = append(items, ExtractedItem{
 			ID:          c.ID,
