@@ -31,15 +31,36 @@ memory:
     - type: working_state
     - type: topic_history
       depth: 1d
-  budget: 1000
+    - type: codebase
+    - type: relational
+      relations: [produced_by, refined_from, co_occurred]
+  budget: 2000
 
 vocabulary:
   verbs:
     chat: chat
     talk: chat
   types: {}
-  sources: {}
+  sources:
+    codebase: codebase
+    code: codebase
+    repo: codebase
+    memory: memory
+    files: files
   modifiers: {}
+
+templates:
+  priority: 40
+  entries:
+    - requires: [source]
+      plan:
+        - pipe: study
+          flags:
+            source: "{source}"
+            role: planner
+            compression: structural
+            budget: "4000"
+        - pipe: chat
 
 prompts:
   system: |

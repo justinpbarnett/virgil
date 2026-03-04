@@ -43,6 +43,8 @@ memory:
     - type: topic_history
       depth: 30d
     - type: user_preferences
+    - type: relational
+      relations: [produced_by, refined_from, co_occurred]
   budget: 2000
 
 vocabulary:

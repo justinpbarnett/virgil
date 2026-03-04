@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"maps"
+	"strings"
 	"time"
 
 	"github.com/justinpbarnett/virgil/internal/bridge"
@@ -64,6 +65,14 @@ func prepareChat(input envelope.Envelope, flags map[string]string) (envelope.Env
 	// answer the question using the retrieved context.
 	if signal := flags["signal"]; signal != "" && signal != content {
 		content = fmt.Sprintf("The user said: %q\n\nContext:\n%s\n\nRespond to the user based on the above context. Be concise and natural.", signal, content)
+	}
+
+	if len(input.Memory) > 0 {
+		var parts []string
+		for _, m := range input.Memory {
+			parts = append(parts, m.Content)
+		}
+		content = "Memory context:\n" + strings.Join(parts, "\n---\n") + "\n\n---\n\n" + content
 	}
 
 	return out, content, false
