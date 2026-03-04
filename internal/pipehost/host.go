@@ -28,6 +28,7 @@ const (
 	EnvLogLevel       = "VIRGIL_LOG_LEVEL"
 	EnvMaxTurns       = "VIRGIL_MAX_TURNS"
 	EnvIdentity       = "VIRGIL_IDENTITY"
+	EnvWorkDir        = "VIRGIL_WORK_DIR"
 )
 
 // NewPipeLogger creates an slog.Logger for a pipe subprocess.

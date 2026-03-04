@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"log/slog"
@@ -12,9 +13,11 @@ import (
 
 	"github.com/justinpbarnett/virgil/internal/bridge"
 	"github.com/justinpbarnett/virgil/internal/config"
+	"github.com/justinpbarnett/virgil/internal/envelope"
 	"github.com/justinpbarnett/virgil/internal/parser"
 	"github.com/justinpbarnett/virgil/internal/pipe"
 	"github.com/justinpbarnett/virgil/internal/pipehost"
+	"github.com/justinpbarnett/virgil/internal/pipes/study"
 	"github.com/justinpbarnett/virgil/internal/planner"
 	"github.com/justinpbarnett/virgil/internal/router"
 	"github.com/justinpbarnett/virgil/internal/runtime"
@@ -117,9 +120,12 @@ func runServer(cfgDir string, logger *slog.Logger) error {
 	vocab := parser.LoadVocabulary(cfg.Vocabulary)
 	p := parser.New(vocab)
 
+	// Capture server's working directory for passing to subprocesses
+	workDir, _ := os.Getwd()
+
 	// 3. Register all pipes as subprocesses
 	reg := pipe.NewRegistry()
-	baseEnv := pipeEnv(cfg, cfgDir)
+	baseEnv := pipeEnv(cfg, cfgDir, workDir)
 	baseEnv = baseEnv[:len(baseEnv):len(baseEnv)] // clip capacity to prevent aliasing
 
 	for name, pc := range cfg.Pipes {
@@ -192,12 +198,19 @@ func runServer(cfgDir string, logger *slog.Logger) error {
 			logger.Warn("memory infrastructure unavailable", "error", err)
 		} else {
 			defer st.Close()
+			injector := runtime.NewStoreMemoryInjector(st)
+			if workDir != "" {
+				capturedWorkDir := workDir
+				injector.WithCodebaseSearch(func(ctx context.Context, query string, budget int) ([]envelope.MemoryEntry, error) {
+					return study.SearchCodebase(ctx, query, capturedWorkDir, budget)
+				})
+			}
 			memConfigs := make(map[string]config.MemoryConfig)
 			for name, pc := range cfg.Pipes {
 				memConfigs[name] = pc.Memory
 			}
 			run.WithMemory(
-				runtime.NewStoreMemoryInjector(st),
+				injector,
 				runtime.NewStoreMemorySaver(st),
 				memConfigs,
 			)
@@ -219,7 +232,7 @@ func runServer(cfgDir string, logger *slog.Logger) error {
 }
 
 // pipeEnv builds the environment variable list passed to pipe subprocesses.
-func pipeEnv(cfg *config.Config, cfgDir string) []string {
+func pipeEnv(cfg *config.Config, cfgDir, workDir string) []string {
 	env := os.Environ()
 	env = append(env,
 		pipehost.EnvDBPath+"="+cfg.DatabasePath,
@@ -228,6 +241,7 @@ func pipeEnv(cfg *config.Config, cfgDir string) []string {
 		pipehost.EnvProvider+"="+cfg.Provider.Name,
 		pipehost.EnvProviderBinary+"="+cfg.Provider.Binary,
 		pipehost.EnvIdentity+"="+cfg.Identity,
+		pipehost.EnvWorkDir+"="+workDir,
 	)
 	return env
 }
