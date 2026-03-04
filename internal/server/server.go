@@ -10,16 +10,79 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strconv"
+	"sync"
 	"syscall"
 	"time"
 
 	"github.com/justinpbarnett/virgil/internal/config"
+	"github.com/justinpbarnett/virgil/internal/envelope"
 	"github.com/justinpbarnett/virgil/internal/parser"
 	"github.com/justinpbarnett/virgil/internal/pipe"
 	"github.com/justinpbarnett/virgil/internal/planner"
 	"github.com/justinpbarnett/virgil/internal/router"
 	"github.com/justinpbarnett/virgil/internal/runtime"
 )
+
+// broker is a generic pub/sub hub. Subscribers receive values broadcast by publishers.
+type broker[T any] struct {
+	mu   sync.Mutex
+	subs map[chan T]struct{}
+}
+
+func newBroker[T any]() broker[T] {
+	return broker[T]{subs: make(map[chan T]struct{})}
+}
+
+func (b *broker[T]) subscribe(buf int) chan T {
+	ch := make(chan T, buf)
+	b.mu.Lock()
+	b.subs[ch] = struct{}{}
+	b.mu.Unlock()
+	return ch
+}
+
+func (b *broker[T]) unsubscribe(ch chan T) {
+	b.mu.Lock()
+	delete(b.subs, ch)
+	b.mu.Unlock()
+	close(ch)
+}
+
+func (b *broker[T]) broadcast(val T) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	for ch := range b.subs {
+		select {
+		case ch <- val:
+		default:
+		}
+	}
+}
+
+// serveSSE runs a standard SSE loop: subscribes to a broker, writes events until the client disconnects.
+func serveSSE[T any](w http.ResponseWriter, r *http.Request, b *broker[T], buf int, eventName string, marshal func(T) []byte) {
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		http.Error(w, `{"error":"streaming not supported"}`, http.StatusInternalServerError)
+		return
+	}
+	ch := b.subscribe(buf)
+	defer b.unsubscribe(ch)
+	w.Header().Set("Content-Type", envelope.SSEContentType)
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	flusher.Flush()
+	for {
+		select {
+		case <-r.Context().Done():
+			return
+		case val := <-ch:
+			data := marshal(val)
+			fmt.Fprintf(w, "event: %s\ndata: %s\n\n", eventName, data)
+			flusher.Flush()
+		}
+	}
+}
 
 type Deps struct {
 	Config   *config.Config
@@ -42,21 +105,41 @@ type Server struct {
 	pidPath   string
 	logger    *slog.Logger
 	startedAt time.Time
+
+	voiceStatus    broker[voiceStatus]
+	lastVoiceStatus struct {
+		sync.Mutex
+		val *voiceStatus
+	}
+	voiceInput  broker[string]
+	voiceSpeak  broker[voiceSpeakMsg]
+	voiceCycle  broker[struct{}]
+	voiceStop   broker[struct{}]
+}
+
+type voiceSpeakMsg struct {
+	Text     string
+	Priority string
 }
 
 func New(d Deps) *Server {
 	pidPath := filepath.Join(config.DataDir(), "virgil.pid")
 
 	return &Server{
-		config:    d.Config,
-		router:    d.Router,
-		parser:    d.Parser,
-		planner:   d.Planner,
-		runtime:   d.Runtime,
-		registry:  d.Registry,
-		pidPath:   pidPath,
-		logger:    d.Logger,
-		startedAt: time.Now(),
+		config:      d.Config,
+		router:      d.Router,
+		parser:      d.Parser,
+		planner:     d.Planner,
+		runtime:     d.Runtime,
+		registry:    d.Registry,
+		pidPath:     pidPath,
+		logger:      d.Logger,
+		startedAt:   time.Now(),
+		voiceStatus: newBroker[voiceStatus](),
+		voiceInput:  newBroker[string](),
+		voiceSpeak:  newBroker[voiceSpeakMsg](),
+		voiceCycle:  newBroker[struct{}](),
+		voiceStop:   newBroker[struct{}](),
 	}
 }
 
@@ -108,6 +191,16 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /health", s.handleHealth)
 	mux.HandleFunc("GET /pipes", s.handlePipes)
 	mux.HandleFunc("GET /status", s.handleStatus)
+	mux.HandleFunc("POST /voice/status", s.handleVoiceStatusPost)
+	mux.HandleFunc("GET /voice/status", s.handleVoiceStatusSSE)
+	mux.HandleFunc("POST /voice/input", s.handleVoiceInputPost)
+	mux.HandleFunc("GET /voice/input", s.handleVoiceInputSSE)
+	mux.HandleFunc("POST /voice/speak", s.handleVoiceSpeakPost)
+	mux.HandleFunc("GET /voice/speak", s.handleVoiceSpeakSSE)
+	mux.HandleFunc("POST /voice/cycle", s.handleVoiceCyclePost)
+	mux.HandleFunc("GET /voice/cycle", s.handleVoiceCycleSSE)
+	mux.HandleFunc("POST /voice/stop", s.handleVoiceStopPost)
+	mux.HandleFunc("GET /voice/stop", s.handleVoiceStopSSE)
 	return mux
 }
 
