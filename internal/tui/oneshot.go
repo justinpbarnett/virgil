@@ -12,7 +12,7 @@ import (
 
 func RunOneShot(signal string, serverAddr string) error {
 	ctx := context.Background()
-	reader, err := openSSEStream(ctx, serverAddr, signal)
+	reader, err := openSSEStream(ctx, serverAddr, signal, "")
 	if err != nil {
 		// Fall back to non-streaming
 		return runOneShotSync(signal, serverAddr)

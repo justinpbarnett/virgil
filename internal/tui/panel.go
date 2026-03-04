@@ -86,6 +86,7 @@ func (p Panel) View() string {
 	bordered := p.theme.PanelBorder.
 		BorderLeft(true).
 		BorderStyle(lipgloss.NormalBorder()).
+		BorderForeground(lipgloss.Color("240")).
 		Render(inner)
 
 	return bordered
@@ -93,5 +94,8 @@ func (p Panel) View() string {
 
 // renderContent produces the styled text placed inside the viewport.
 func (p Panel) renderContent() string {
+	if p.content == "" {
+		return p.theme.Dim.Render("ctrl+p to close")
+	}
 	return p.content
 }

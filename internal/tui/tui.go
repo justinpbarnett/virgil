@@ -4,12 +4,16 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math/rand"
 	"strings"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/justinpbarnett/virgil/internal/config"
 	"github.com/justinpbarnett/virgil/internal/envelope"
+	"github.com/justinpbarnett/virgil/internal/router"
+	"github.com/justinpbarnett/virgil/internal/voice"
 )
 
 // Layout mode based on terminal width.
@@ -56,6 +60,14 @@ type model struct {
 	connected      bool
 	reconnecting   bool
 	inputQueue     []string
+
+	// Voice status
+	voiceRecording    bool
+	voiceMode         config.VoiceOutputMode // transient — cleared after 3s (display only)
+	voiceModeGen      int
+	currentVoiceMode  config.VoiceOutputMode // persists — used for TTS decisions
+	currentVoiceModel string                 // persists — model override for voice signals
+	voiceStreamID     int                    // activeStreamID of the voice-initiated stream
 }
 
 type tickMsg struct{}
@@ -75,6 +87,19 @@ type streamDoneMsg struct {
 type reconnectMsg struct {
 	ok  bool
 	err error
+}
+
+type streamStepMsg struct {
+	pipe     string
+	streamID int
+	reader   *sseReader
+}
+
+type streamRouteMsg struct {
+	pipe     string
+	layer    int
+	streamID int
+	reader   *sseReader
 }
 
 type pipesLoadedMsg struct{}
@@ -103,6 +128,8 @@ func (m model) Init() tea.Cmd {
 	return tea.Batch(
 		m.input.Focus(),
 		m.loadPipes(),
+		connectVoiceStatus(m.serverAddr),
+		connectVoiceInput(m.serverAddr),
 	)
 }
 
@@ -135,7 +162,97 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.handleStreamDone(msg)
 
 	case reconnectMsg:
-		return m.handleReconnect(msg)
+		cmds := []tea.Cmd{}
+		mdl, cmd := m.handleReconnect(msg)
+		m = mdl.(model)
+		if cmd != nil {
+			cmds = append(cmds, cmd)
+		}
+		if msg.ok {
+			cmds = append(cmds, connectVoiceStatus(m.serverAddr))
+		}
+		return m, tea.Batch(cmds...)
+
+	case voiceStatusMsg:
+		m.voiceRecording = msg.Recording
+		if msg.Model != "" {
+			m.currentVoiceModel = msg.Model
+		}
+		var cmds []tea.Cmd
+		mode := config.VoiceOutputMode(msg.Mode)
+		if mode != "" && mode != m.currentVoiceMode {
+			m.currentVoiceMode = mode
+			m.voiceMode = mode
+			m.voiceModeGen++
+			gen := m.voiceModeGen
+			cmds = append(cmds, tea.Tick(3*time.Second, func(_ time.Time) tea.Msg {
+				return voiceModeExpiredMsg{generation: gen}
+			}))
+		} else if mode != "" {
+			m.currentVoiceMode = mode
+		}
+		cmds = append(cmds, readNextVoiceEventCmd(msg.reader))
+		return m, tea.Batch(cmds...)
+
+	case voiceModeExpiredMsg:
+		if msg.generation == m.voiceModeGen {
+			m.voiceMode = ""
+		}
+
+		return m, nil
+
+	case voiceReconnectMsg:
+		return m, connectVoiceStatus(m.serverAddr)
+
+	case voiceInputMsg:
+		m.stream.Append(KindInput, SymPrompt+" "+msg.Text)
+		m.waiting = true
+		m.pending.Reset()
+		m.dotPhase = 0
+		m.activeStreamID++
+		m.voiceStreamID = m.activeStreamID
+		streamID := m.activeStreamID
+		ctx, cancel := context.WithCancel(context.Background())
+		m.cancelFn = cancel
+		return m, tea.Batch(
+			startStream(ctx, m.serverAddr, msg.Text, streamID, m.currentVoiceModel),
+			tickCmd(),
+			readNextVoiceInputCmd(msg.reader),
+		)
+
+	case voiceInputReconnectMsg:
+		return m, connectVoiceInput(m.serverAddr)
+
+	case streamRouteMsg:
+		if msg.streamID != m.activeStreamID {
+			return m, readNextEvent(msg.reader, msg.streamID)
+		}
+		var cmds []tea.Cmd
+		if m.currentVoiceMode != "" && m.currentVoiceMode != config.VoiceModeSilent {
+			var ann string
+			if msg.layer == router.LayerFallback {
+				ann = voice.ThinkingPhrases[rand.Intn(len(voice.ThinkingPhrases))]
+			} else {
+				ann = voice.StepAnnouncement(msg.pipe)
+			}
+			cmds = append(cmds, postVoiceSpeak(m.serverAddr, ann, "announcement"))
+		}
+		cmds = append(cmds, readNextEvent(msg.reader, msg.streamID))
+		return m, tea.Batch(cmds...)
+
+	case streamStepMsg:
+		if msg.streamID != m.activeStreamID {
+			return m, readNextEvent(msg.reader, msg.streamID)
+		}
+		var cmds []tea.Cmd
+		if msg.streamID == m.voiceStreamID {
+			if m.currentVoiceMode == config.VoiceModeSteps || m.currentVoiceMode == config.VoiceModeFull {
+				ann := voice.StepAnnouncement(msg.pipe)
+				cmds = append(cmds, postVoiceSpeak(m.serverAddr, ann, "announcement"))
+			}
+		}
+		cmds = append(cmds, readNextEvent(msg.reader, msg.streamID))
+		return m, tea.Batch(cmds...)
 
 	case pipesLoadedMsg:
 		return m, nil
@@ -225,6 +342,9 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		v := m.input.Value()
 		if strings.TrimSpace(v) != "" {
 			m.input.textarea.SetValue("")
+			if m.voiceStreamID != 0 {
+				return m, postVoiceStop(m.serverAddr)
+			}
 			return m, nil
 		}
 		return m, tea.Quit
@@ -246,6 +366,9 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.cancelFn = nil
 			m.lastEscTime = time.Time{}
 			m.stream.Append(KindNotification, SymPrompt+" [cancelled]")
+			if m.voiceStreamID != 0 {
+				return m, postVoiceStop(m.serverAddr)
+			}
 			return m, nil
 		}
 		// Clear input when idle
@@ -296,6 +419,9 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.panel.Toggle()
 		m.updateLayout()
 		return m, nil
+
+	case tea.KeyCtrlV:
+		return m, postVoiceCycle(m.serverAddr)
 	}
 
 	// Any other key dismisses ghost text and resets completer
@@ -369,6 +495,10 @@ func (m model) handleCommand(input string) (tea.Model, tea.Cmd) {
 	case "":
 		// :clear — reset stream
 		m.stream.Clear()
+		if m.voiceStreamID != 0 {
+			return m, postVoiceStop(m.serverAddr)
+		}
+		return m, nil
 	default:
 		m.stream.Append(KindNotification, result.Output)
 	}
@@ -431,7 +561,7 @@ func (m model) sendSignal(text string) (tea.Model, tea.Cmd) {
 	ctx, cancel := context.WithCancel(context.Background())
 	m.cancelFn = cancel
 	return m, tea.Batch(
-		startStream(ctx, m.serverAddr, text, streamID),
+		startStream(ctx, m.serverAddr, text, streamID, ""),
 		tickCmd(),
 	)
 }
@@ -455,18 +585,52 @@ func (m model) handleStreamDone(msg streamDoneMsg) (tea.Model, tea.Cmd) {
 	m.lastEscTime = time.Time{}
 	m.keysShown = false
 
+	pendingText := m.pending.String()
+	var contentText string
+	if pendingText == "" && msg.err == nil {
+		contentText = envelope.ContentToText(msg.env.Content, msg.env.ContentType)
+	}
+
+	var speakCmd tea.Cmd
+	if msg.err == nil && msg.streamID == m.voiceStreamID {
+		responseText := pendingText
+		if responseText == "" {
+			responseText = contentText
+		}
+		speakCmd = m.speakResponse(responseText)
+		m.voiceStreamID = 0
+	}
+
 	if msg.err != nil {
 		m.stream.Append(KindError, fmt.Sprintf("error: %v", msg.err))
-	} else if m.pending.Len() > 0 {
-		m.stream.Append(KindResponse, m.pending.String())
-	} else {
-		content := envelope.ContentToText(msg.env.Content, msg.env.ContentType)
-		if content != "" {
-			m.stream.Append(KindResponse, content)
-		}
+	} else if pendingText != "" {
+		m.stream.Append(KindResponse, pendingText)
+	} else if contentText != "" {
+		m.stream.Append(KindResponse, contentText)
 	}
 	m.pending.Reset()
-	return m, nil
+	return m, speakCmd
+}
+
+const maxSpokenChars = 300
+
+func (m model) speakResponse(text string) tea.Cmd {
+	if text == "" {
+		return nil
+	}
+	var spoken string
+	switch m.currentVoiceMode {
+	case config.VoiceModeSilent, "":
+		return nil
+	case config.VoiceModeNotify, config.VoiceModeSteps:
+		spoken = voice.NotifySummary(text, maxSpokenChars)
+	case config.VoiceModeFull:
+		spoken = voice.StripMarkdown(text)
+	}
+	if spoken == "" {
+		return nil
+	}
+	return postVoiceSpeak(m.serverAddr, spoken, "response")
 }
 
 func (m model) handleReconnect(msg reconnectMsg) (tea.Model, tea.Cmd) {
@@ -485,7 +649,7 @@ func (m model) handleReconnect(msg reconnectMsg) (tea.Model, tea.Cmd) {
 			m.cancelFn = cancel
 			m.waiting = true
 			m.pending.Reset()
-			cmds = append(cmds, startStream(ctx, m.serverAddr, queued, streamID))
+			cmds = append(cmds, startStream(ctx, m.serverAddr, queued, streamID, ""))
 		}
 		m.inputQueue = nil
 		if len(cmds) > 0 {
@@ -514,30 +678,49 @@ func (m model) View() string {
 	// Build stream view with waiting indicator
 	streamView := m.stream.View()
 
-	// Append waiting indicator below stream
-	var statusLine string
+	// Build separator — status indicators are embedded inline so height never changes.
+	var statusParts []string
+	if m.voiceRecording {
+		statusParts = append(statusParts, m.theme.Active.Render(SymActive+" recording"))
+	}
+	if m.voiceMode != "" {
+		statusParts = append(statusParts, m.theme.Notification.Render("voice: "+string(m.voiceMode)))
+	}
 	if m.waiting {
 		dots := strings.Repeat(".", m.dotPhase)
-		statusLine = m.theme.Dim.Render(SymEllipsis + " thinking" + dots)
+		statusParts = append(statusParts, m.theme.Dim.Render("thinking"+dots))
 	} else if !m.lastEscTime.IsZero() {
-		statusLine = m.theme.Notification.Render("press Esc again to cancel")
+		statusParts = append(statusParts, m.theme.Notification.Render("press Esc again to cancel"))
 	} else if !m.connected {
-		statusLine = m.theme.Error.Render(SymCross + " disconnected — reconnecting" + SymEllipsis)
+		statusParts = append(statusParts, m.theme.Error.Render(SymCross+" disconnected — reconnecting"+SymEllipsis))
 	}
 
-	sep := m.theme.Separator.Render(strings.Repeat(SymSeparator, m.width))
+	titleStr := m.theme.Dim.Render("virgil")
+	titleWidth := lipgloss.Width(titleStr)
+
+	var sep string
+	if len(statusParts) > 0 {
+		statusText := strings.Join(statusParts, "  ")
+		remaining := m.width - lipgloss.Width(statusText) - titleWidth - 2
+		if remaining < 0 {
+			remaining = 0
+		}
+		sep = statusText + " " + m.theme.Separator.Render(strings.Repeat(SymSeparator, remaining)) + " " + titleStr
+	} else {
+		remaining := m.width - titleWidth - 1
+		if remaining < 0 {
+			remaining = 0
+		}
+		sep = m.theme.Separator.Render(strings.Repeat(SymSeparator, remaining)) + " " + titleStr
+	}
+
 	inputView := m.input.View()
 	if m.ghost != "" {
 		inputView += m.theme.Dim.Render(m.ghost)
 	}
 
 	// Compose layout
-	var mainColumn string
-	if statusLine != "" {
-		mainColumn = lipgloss.JoinVertical(lipgloss.Left, streamView, statusLine, sep, inputView)
-	} else {
-		mainColumn = lipgloss.JoinVertical(lipgloss.Left, streamView, sep, inputView)
-	}
+	mainColumn := lipgloss.JoinVertical(lipgloss.Left, streamView, sep, inputView)
 
 	// Panel
 	if m.panel.IsOpen() {
@@ -557,9 +740,9 @@ func tickCmd() tea.Cmd {
 	})
 }
 
-func startStream(ctx context.Context, addr, text string, streamID int) tea.Cmd {
+func startStream(ctx context.Context, addr, text string, streamID int, model string) tea.Cmd {
 	return func() tea.Msg {
-		reader, err := openSSEStream(ctx, addr, text)
+		reader, err := openSSEStream(ctx, addr, text, model)
 		if err != nil {
 			return streamDoneMsg{streamID: streamID, err: err}
 		}
@@ -574,37 +757,57 @@ func readNextEvent(reader *sseReader, streamID int) tea.Cmd {
 }
 
 func readNextEventSync(reader *sseReader, streamID int) tea.Msg {
-	event, err := reader.Next()
-	if err != nil {
-		reader.Close()
-		return streamDoneMsg{streamID: streamID, err: err}
-	}
-
-	switch event.Type {
-	case envelope.SSEEventChunk:
-		var chunk struct {
-			Text string `json:"text"`
-		}
-		if err := json.Unmarshal([]byte(event.Data), &chunk); err != nil {
+	for {
+		event, err := reader.Next()
+		if err != nil {
 			reader.Close()
-			return streamDoneMsg{streamID: streamID, err: fmt.Errorf("invalid chunk: %w", err)}
+			return streamDoneMsg{streamID: streamID, err: err}
 		}
-		return streamChunkMsg{text: chunk.Text, streamID: streamID, reader: reader}
 
-	case envelope.SSEEventDone:
-		reader.Close()
-		var env envelope.Envelope
-		if err := json.Unmarshal([]byte(event.Data), &env); err != nil {
-			return streamDoneMsg{streamID: streamID, err: fmt.Errorf("invalid done event: %w", err)}
-		}
-		if env.Error != nil {
-			return streamDoneMsg{streamID: streamID, err: fmt.Errorf("%s: %s", env.Error.Severity, env.Error.Message)}
-		}
-		return streamDoneMsg{env: env, streamID: streamID}
+		switch event.Type {
+		case envelope.SSEEventChunk:
+			var chunk struct {
+				Text string `json:"text"`
+			}
+			if err := json.Unmarshal([]byte(event.Data), &chunk); err != nil {
+				reader.Close()
+				return streamDoneMsg{streamID: streamID, err: fmt.Errorf("invalid chunk: %w", err)}
+			}
+			return streamChunkMsg{text: chunk.Text, streamID: streamID, reader: reader}
 
-	default:
-		reader.Close()
-		return streamDoneMsg{streamID: streamID, err: fmt.Errorf("unknown event type: %s", event.Type)}
+		case envelope.SSEEventDone:
+			reader.Close()
+			var env envelope.Envelope
+			if err := json.Unmarshal([]byte(event.Data), &env); err != nil {
+				return streamDoneMsg{streamID: streamID, err: fmt.Errorf("invalid done event: %w", err)}
+			}
+			if env.Error != nil {
+				return streamDoneMsg{streamID: streamID, err: fmt.Errorf("%s: %s", env.Error.Severity, env.Error.Message)}
+			}
+			return streamDoneMsg{env: env, streamID: streamID}
+
+		case envelope.SSEEventRoute:
+			var route struct {
+				Pipe  string `json:"pipe"`
+				Layer int    `json:"layer"`
+			}
+			if err := json.Unmarshal([]byte(event.Data), &route); err == nil {
+				return streamRouteMsg{pipe: route.Pipe, layer: route.Layer, streamID: streamID, reader: reader}
+			}
+			continue
+
+		case envelope.SSEEventStep:
+			var step struct {
+				Pipe string `json:"pipe"`
+			}
+			if err := json.Unmarshal([]byte(event.Data), &step); err == nil {
+				return streamStepMsg{pipe: step.Pipe, streamID: streamID, reader: reader}
+			}
+			continue
+
+		default:
+			continue
+		}
 	}
 }
 
@@ -612,7 +815,8 @@ func keybindingSummary() string {
 	return "" +
 		"enter send   alt+enter newline   esc clear   ctrl+c clear/exit\n" +
 		"↑/↓ history   tab complete   ctrl+p panel   ctrl+d exit\n" +
-		":help commands   :clear stream   :log server log   :quit exit"
+		":help commands   :clear stream   :log server log   :quit exit\n" +
+		"voice: right-option push-to-talk   ctrl+v cycle mode"
 }
 
 func tryReconnect(serverAddr string) tea.Cmd {
