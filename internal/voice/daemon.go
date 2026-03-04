@@ -403,7 +403,7 @@ func (d *Daemon) postSignalSSE(ctx context.Context, text string) {
 				if err := json.Unmarshal([]byte(data), &route); err == nil {
 					if d.mode != config.VoiceModeSilent {
 						announcement := StepAnnouncement(route.Pipe)
-						d.speakNonBlocking(ctx, announcement)
+						d.playAnnouncementNonBlocking(ctx, announcement)
 					}
 				}
 			case envelope.SSEEventChunk:
@@ -420,7 +420,7 @@ func (d *Daemon) postSignalSSE(ctx context.Context, text string) {
 				if err := json.Unmarshal([]byte(data), &step); err == nil {
 					if d.mode == config.VoiceModeSteps || d.mode == config.VoiceModeFull {
 						announcement := StepAnnouncement(step.Pipe)
-						d.speakNonBlocking(ctx, announcement)
+						d.playAnnouncementNonBlocking(ctx, announcement)
 					}
 				}
 			case envelope.SSEEventDone:
