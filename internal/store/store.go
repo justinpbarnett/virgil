@@ -1,8 +1,10 @@
 package store
 
 import (
+	"crypto/rand"
 	"database/sql"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -13,6 +15,19 @@ import (
 	_ "modernc.org/sqlite"
 )
 
+// Memory is the unified memory record stored in the memories table.
+type Memory struct {
+	ID         string
+	CreatedAt  time.Time
+	UpdatedAt  time.Time
+	Kind       string
+	SourcePipe string
+	Signal     string
+	Content    string
+	Tags       []string
+}
+
+// Entry represents an explicit memory entry (kind='explicit').
 type Entry struct {
 	ID        int64     `json:"id"`
 	Content   string    `json:"content"`
@@ -21,8 +36,45 @@ type Entry struct {
 	UpdatedAt time.Time `json:"updated_at"`
 }
 
+// StateEntry represents a working state entry (kind='working_state').
+type StateEntry struct {
+	Namespace string    `json:"namespace"`
+	Key       string    `json:"key"`
+	Content   string    `json:"content"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
+// InvocationEntry represents an invocation entry (kind='invocation').
+type InvocationEntry struct {
+	ID        string    `json:"id"`
+	Pipe      string    `json:"pipe"`
+	Signal    string    `json:"signal"`
+	Output    string    `json:"output"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
+// ContextRequest describes what kind of memory context to retrieve.
+type ContextRequest struct {
+	Type      string   // "topic_history", "working_state", "user_preferences", "relational"
+	Depth     string   // optional duration like "7d", "30d"
+	Relations []string // for relational: which edge types to traverse
+}
+
+// Store wraps a SQLite database.
 type Store struct {
 	db *sql.DB
+}
+
+// newID generates a UUID v4.
+func newID() string {
+	b := make([]byte, 16)
+	if _, err := io.ReadFull(rand.Reader, b); err != nil {
+		panic("crypto/rand failed: " + err.Error())
+	}
+	b[6] = (b[6] & 0x0f) | 0x40
+	b[8] = (b[8] & 0x3f) | 0x80
+	return fmt.Sprintf("%08x-%04x-%04x-%04x-%012x",
+		b[0:4], b[4:6], b[6:8], b[8:10], b[10:16])
 }
 
 func Open(path string) (*Store, error) {
@@ -35,6 +87,11 @@ func Open(path string) (*Store, error) {
 		return nil, fmt.Errorf("opening database: %w", err)
 	}
 
+	if _, err := db.Exec("PRAGMA foreign_keys = ON"); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("enabling foreign keys: %w", err)
+	}
+
 	if err := migrate(db); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("running migrations: %w", err)
@@ -43,152 +100,200 @@ func Open(path string) (*Store, error) {
 	return &Store{db: db}, nil
 }
 
+const newSchemaDDL = `
+CREATE TABLE IF NOT EXISTS memories (
+    id TEXT PRIMARY KEY,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    kind TEXT NOT NULL,
+    source_pipe TEXT,
+    signal TEXT,
+    content TEXT NOT NULL,
+    tags TEXT NOT NULL DEFAULT '',
+    embedding BLOB
+);
+
+CREATE INDEX IF NOT EXISTS idx_memories_kind ON memories(kind);
+CREATE INDEX IF NOT EXISTS idx_memories_source_pipe ON memories(source_pipe);
+CREATE INDEX IF NOT EXISTS idx_memories_created_at ON memories(created_at);
+
+CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts USING fts5(
+    content,
+    signal,
+    content='memories',
+    content_rowid='rowid',
+    tokenize='porter unicode61'
+);
+
+CREATE TRIGGER IF NOT EXISTS memories_ai AFTER INSERT ON memories BEGIN
+    INSERT INTO memories_fts(rowid, content, signal) VALUES (new.rowid, new.content, COALESCE(new.signal, ''));
+END;
+
+CREATE TRIGGER IF NOT EXISTS memories_ad AFTER DELETE ON memories BEGIN
+    INSERT INTO memories_fts(memories_fts, rowid, content, signal) VALUES('delete', old.rowid, old.content, COALESCE(old.signal, ''));
+END;
+
+CREATE TRIGGER IF NOT EXISTS memories_au AFTER UPDATE ON memories BEGIN
+    INSERT INTO memories_fts(memories_fts, rowid, content, signal) VALUES('delete', old.rowid, old.content, COALESCE(old.signal, ''));
+    INSERT INTO memories_fts(rowid, content, signal) VALUES (new.rowid, new.content, COALESCE(new.signal, ''));
+END;
+`
+
 func migrate(db *sql.DB) error {
-	_, err := db.Exec(`
-		CREATE TABLE IF NOT EXISTS entries (
-			id INTEGER PRIMARY KEY AUTOINCREMENT,
-			content TEXT NOT NULL,
-			tags TEXT NOT NULL DEFAULT '',
-			created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-			updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
-		);
-
-		CREATE VIRTUAL TABLE IF NOT EXISTS entries_fts USING fts5(
-			content,
-			content='entries',
-			content_rowid='id'
-		);
-
-		CREATE TRIGGER IF NOT EXISTS entries_ai AFTER INSERT ON entries BEGIN
-			INSERT INTO entries_fts(rowid, content) VALUES (new.id, new.content);
-		END;
-
-		CREATE TRIGGER IF NOT EXISTS entries_ad AFTER DELETE ON entries BEGIN
-			INSERT INTO entries_fts(entries_fts, rowid, content) VALUES('delete', old.id, old.content);
-		END;
-
-		CREATE TRIGGER IF NOT EXISTS entries_au AFTER UPDATE ON entries BEGIN
-			INSERT INTO entries_fts(entries_fts, rowid, content) VALUES('delete', old.id, old.content);
-			INSERT INTO entries_fts(rowid, content) VALUES (new.id, new.content);
-		END;
-
-		CREATE TABLE IF NOT EXISTS working_state (
-			namespace TEXT NOT NULL,
-			key TEXT NOT NULL,
-			content TEXT NOT NULL,
-			created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-			updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-			PRIMARY KEY (namespace, key)
-		);
-
-		CREATE TABLE IF NOT EXISTS invocations (
-			id INTEGER PRIMARY KEY AUTOINCREMENT,
-			pipe TEXT NOT NULL,
-			signal TEXT NOT NULL,
-			output TEXT NOT NULL,
-			created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
-		);
-
-		CREATE VIRTUAL TABLE IF NOT EXISTS invocations_fts USING fts5(
-			signal,
-			output,
-			content='invocations',
-			content_rowid='id'
-		);
-
-		CREATE TRIGGER IF NOT EXISTS invocations_ai AFTER INSERT ON invocations BEGIN
-			INSERT INTO invocations_fts(rowid, signal, output) VALUES (new.id, new.signal, new.output);
-		END;
-
-		CREATE TRIGGER IF NOT EXISTS invocations_ad AFTER DELETE ON invocations BEGIN
-			INSERT INTO invocations_fts(invocations_fts, rowid, signal, output) VALUES('delete', old.id, old.signal, old.output);
-		END;
-	`)
-	return err
-}
-
-// StateEntry represents a row in the working_state table.
-type StateEntry struct {
-	Namespace string    `json:"namespace"`
-	Key       string    `json:"key"`
-	Content   string    `json:"content"`
-	UpdatedAt time.Time `json:"updated_at"`
-}
-
-// PutState upserts a working-state entry keyed by namespace and key.
-func (s *Store) PutState(namespace, key, content string) error {
-	now := time.Now()
-	_, err := s.db.Exec(`
-		INSERT INTO working_state (namespace, key, content, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?)
-		ON CONFLICT(namespace, key) DO UPDATE SET
-			content = excluded.content,
-			updated_at = excluded.updated_at
-	`, namespace, key, content, now, now)
-	return err
-}
-
-// GetState retrieves a working-state entry by namespace and key.
-// Returns the content, whether it was found, and any error.
-func (s *Store) GetState(namespace, key string) (string, bool, error) {
-	var content string
-	err := s.db.QueryRow(
-		"SELECT content FROM working_state WHERE namespace = ? AND key = ?",
-		namespace, key,
-	).Scan(&content)
-	if err == sql.ErrNoRows {
-		return "", false, nil
+	var count int
+	_ = db.QueryRow("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='entries'").Scan(&count)
+	if count > 0 {
+		return migrateOldSchema(db)
 	}
+	return createNewSchema(db)
+}
+
+func createNewSchema(db *sql.DB) error {
+	tx, err := db.Begin()
 	if err != nil {
-		return "", false, err
+		return err
 	}
-	return content, true, nil
+	defer tx.Rollback()
+
+	if _, err := tx.Exec(newSchemaDDL); err != nil {
+		return err
+	}
+	if err := createEdgeSchema(tx); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
-// DeleteState removes a working-state entry. No error if it doesn't exist.
-func (s *Store) DeleteState(namespace, key string) error {
-	_, err := s.db.Exec(
-		"DELETE FROM working_state WHERE namespace = ? AND key = ?",
-		namespace, key,
-	)
-	return err
-}
-
-// ListState returns all entries in a namespace, ordered by updated_at DESC.
-func (s *Store) ListState(namespace string) ([]StateEntry, error) {
-	rows, err := s.db.Query(
-		"SELECT namespace, key, content, updated_at FROM working_state WHERE namespace = ? ORDER BY updated_at DESC",
-		namespace,
-	)
+func migrateOldSchema(db *sql.DB) error {
+	tx, err := db.Begin()
 	if err != nil {
-		return nil, err
+		return err
 	}
-	defer rows.Close()
+	defer tx.Rollback()
 
-	var entries []StateEntry
+	if _, err := tx.Exec(newSchemaDDL); err != nil {
+		return err
+	}
+	if err := createEdgeSchema(tx); err != nil {
+		return err
+	}
+
+	// Migrate entries → memories (kind='explicit')
+	rows, err := tx.Query("SELECT content, tags, created_at, updated_at FROM entries")
+	if err != nil {
+		return err
+	}
 	for rows.Next() {
-		var e StateEntry
-		if err := rows.Scan(&e.Namespace, &e.Key, &e.Content, &e.UpdatedAt); err != nil {
-			return nil, err
+		var content, tagStr string
+		var createdAt, updatedAt time.Time
+		if err := rows.Scan(&content, &tagStr, &createdAt, &updatedAt); err != nil {
+			rows.Close()
+			return err
 		}
-		entries = append(entries, e)
+		_, err = tx.Exec(
+			"INSERT INTO memories (id, created_at, updated_at, kind, content, tags) VALUES (?, ?, ?, 'explicit', ?, ?)",
+			newID(), createdAt.UnixNano(), updatedAt.UnixNano(), content, tagStr,
+		)
+		if err != nil {
+			rows.Close()
+			return err
+		}
 	}
+	rows.Close()
 	if err := rows.Err(); err != nil {
-		return nil, err
+		return err
 	}
-	return entries, nil
+
+	// Migrate working_state → memories (kind='working_state')
+	rows, err = tx.Query("SELECT namespace, key, content, created_at, updated_at FROM working_state")
+	if err != nil {
+		return err
+	}
+	for rows.Next() {
+		var namespace, key, content string
+		var createdAt, updatedAt time.Time
+		if err := rows.Scan(&namespace, &key, &content, &createdAt, &updatedAt); err != nil {
+			rows.Close()
+			return err
+		}
+		compositeID := namespace + "/" + key
+		_, err = tx.Exec(
+			"INSERT INTO memories (id, created_at, updated_at, kind, content) VALUES (?, ?, ?, 'working_state', ?)",
+			compositeID, createdAt.UnixNano(), updatedAt.UnixNano(), content,
+		)
+		if err != nil {
+			rows.Close()
+			return err
+		}
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return err
+	}
+
+	// Migrate invocations → memories (kind='invocation')
+	rows, err = tx.Query("SELECT pipe, signal, output, created_at FROM invocations")
+	if err != nil {
+		return err
+	}
+	for rows.Next() {
+		var pipeName, signal, output string
+		var createdAt time.Time
+		if err := rows.Scan(&pipeName, &signal, &output, &createdAt); err != nil {
+			rows.Close()
+			return err
+		}
+		_, err = tx.Exec(
+			"INSERT INTO memories (id, created_at, updated_at, kind, source_pipe, signal, content) VALUES (?, ?, ?, 'invocation', ?, ?, ?)",
+			newID(), createdAt.UnixNano(), createdAt.UnixNano(), pipeName, signal, output,
+		)
+		if err != nil {
+			rows.Close()
+			return err
+		}
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return err
+	}
+
+	// Drop old tables and associated FTS/triggers
+	for _, stmt := range []string{
+		"DROP TRIGGER IF EXISTS entries_ai",
+		"DROP TRIGGER IF EXISTS entries_ad",
+		"DROP TRIGGER IF EXISTS entries_au",
+		"DROP TRIGGER IF EXISTS invocations_ai",
+		"DROP TRIGGER IF EXISTS invocations_ad",
+		"DROP TABLE IF EXISTS entries_fts",
+		"DROP TABLE IF EXISTS invocations_fts",
+		"DROP TABLE IF EXISTS entries",
+		"DROP TABLE IF EXISTS working_state",
+		"DROP TABLE IF EXISTS invocations",
+	} {
+		if _, err := tx.Exec(stmt); err != nil {
+			return err
+		}
+	}
+
+	return tx.Commit()
 }
 
+func (s *Store) Close() error {
+	return s.db.Close()
+}
+
+// Save inserts an explicit memory entry.
 func (s *Store) Save(content string, tags []string) error {
 	tagStr := strings.Join(tags, ",")
 	now := time.Now()
 	_, err := s.db.Exec(
-		"INSERT INTO entries (content, tags, created_at, updated_at) VALUES (?, ?, ?, ?)",
-		content, tagStr, now, now,
+		"INSERT INTO memories (id, created_at, updated_at, kind, content, tags) VALUES (?, ?, ?, 'explicit', ?, ?)",
+		newID(), now.UnixNano(), now.UnixNano(), content, tagStr,
 	)
 	return err
 }
 
+// Search performs an FTS search on explicit memory entries.
 func (s *Store) Search(query string, limit int, sort string) ([]Entry, error) {
 	if limit <= 0 {
 		limit = 10
@@ -196,14 +301,14 @@ func (s *Store) Search(query string, limit int, sort string) ([]Entry, error) {
 
 	orderClause := "ORDER BY rank"
 	if sort == "recent" {
-		orderClause = "ORDER BY e.created_at DESC"
+		orderClause = "ORDER BY m.created_at DESC"
 	}
 
 	rows, err := s.db.Query(fmt.Sprintf(`
-		SELECT e.id, e.content, e.tags, e.created_at, e.updated_at
-		FROM entries_fts f
-		JOIN entries e ON e.id = f.rowid
-		WHERE entries_fts MATCH ?
+		SELECT m.rowid, m.content, m.tags, m.created_at, m.updated_at
+		FROM memories_fts f
+		JOIN memories m ON m.rowid = f.rowid
+		WHERE memories_fts MATCH ? AND m.kind = 'explicit'
 		%s
 		LIMIT ?
 	`, orderClause), query, limit)
@@ -216,9 +321,12 @@ func (s *Store) Search(query string, limit int, sort string) ([]Entry, error) {
 	for rows.Next() {
 		var e Entry
 		var tagStr string
-		if err := rows.Scan(&e.ID, &e.Content, &tagStr, &e.CreatedAt, &e.UpdatedAt); err != nil {
+		var createdNano, updatedNano int64
+		if err := rows.Scan(&e.ID, &e.Content, &tagStr, &createdNano, &updatedNano); err != nil {
 			return nil, err
 		}
+		e.CreatedAt = time.Unix(0, createdNano)
+		e.UpdatedAt = time.Unix(0, updatedNano)
 		if tagStr != "" {
 			e.Tags = strings.Split(tagStr, ",")
 		}
@@ -227,59 +335,110 @@ func (s *Store) Search(query string, limit int, sort string) ([]Entry, error) {
 	return entries, rows.Err()
 }
 
-func (s *Store) Close() error {
-	return s.db.Close()
-}
-
-// InvocationEntry represents a row in the invocations table.
-type InvocationEntry struct {
-	ID        int64     `json:"id"`
-	Pipe      string    `json:"pipe"`
-	Signal    string    `json:"signal"`
-	Output    string    `json:"output"`
-	CreatedAt time.Time `json:"created_at"`
-}
-
-// ContextRequest describes what kind of memory context to retrieve.
-type ContextRequest struct {
-	Type  string // "topic_history", "working_state", "user_preferences"
-	Depth string // optional duration like "7d", "30d"
-}
-
-// SaveInvocation records a pipe invocation for automatic memory encoding.
-func (s *Store) SaveInvocation(pipe, signal, output string) error {
+// PutState upserts a working-state entry.
+func (s *Store) PutState(namespace, key, content string) error {
+	compositeID := namespace + "/" + key
 	now := time.Now()
+	_, err := s.db.Exec(`
+		INSERT INTO memories (id, created_at, updated_at, kind, content)
+		VALUES (?, ?, ?, 'working_state', ?)
+		ON CONFLICT(id) DO UPDATE SET
+			content = excluded.content,
+			updated_at = excluded.updated_at
+	`, compositeID, now.UnixNano(), now.UnixNano(), content)
+	return err
+}
+
+// GetState retrieves a working-state entry by namespace and key.
+func (s *Store) GetState(namespace, key string) (string, bool, error) {
+	compositeID := namespace + "/" + key
+	var content string
+	err := s.db.QueryRow(
+		"SELECT content FROM memories WHERE id = ? AND kind = 'working_state'",
+		compositeID,
+	).Scan(&content)
+	if err == sql.ErrNoRows {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, err
+	}
+	return content, true, nil
+}
+
+// DeleteState removes a working-state entry.
+func (s *Store) DeleteState(namespace, key string) error {
+	compositeID := namespace + "/" + key
 	_, err := s.db.Exec(
-		"INSERT INTO invocations (pipe, signal, output, created_at) VALUES (?, ?, ?, ?)",
-		pipe, signal, output, now,
+		"DELETE FROM memories WHERE id = ? AND kind = 'working_state'",
+		compositeID,
 	)
 	return err
 }
 
-// SearchInvocations performs an FTS search on the invocations table.
-// pipe filters by pipe name (empty string means any pipe).
-// since filters to entries created after that time (zero value means no time filter).
+// ListState returns all working-state entries in a namespace, ordered by updated_at DESC.
+func (s *Store) ListState(namespace string) ([]StateEntry, error) {
+	prefix := namespace + "/"
+	rows, err := s.db.Query(
+		"SELECT id, content, updated_at FROM memories WHERE kind = 'working_state' AND id LIKE ? ORDER BY updated_at DESC",
+		prefix+"%",
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var entries []StateEntry
+	for rows.Next() {
+		var e StateEntry
+		var id string
+		var updatedNano int64
+		if err := rows.Scan(&id, &e.Content, &updatedNano); err != nil {
+			return nil, err
+		}
+		e.Namespace, e.Key = parseStateID(id)
+		e.UpdatedAt = time.Unix(0, updatedNano)
+		entries = append(entries, e)
+	}
+	return entries, rows.Err()
+}
+
+// SaveInvocation records a pipe invocation. Returns the new memory ID.
+func (s *Store) SaveInvocation(pipe, signal, output string) (string, error) {
+	id := newID()
+	now := time.Now()
+	_, err := s.db.Exec(
+		"INSERT INTO memories (id, created_at, updated_at, kind, source_pipe, signal, content) VALUES (?, ?, ?, 'invocation', ?, ?, ?)",
+		id, now.UnixNano(), now.UnixNano(), pipe, signal, output,
+	)
+	if err != nil {
+		return "", err
+	}
+	return id, nil
+}
+
+// SearchInvocations performs an FTS search on invocation entries.
 func (s *Store) SearchInvocations(query, pipe string, limit int, since time.Time) ([]InvocationEntry, error) {
 	if limit <= 0 {
 		limit = 10
 	}
 
-	conds := []string{"invocations_fts MATCH ?"}
+	conds := []string{"memories_fts MATCH ?", "m.kind = 'invocation'"}
 	args := []any{query}
 	if pipe != "" {
-		conds = append(conds, "i.pipe = ?")
+		conds = append(conds, "m.source_pipe = ?")
 		args = append(args, pipe)
 	}
 	if !since.IsZero() {
-		conds = append(conds, "i.created_at >= ?")
-		args = append(args, since)
+		conds = append(conds, "m.created_at >= ?")
+		args = append(args, since.UnixNano())
 	}
 	args = append(args, limit)
 
 	rows, err := s.db.Query(fmt.Sprintf(`
-		SELECT i.id, i.pipe, i.signal, i.output, i.created_at
-		FROM invocations_fts f
-		JOIN invocations i ON i.id = f.rowid
+		SELECT m.id, m.source_pipe, m.signal, m.content, m.created_at
+		FROM memories_fts f
+		JOIN memories m ON m.rowid = f.rowid
 		WHERE %s
 		ORDER BY rank
 		LIMIT ?
@@ -292,9 +451,49 @@ func (s *Store) SearchInvocations(query, pipe string, limit int, since time.Time
 	var entries []InvocationEntry
 	for rows.Next() {
 		var e InvocationEntry
-		if err := rows.Scan(&e.ID, &e.Pipe, &e.Signal, &e.Output, &e.CreatedAt); err != nil {
+		var createdNano int64
+		var sourcePipe, signal sql.NullString
+		if err := rows.Scan(&e.ID, &sourcePipe, &signal, &e.Output, &createdNano); err != nil {
 			return nil, err
 		}
+		e.Pipe = sourcePipe.String
+		e.Signal = signal.String
+		e.CreatedAt = time.Unix(0, createdNano)
+		entries = append(entries, e)
+	}
+	return entries, rows.Err()
+}
+
+// parseStateID splits a composite "namespace/key" ID back into its parts.
+func parseStateID(id string) (namespace, key string) {
+	parts := strings.SplitN(id, "/", 2)
+	namespace = parts[0]
+	if len(parts) > 1 {
+		key = parts[1]
+	}
+	return
+}
+
+// listAllState returns the most recent working state entries across all namespaces.
+func (s *Store) listAllState() ([]StateEntry, error) {
+	rows, err := s.db.Query(
+		"SELECT id, content, updated_at FROM memories WHERE kind = 'working_state' ORDER BY updated_at DESC LIMIT 100",
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var entries []StateEntry
+	for rows.Next() {
+		var e StateEntry
+		var id string
+		var updatedNano int64
+		if err := rows.Scan(&id, &e.Content, &updatedNano); err != nil {
+			return nil, err
+		}
+		e.Namespace, e.Key = parseStateID(id)
+		e.UpdatedAt = time.Unix(0, updatedNano)
 		entries = append(entries, e)
 	}
 	return entries, rows.Err()
@@ -313,27 +512,6 @@ func truncateRunes(s string, maxBytes int) string {
 		last = i
 	}
 	return s[:last]
-}
-
-// listAllState returns the most recent working state entries across all namespaces.
-func (s *Store) listAllState() ([]StateEntry, error) {
-	rows, err := s.db.Query(
-		"SELECT namespace, key, content, updated_at FROM working_state ORDER BY updated_at DESC LIMIT 100",
-	)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	var entries []StateEntry
-	for rows.Next() {
-		var e StateEntry
-		if err := rows.Scan(&e.Namespace, &e.Key, &e.Content, &e.UpdatedAt); err != nil {
-			return nil, err
-		}
-		entries = append(entries, e)
-	}
-	return entries, rows.Err()
 }
 
 // parseDepth parses a depth string like "7d", "30d", "1d" into a time.Time representing
@@ -364,6 +542,7 @@ func parseDepth(depth string) time.Time {
 
 // RetrieveContext assembles relevant memory entries for a pipe based on context requests.
 // Budget is expressed in approximate tokens (4 chars ≈ 1 token).
+// Relational requests are processed last, using anchor IDs from prior retrievals.
 func (s *Store) RetrieveContext(query string, requests []ContextRequest, budget int) ([]envelope.MemoryEntry, error) {
 	if budget <= 0 {
 		budget = 500
@@ -371,12 +550,22 @@ func (s *Store) RetrieveContext(query string, requests []ContextRequest, budget 
 	charBudget := budget * 4
 	var results []envelope.MemoryEntry
 	usedChars := 0
+	seenIDs := make(map[string]bool)
 
-	for i, req := range requests {
+	var standardReqs, relationalReqs []ContextRequest
+	for _, req := range requests {
+		if req.Type == "relational" {
+			relationalReqs = append(relationalReqs, req)
+		} else {
+			standardReqs = append(standardReqs, req)
+		}
+	}
+
+	for i, req := range standardReqs {
 		if usedChars >= charBudget {
 			break
 		}
-		remaining := len(requests) - i
+		remaining := len(standardReqs) - i
 		share := (charBudget - usedChars) / max(1, remaining)
 
 		switch req.Type {
@@ -385,8 +574,7 @@ func (s *Store) RetrieveContext(query string, requests []ContextRequest, budget 
 				continue
 			}
 			since := parseDepth(req.Depth)
-			limit := 5
-			entries, err := s.SearchInvocations(query, "", limit, since)
+			entries, err := s.SearchInvocations(query, "", 5, since)
 			if err != nil {
 				continue
 			}
@@ -396,7 +584,8 @@ func (s *Store) RetrieveContext(query string, requests []ContextRequest, budget 
 					break
 				}
 				text = truncateRunes(text, share)
-				results = append(results, envelope.MemoryEntry{Type: "topic_history", Content: text})
+				results = append(results, envelope.MemoryEntry{ID: e.ID, Type: "topic_history", Content: text})
+				seenIDs[e.ID] = true
 				usedChars += len(text)
 			}
 
@@ -405,17 +594,18 @@ func (s *Store) RetrieveContext(query string, requests []ContextRequest, budget 
 			if err != nil {
 				continue
 			}
-			var parts []string
 			for _, e := range entries {
-				parts = append(parts, e.Namespace+"/"+e.Key+": "+e.Content)
-			}
-			text := strings.Join(parts, "\n")
-			if text == "" {
-				continue
-			}
-			text = truncateRunes(text, share)
-			if usedChars+len(text) <= charBudget {
-				results = append(results, envelope.MemoryEntry{Type: "working_state", Content: text})
+				if usedChars >= charBudget {
+					break
+				}
+				text := e.Namespace + "/" + e.Key + ": " + e.Content
+				text = truncateRunes(text, share)
+				if usedChars+len(text) > charBudget {
+					break
+				}
+				id := e.Namespace + "/" + e.Key
+				results = append(results, envelope.MemoryEntry{ID: id, Type: "working_state", Content: text})
+				seenIDs[id] = true
 				usedChars += len(text)
 			}
 
@@ -443,6 +633,45 @@ func (s *Store) RetrieveContext(query string, requests []ContextRequest, budget 
 		}
 	}
 
+	for _, req := range relationalReqs {
+		if usedChars >= charBudget {
+			break
+		}
+
+		var anchorIDs []string
+		for _, m := range results {
+			if m.ID != "" {
+				anchorIDs = append(anchorIDs, m.ID)
+			}
+		}
+		if len(anchorIDs) == 0 {
+			continue
+		}
+
+		relations := req.Relations
+		if len(relations) == 0 {
+			relations = []string{RelationCoOccurred, RelationProducedBy, RelationRefinedFrom}
+		}
+
+		connected, err := s.TraverseFrom(anchorIDs, relations, 10)
+		if err != nil {
+			continue
+		}
+
+		share := charBudget - usedChars
+		for _, m := range connected {
+			if seenIDs[m.ID] {
+				continue
+			}
+			text := truncateRunes(m.Content, share)
+			if usedChars+len(text) > charBudget {
+				break
+			}
+			results = append(results, envelope.MemoryEntry{ID: m.ID, Type: "relational", Content: text})
+			seenIDs[m.ID] = true
+			usedChars += len(text)
+		}
+	}
+
 	return results, nil
 }
-

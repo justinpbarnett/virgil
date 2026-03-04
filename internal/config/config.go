@@ -136,8 +136,9 @@ type ProviderConfig struct {
 }
 
 type MemoryContextEntry struct {
-	Type  string `yaml:"type"`
-	Depth string `yaml:"depth"`
+	Type      string   `yaml:"type"`
+	Depth     string   `yaml:"depth"`
+	Relations []string `yaml:"relations"`
 }
 
 type MemoryConfig struct {

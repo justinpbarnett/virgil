@@ -1,6 +1,8 @@
 package store
 
 import (
+	"database/sql"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -263,7 +265,6 @@ func TestListState(t *testing.T) {
 		t.Fatalf("expected third entry key 'a', got %q", entries[2].Key)
 	}
 
-	// Verify content and namespace
 	if entries[0].Content != "content-c" {
 		t.Fatalf("expected content 'content-c', got %q", entries[0].Content)
 	}
@@ -276,8 +277,12 @@ func TestListState(t *testing.T) {
 
 func TestSaveInvocation(t *testing.T) {
 	s := tempDB(t)
-	if err := s.SaveInvocation("educate", "teach me Go", "What do you already know?"); err != nil {
+	id, err := s.SaveInvocation("educate", "teach me Go", "What do you already know?")
+	if err != nil {
 		t.Fatalf("SaveInvocation: %v", err)
+	}
+	if id == "" {
+		t.Fatal("expected non-empty memory ID from SaveInvocation")
 	}
 }
 
@@ -371,7 +376,6 @@ func TestRetrieveContext_TopicHistory(t *testing.T) {
 
 func TestRetrieveContext_BudgetEnforced(t *testing.T) {
 	s := tempDB(t)
-	// Insert enough content to potentially exceed a small budget
 	for i := 0; i < 10; i++ {
 		s.SaveInvocation("educate", "teach me Go topic "+string(rune('A'+i)), "long answer about Go "+string(rune('A'+i)))
 	}
@@ -425,7 +429,6 @@ func TestNamespaceIsolation(t *testing.T) {
 		t.Fatalf("PutState ns2: %v", err)
 	}
 
-	// Get from ns1
 	content, found, err := s.GetState("ns1", "key")
 	if err != nil {
 		t.Fatalf("GetState ns1: %v", err)
@@ -437,7 +440,6 @@ func TestNamespaceIsolation(t *testing.T) {
 		t.Fatalf("ns1: got %q, want %q", content, "content-ns1")
 	}
 
-	// Get from ns2
 	content, found, err = s.GetState("ns2", "key")
 	if err != nil {
 		t.Fatalf("GetState ns2: %v", err)
@@ -449,7 +451,6 @@ func TestNamespaceIsolation(t *testing.T) {
 		t.Fatalf("ns2: got %q, want %q", content, "content-ns2")
 	}
 
-	// Delete from ns1 shouldn't affect ns2
 	if err := s.DeleteState("ns1", "key"); err != nil {
 		t.Fatalf("DeleteState ns1: %v", err)
 	}
@@ -462,7 +463,6 @@ func TestNamespaceIsolation(t *testing.T) {
 		t.Fatal("ns2 entry should still exist after ns1 delete")
 	}
 
-	// List should only show entries in the given namespace
 	entries, err := s.ListState("ns1")
 	if err != nil {
 		t.Fatalf("ListState ns1: %v", err)
@@ -477,5 +477,309 @@ func TestNamespaceIsolation(t *testing.T) {
 	}
 	if len(entries) != 1 {
 		t.Fatalf("expected 1 entry in ns2, got %d", len(entries))
+	}
+}
+
+// --- New schema / migration tests ---
+
+// buildOldSchema creates the pre-migration table structure in a raw db.
+func buildOldSchema(db *sql.DB) error {
+	_, err := db.Exec(`
+		CREATE TABLE IF NOT EXISTS entries (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			content TEXT NOT NULL,
+			tags TEXT NOT NULL DEFAULT '',
+			created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+		);
+
+		CREATE VIRTUAL TABLE IF NOT EXISTS entries_fts USING fts5(
+			content,
+			content='entries',
+			content_rowid='id'
+		);
+
+		CREATE TRIGGER IF NOT EXISTS entries_ai AFTER INSERT ON entries BEGIN
+			INSERT INTO entries_fts(rowid, content) VALUES (new.id, new.content);
+		END;
+
+		CREATE TRIGGER IF NOT EXISTS entries_ad AFTER DELETE ON entries BEGIN
+			INSERT INTO entries_fts(entries_fts, rowid, content) VALUES('delete', old.id, old.content);
+		END;
+
+		CREATE TRIGGER IF NOT EXISTS entries_au AFTER UPDATE ON entries BEGIN
+			INSERT INTO entries_fts(entries_fts, rowid, content) VALUES('delete', old.id, old.content);
+			INSERT INTO entries_fts(rowid, content) VALUES (new.id, new.content);
+		END;
+
+		CREATE TABLE IF NOT EXISTS working_state (
+			namespace TEXT NOT NULL,
+			key TEXT NOT NULL,
+			content TEXT NOT NULL,
+			created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			PRIMARY KEY (namespace, key)
+		);
+
+		CREATE TABLE IF NOT EXISTS invocations (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			pipe TEXT NOT NULL,
+			signal TEXT NOT NULL,
+			output TEXT NOT NULL,
+			created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+		);
+
+		CREATE VIRTUAL TABLE IF NOT EXISTS invocations_fts USING fts5(
+			signal,
+			output,
+			content='invocations',
+			content_rowid='id'
+		);
+
+		CREATE TRIGGER IF NOT EXISTS invocations_ai AFTER INSERT ON invocations BEGIN
+			INSERT INTO invocations_fts(rowid, signal, output) VALUES (new.id, new.signal, new.output);
+		END;
+
+		CREATE TRIGGER IF NOT EXISTS invocations_ad AFTER DELETE ON invocations BEGIN
+			INSERT INTO invocations_fts(invocations_fts, rowid, signal, output) VALUES('delete', old.id, old.signal, old.output);
+		END;
+	`)
+	return err
+}
+
+func TestMigrationFromOldSchema(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "old.db")
+
+	// Create a raw database with old schema and seed data
+	rawDB, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("open raw db: %v", err)
+	}
+	if err := buildOldSchema(rawDB); err != nil {
+		t.Fatalf("build old schema: %v", err)
+	}
+
+	// Insert old-style data
+	_, err = rawDB.Exec("INSERT INTO entries (content, tags) VALUES (?, ?)", "OAuth entry", "auth")
+	if err != nil {
+		t.Fatalf("insert entry: %v", err)
+	}
+	_, err = rawDB.Exec("INSERT INTO working_state (namespace, key, content) VALUES (?, ?, ?)", "proj", "active", "migrating")
+	if err != nil {
+		t.Fatalf("insert working_state: %v", err)
+	}
+	_, err = rawDB.Exec("INSERT INTO invocations (pipe, signal, output) VALUES (?, ?, ?)", "educate", "teach Go", "goroutines!")
+	if err != nil {
+		t.Fatalf("insert invocation: %v", err)
+	}
+	rawDB.Close()
+
+	// Open via Store — this triggers migration
+	s, err := Open(dbPath)
+	if err != nil {
+		t.Fatalf("open after migration: %v", err)
+	}
+	defer s.Close()
+
+	// Verify explicit entry is accessible via Search
+	entries, err := s.Search("OAuth", 10, "")
+	if err != nil {
+		t.Fatalf("Search after migration: %v", err)
+	}
+	if len(entries) == 0 {
+		t.Fatal("expected OAuth entry to be accessible after migration")
+	}
+	if entries[0].Content != "OAuth entry" {
+		t.Errorf("expected 'OAuth entry', got %q", entries[0].Content)
+	}
+
+	// Verify working_state is accessible
+	content, found, err := s.GetState("proj", "active")
+	if err != nil {
+		t.Fatalf("GetState after migration: %v", err)
+	}
+	if !found {
+		t.Fatal("expected working_state entry to be found after migration")
+	}
+	if content != "migrating" {
+		t.Errorf("expected 'migrating', got %q", content)
+	}
+
+	// Verify invocation is accessible via SearchInvocations
+	invocations, err := s.SearchInvocations("goroutines", "", 10, time.Time{})
+	if err != nil {
+		t.Fatalf("SearchInvocations after migration: %v", err)
+	}
+	if len(invocations) == 0 {
+		t.Fatal("expected invocation to be accessible after migration")
+	}
+	if invocations[0].Pipe != "educate" {
+		t.Errorf("expected pipe=educate, got %q", invocations[0].Pipe)
+	}
+}
+
+func TestRetrieveContext_PopulatesID_TopicHistory(t *testing.T) {
+	s := tempDB(t)
+	s.SaveInvocation("educate", "teach me Go channels", "What do you know about channels?")
+
+	results, err := s.RetrieveContext("Go", []ContextRequest{{Type: "topic_history"}}, 500)
+	if err != nil {
+		t.Fatalf("RetrieveContext: %v", err)
+	}
+	for _, r := range results {
+		if r.Type == "topic_history" && r.ID == "" {
+			t.Error("expected non-empty ID for topic_history entry")
+		}
+	}
+}
+
+func TestRetrieveContext_PopulatesID_WorkingState(t *testing.T) {
+	s := tempDB(t)
+	s.PutState("project", "active", "building something")
+
+	results, err := s.RetrieveContext("", []ContextRequest{{Type: "working_state"}}, 500)
+	if err != nil {
+		t.Fatalf("RetrieveContext: %v", err)
+	}
+	for _, r := range results {
+		if r.Type == "working_state" && r.ID == "" {
+			t.Error("expected non-empty ID for working_state entry")
+		}
+	}
+}
+
+func TestRetrieveContext_Relational(t *testing.T) {
+	s := tempDB(t)
+
+	// Save two invocations as context memories
+	id1, _ := s.SaveInvocation("educate", "teach me Go channels", "What do you know about channels?")
+	id2, _ := s.SaveInvocation("educate", "teach me Go goroutines", "What do you know about goroutines?")
+
+	// Create a co_occurred edge between them
+	s.CreateEdge(Edge{
+		SourceID: id1,
+		TargetID: id2,
+		Relation: "co_occurred",
+		Strength: 2.0,
+	})
+
+	// Save a third invocation related to id1 via produced_by
+	id3, _ := s.SaveInvocation("educate", "teach me Go select", "Select on channels is powerful")
+	s.CreateEdge(Edge{
+		SourceID: id3,
+		TargetID: id1,
+		Relation: "produced_by",
+	})
+
+	// RetrieveContext with topic_history anchors + relational
+	results, err := s.RetrieveContext("Go channels", []ContextRequest{
+		{Type: "topic_history"},
+		{Type: "relational", Relations: []string{"co_occurred", "produced_by"}},
+	}, 2000)
+	if err != nil {
+		t.Fatalf("RetrieveContext: %v", err)
+	}
+
+	hasRelational := false
+	for _, r := range results {
+		if r.Type == "relational" {
+			hasRelational = true
+			break
+		}
+	}
+	if !hasRelational {
+		t.Error("expected at least one relational result after graph traversal")
+	}
+}
+
+func TestRetrieveContext_Relational_NoAnchors(t *testing.T) {
+	s := tempDB(t)
+
+	// No invocations, so no BM25 anchors
+	results, err := s.RetrieveContext("nothing", []ContextRequest{
+		{Type: "topic_history"},
+		{Type: "relational", Relations: []string{"co_occurred"}},
+	}, 500)
+	if err != nil {
+		t.Fatalf("RetrieveContext: %v", err)
+	}
+
+	for _, r := range results {
+		if r.Type == "relational" {
+			t.Error("expected no relational results when no anchors")
+		}
+	}
+}
+
+func TestPutState_UpdateNoError(t *testing.T) {
+	s := tempDB(t)
+
+	if err := s.PutState("spec", "design", "v1 content"); err != nil {
+		t.Fatalf("PutState v1: %v", err)
+	}
+
+	if err := s.PutState("spec", "design", "v2 content"); err != nil {
+		t.Fatalf("PutState v2: %v", err)
+	}
+
+	content, found, err := s.GetState("spec", "design")
+	if err != nil {
+		t.Fatalf("GetState: %v", err)
+	}
+	if !found || content != "v2 content" {
+		t.Fatalf("expected v2 content, got found=%v content=%q", found, content)
+	}
+
+	// refined_from edges are not created for working_state updates because the stable
+	// composite ID means any such edge would be self-referential and get dropped.
+	var edgeCount int
+	s.db.QueryRow("SELECT COUNT(*) FROM memory_edges WHERE relation = 'refined_from'").Scan(&edgeCount)
+	if edgeCount != 0 {
+		t.Errorf("expected 0 refined_from edges for working_state (stable ID), got %d", edgeCount)
+	}
+}
+
+// --- co_occurred batch performance ---
+
+func TestCoOccurredBatch(t *testing.T) {
+	s := tempDB(t)
+
+	// Create 15 invocation memories
+	ids := make([]string, 15)
+	for i := range ids {
+		id, err := s.SaveInvocation("educate", fmt.Sprintf("topic %d", i), fmt.Sprintf("answer %d", i))
+		if err != nil {
+			t.Fatalf("SaveInvocation %d: %v", i, err)
+		}
+		ids[i] = id
+	}
+
+	// Create co_occurred edges for all pairs (15 choose 2 = 105 edges)
+	var edges []Edge
+	for i := 0; i < len(ids); i++ {
+		for j := i + 1; j < len(ids); j++ {
+			edges = append(edges, Edge{
+				SourceID: ids[i],
+				TargetID: ids[j],
+				Relation: "co_occurred",
+			})
+		}
+	}
+	if len(edges) != 105 {
+		t.Fatalf("expected 105 edge pairs, got %d", len(edges))
+	}
+
+	if err := s.CreateEdges(edges); err != nil {
+		t.Fatalf("CreateEdges: %v", err)
+	}
+
+	// Verify traversal works
+	connected, err := s.TraverseFrom([]string{ids[0]}, []string{"co_occurred"}, 20)
+	if err != nil {
+		t.Fatalf("TraverseFrom: %v", err)
+	}
+	if len(connected) == 0 {
+		t.Fatal("expected connected memories")
 	}
 }
