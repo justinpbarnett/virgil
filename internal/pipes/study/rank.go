@@ -97,7 +97,7 @@ func queryMatchScore(item ExtractedItem, query string) float64 {
 		return 0.5 // neutral if no query
 	}
 
-	terms := strings.Fields(strings.ToLower(query))
+	terms := filterStopWords(strings.Fields(strings.ToLower(query)))
 	if len(terms) == 0 {
 		return 0.5
 	}
@@ -110,10 +110,41 @@ func queryMatchScore(item ExtractedItem, query string) float64 {
 	for _, term := range terms {
 		if strings.Contains(content, term) || strings.Contains(path, term) || strings.Contains(symbol, term) {
 			matchCount++
+			continue
+		}
+		// Stem matching: strip common suffixes so "visualization" matches "visualize",
+		// "running" matches "run", etc.
+		if stem := stemTerm(term); stem != term {
+			if strings.Contains(content, stem) || strings.Contains(path, stem) || strings.Contains(symbol, stem) {
+				matchCount++
+			}
 		}
 	}
 
 	return float64(matchCount) / float64(len(terms))
+}
+
+// stemTerm strips common English suffixes to produce a root form for matching.
+// Only strips when the remaining stem is at least 4 characters.
+func stemTerm(term string) string {
+	suffixes := []string{
+		"ations", "ation",
+		"izations", "ization",
+		"izing", "ized", "izes",
+		"ings", "ing",
+		"ness", "ment",
+		"ers", "er",
+		"ed", "ly",
+	}
+	for _, s := range suffixes {
+		if strings.HasSuffix(term, s) {
+			stem := term[:len(term)-len(s)]
+			if len(stem) >= 4 {
+				return stem
+			}
+		}
+	}
+	return term
 }
 
 // densityScore: ratio of unique identifiers to total tokens.
