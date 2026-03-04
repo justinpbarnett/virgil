@@ -139,3 +139,88 @@ claude auth login
 ```
 
 Virgil will warn at startup if the Claude CLI is not found but will continue running. Deterministic pipes (memory, calendar) work without it.
+
+## Voice Integration Setup
+
+The voice daemon enables push-to-talk input (via Whisper) and spoken responses (via ElevenLabs). It runs as a separate process alongside the TUI.
+
+### 1. Prerequisites: sox
+
+Audio recording requires `sox`:
+
+```bash
+brew install sox
+```
+
+### 2. macOS Accessibility Permissions
+
+The voice daemon uses global hotkeys that require accessibility access. Grant it once:
+
+1. Open **System Settings > Privacy & Security > Accessibility**
+2. Add **Terminal** (or the `virgil` binary, if running directly)
+3. Enable the toggle
+
+Without this, the daemon will exit with an error pointing here.
+
+### 3. OpenAI API Key (Whisper STT)
+
+The daemon transcribes audio via OpenAI's Whisper API.
+
+1. Create or log into your account at [platform.openai.com](https://platform.openai.com)
+2. Navigate to **API keys** and create a new key
+3. Copy the key — it starts with `sk-`
+
+### 4. ElevenLabs API Key and Voice ID (TTS)
+
+The daemon speaks responses via ElevenLabs.
+
+1. Create or log into your account at [elevenlabs.io](https://elevenlabs.io)
+2. Navigate to **Profile > API Keys** and copy your key
+3. Go to **Voices** to find a voice you like — copy its **Voice ID** from the voice card (or use the [GET /v1/voices](https://api.elevenlabs.io/v1/voices) API)
+
+### 5. Create voice.json
+
+Create `~/.config/virgil/voice.json`:
+
+```json
+{
+  "openai_api_key": "sk-...",
+  "elevenlabs_api_key": "...",
+  "elevenlabs_voice_id": "JBFqnCBsd6RMkjVDRZzb",
+  "elevenlabs_model_id": "eleven_turbo_v2_5",
+  "push_to_talk_key": "right_option",
+  "mode_cycle_key": "f8",
+  "output_mode": "notify",
+  "max_spoken_chars": 200
+}
+```
+
+All fields except `openai_api_key`, `elevenlabs_api_key`, and `elevenlabs_voice_id` have defaults and are optional.
+
+### 6. Running the Voice Daemon
+
+Start the daemon in a separate terminal:
+
+```bash
+virgil --voice
+```
+
+The daemon runs in the foreground. The TUI and voice daemon can both be connected to the same server simultaneously.
+
+### Default Hotkeys
+
+| Key | Action |
+|-----|--------|
+| Right Option (hold) | Push-to-talk: hold to record, release to transcribe and send |
+| F8 | Cycle output mode |
+
+### Output Modes
+
+| Mode | Spoken output | Use case |
+|------|--------------|----------|
+| **Silent** | Nothing | At desk with TUI visible |
+| **Notify** | Brief acknowledgement (first sentence or "Done.") | Working, want audio confirmation |
+| **Steps** | Step announcements + brief summary | Want pipeline progress awareness |
+| **Full** | Step announcements + complete response | Driving, hands-free use |
+
+Press F8 to cycle: Silent → Notify → Steps → Full → Silent. Switching to any active mode announces its name aloud.
