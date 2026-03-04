@@ -145,26 +145,28 @@ type voiceModeExpiredMsg struct {
 
 type voiceReconnectMsg struct{}
 
-func connectVoiceStatus(serverAddr string) tea.Cmd {
+func connectVoiceSSE(serverAddr, endpoint string, onConnect func(*sseReader) tea.Msg, onFail tea.Msg) tea.Cmd {
 	return func() tea.Msg {
-		url := fmt.Sprintf("http://%s/voice/status", serverAddr)
+		url := fmt.Sprintf("http://%s/voice/%s", serverAddr, endpoint)
 		resp, err := streamClient.Get(url)
 		if err != nil {
 			time.Sleep(5 * time.Second)
-			return voiceReconnectMsg{}
+			return onFail
 		}
-		ct := resp.Header.Get("Content-Type")
-		if !strings.HasPrefix(ct, envelope.SSEContentType) {
+		if !strings.HasPrefix(resp.Header.Get("Content-Type"), envelope.SSEContentType) {
 			resp.Body.Close()
 			time.Sleep(5 * time.Second)
-			return voiceReconnectMsg{}
+			return onFail
 		}
-
 		scanner := bufio.NewScanner(resp.Body)
-		scanner.Buffer(make([]byte, 1024), 64*1024)
+		scanner.Buffer(make([]byte, 4096), 64*1024)
 		reader := &sseReader{scanner: scanner, body: resp.Body}
-		return readNextVoiceEvent(reader)
+		return onConnect(reader)
 	}
+}
+
+func connectVoiceStatus(serverAddr string) tea.Cmd {
+	return connectVoiceSSE(serverAddr, "status", readNextVoiceEvent, voiceReconnectMsg{})
 }
 
 func readNextVoiceEvent(reader *sseReader) tea.Msg {
@@ -175,7 +177,7 @@ func readNextVoiceEvent(reader *sseReader) tea.Msg {
 			time.Sleep(5 * time.Second)
 			return voiceReconnectMsg{}
 		}
-		if event.Type == "voice_status" {
+		if event.Type == envelope.SSEEventVoiceStatus {
 			var vs struct {
 				Recording bool   `json:"recording"`
 				Mode      string `json:"mode"`
@@ -209,23 +211,7 @@ type voiceInputMsg struct {
 type voiceInputReconnectMsg struct{}
 
 func connectVoiceInput(serverAddr string) tea.Cmd {
-	return func() tea.Msg {
-		url := fmt.Sprintf("http://%s/voice/input", serverAddr)
-		resp, err := streamClient.Get(url)
-		if err != nil {
-			time.Sleep(5 * time.Second)
-			return voiceInputReconnectMsg{}
-		}
-		if !strings.HasPrefix(resp.Header.Get("Content-Type"), "text/event-stream") {
-			resp.Body.Close()
-			time.Sleep(5 * time.Second)
-			return voiceInputReconnectMsg{}
-		}
-		scanner := bufio.NewScanner(resp.Body)
-		scanner.Buffer(make([]byte, 4096), 64*1024)
-		reader := &sseReader{scanner: scanner, body: resp.Body}
-		return readNextVoiceInput(reader)
-	}
+	return connectVoiceSSE(serverAddr, "input", readNextVoiceInput, voiceInputReconnectMsg{})
 }
 
 func readNextVoiceInput(reader *sseReader) tea.Msg {
@@ -236,7 +222,7 @@ func readNextVoiceInput(reader *sseReader) tea.Msg {
 			time.Sleep(5 * time.Second)
 			return voiceInputReconnectMsg{}
 		}
-		if event.Type == "voice_input" {
+		if event.Type == envelope.SSEEventVoiceInput {
 			var payload struct {
 				Text string `json:"text"`
 			}

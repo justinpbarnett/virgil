@@ -223,7 +223,7 @@ func (d *Daemon) stopAndSubmit(ctx context.Context) {
 		return
 	}
 	d.logger.Printf("transcript: %s", transcript)
-	d.postSignalSSE(ctx, transcript)
+	d.postVoiceInput(ctx, transcript)
 }
 
 func (d *Daemon) postVoiceInput(ctx context.Context, text string) {
@@ -279,13 +279,13 @@ func (d *Daemon) connectAndSpeak(ctx context.Context) error {
 			eventType = after
 		} else if after, ok := strings.CutPrefix(line, "data: "); ok {
 			data = after
-		} else if line == "" && eventType == "voice_speak" {
+		} else if line == "" && eventType == envelope.SSEEventVoiceSpeak {
 			var payload struct {
 				Text     string `json:"text"`
 				Priority string `json:"priority"`
 			}
 			if err := json.Unmarshal([]byte(data), &payload); err == nil && payload.Text != "" {
-				if payload.Priority == "response" {
+				if payload.Priority == envelope.VoicePriorityResponse {
 					d.speakInterrupting(ctx, payload.Text)
 				} else {
 					d.playAnnouncementNonBlocking(ctx, payload.Text)
@@ -329,7 +329,7 @@ func (d *Daemon) connectAndCycle(ctx context.Context) error {
 		line := scanner.Text()
 		if after, ok := strings.CutPrefix(line, "event: "); ok {
 			eventType = after
-		} else if line == "" && eventType == "voice_cycle" {
+		} else if line == "" && eventType == envelope.SSEEventVoiceCycle {
 			d.cycleMode(ctx)
 			eventType = ""
 		}
@@ -550,7 +550,7 @@ func (d *Daemon) connectAndStop(ctx context.Context) error {
 		line := scanner.Text()
 		if after, ok := strings.CutPrefix(line, "event: "); ok {
 			eventType = after
-		} else if line == "" && eventType == "voice_stop" {
+		} else if line == "" && eventType == envelope.SSEEventVoiceStop {
 			d.abortRecording()
 			eventType = ""
 		}

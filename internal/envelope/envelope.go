@@ -33,6 +33,18 @@ const (
 	SSEEventStep   = "step"
 	SSEEventRoute  = "route"
 	SSEContentType = "text/event-stream"
+
+	SSEEventVoiceStatus = "voice_status"
+	SSEEventVoiceInput  = "voice_input"
+	SSEEventVoiceSpeak  = "voice_speak"
+	SSEEventVoiceCycle  = "voice_cycle"
+	SSEEventVoiceStop   = "voice_stop"
+)
+
+// Voice priority constants for speak events.
+const (
+	VoicePriorityAnnouncement = "announcement"
+	VoicePriorityResponse     = "response"
 )
 
 // FlagModelOverride is the envelope Args key for overriding the model on a per-request basis.

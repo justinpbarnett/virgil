@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math/rand"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -181,6 +182,11 @@ var ThinkingPhrases = []string{
 	"Let me think.",
 	"Give me a moment.",
 	"Working on it.",
+}
+
+// ThinkingPhrase returns a random thinking phrase.
+func ThinkingPhrase() string {
+	return ThinkingPhrases[rand.Intn(len(ThinkingPhrases))]
 }
 
 var stepPhrases = map[string]string{

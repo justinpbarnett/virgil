@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/justinpbarnett/virgil/internal/envelope"
+	"github.com/justinpbarnett/virgil/internal/parser"
 	"github.com/justinpbarnett/virgil/internal/runtime"
 )
 
@@ -39,19 +40,17 @@ func (s *Server) handleSignal(w http.ResponseWriter, r *http.Request) {
 
 	s.logger.Info("signal received")
 
-	// Parse → Route → Plan → Execute
 	parsed := s.parser.Parse(req.Text)
+
+	// SSE streaming path — start response before routing so the client
+	// gets the connection immediately (routing can take seconds for layer-4).
+	if r.Header.Get("Accept") == envelope.SSEContentType {
+		s.handleSSE(w, r, req, parsed)
+		return
+	}
+
+	// Synchronous path
 	route := s.router.Route(r.Context(), req.Text, parsed)
-
-	s.logger.Debug("signal parsed",
-		"verb", parsed.Verb,
-		"type", parsed.Type,
-		"source", parsed.Source,
-		"pipe", route.Pipe,
-		"layer", route.Layer,
-		"confidence", route.Confidence,
-	)
-
 	plan := s.planner.Plan(route, parsed)
 
 	seed := envelope.New("signal", "input")
@@ -62,12 +61,6 @@ func (s *Server) handleSignal(w http.ResponseWriter, r *http.Request) {
 		seed.Args[envelope.FlagModelOverride] = req.Model
 	}
 
-	// SSE streaming path
-	if r.Header.Get("Accept") == envelope.SSEContentType {
-		s.handleSSE(w, r, plan, seed, route.Layer)
-		return
-	}
-
 	result := s.runtime.Execute(plan, seed)
 
 	s.logger.Info("signal complete", "duration", time.Since(start).String())
@@ -76,7 +69,7 @@ func (s *Server) handleSignal(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(result)
 }
 
-func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request, plan runtime.Plan, seed envelope.Envelope, routeLayer int) {
+func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request, req signalRequest, parsed parser.ParsedSignal) {
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		http.Error(w, `{"error":"streaming not supported"}`, http.StatusInternalServerError)
@@ -88,8 +81,21 @@ func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request, plan runtime.
 	w.Header().Set("Connection", "keep-alive")
 	flusher.Flush()
 
+	// Route and plan after flushing headers so the client gets the
+	// connection immediately — routing can take seconds for layer-4.
+	route := s.router.Route(r.Context(), req.Text, parsed)
+	plan := s.planner.Plan(route, parsed)
+
+	seed := envelope.New("signal", "input")
+	seed.Content = req.Text
+	seed.ContentType = envelope.ContentText
+	seed.Args["signal"] = req.Text
+	if req.Model != "" {
+		seed.Args[envelope.FlagModelOverride] = req.Model
+	}
+
 	if len(plan.Steps) > 0 {
-		routeData, _ := json.Marshal(map[string]any{"pipe": plan.Steps[0].Pipe, "layer": routeLayer})
+		routeData, _ := json.Marshal(map[string]any{"pipe": plan.Steps[0].Pipe, "layer": route.Layer})
 		fmt.Fprintf(w, "event: %s\ndata: %s\n\n", envelope.SSEEventRoute, routeData)
 		flusher.Flush()
 	}
@@ -154,7 +160,7 @@ func (s *Server) handleVoiceInputPost(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleVoiceInputSSE(w http.ResponseWriter, r *http.Request) {
-	serveSSE(w, r, &s.voiceInput, 8, "voice_input", func(text string) []byte {
+	serveSSE(w, r, &s.voiceInput, 8, envelope.SSEEventVoiceInput, func(text string) []byte {
 		return marshalJSON(map[string]string{"text": text})
 	})
 }
@@ -173,7 +179,7 @@ func (s *Server) handleVoiceSpeakPost(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleVoiceSpeakSSE(w http.ResponseWriter, r *http.Request) {
-	serveSSE(w, r, &s.voiceSpeak, 8, "voice_speak", func(msg voiceSpeakMsg) []byte {
+	serveSSE(w, r, &s.voiceSpeak, 8, envelope.SSEEventVoiceSpeak, func(msg voiceSpeakMsg) []byte {
 		return marshalJSON(map[string]string{"text": msg.Text, "priority": msg.Priority})
 	})
 }
@@ -184,7 +190,7 @@ func (s *Server) handleVoiceCyclePost(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleVoiceCycleSSE(w http.ResponseWriter, r *http.Request) {
-	serveSSE(w, r, &s.voiceCycle, 4, "voice_cycle", func(_ struct{}) []byte {
+	serveSSE(w, r, &s.voiceCycle, 4, envelope.SSEEventVoiceCycle, func(_ struct{}) []byte {
 		return emptyJSON
 	})
 }
@@ -195,7 +201,7 @@ func (s *Server) handleVoiceStopPost(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleVoiceStopSSE(w http.ResponseWriter, r *http.Request) {
-	serveSSE(w, r, &s.voiceStop, 4, "voice_stop", func(_ struct{}) []byte {
+	serveSSE(w, r, &s.voiceStop, 4, envelope.SSEEventVoiceStop, func(_ struct{}) []byte {
 		return emptyJSON
 	})
 }
@@ -225,22 +231,22 @@ func (s *Server) handleVoiceStatusSSE(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Connection", "keep-alive")
 	flusher.Flush()
 
+	ch := s.voiceStatus.subscribe(8)
+	defer s.voiceStatus.unsubscribe(ch)
+
 	s.lastVoiceStatus.Lock()
 	last := s.lastVoiceStatus.val
 	s.lastVoiceStatus.Unlock()
 	if last != nil {
-		fmt.Fprintf(w, "event: voice_status\ndata: %s\n\n", marshalJSON(*last))
+		fmt.Fprintf(w, "event: %s\ndata: %s\n\n", envelope.SSEEventVoiceStatus, marshalJSON(*last))
 		flusher.Flush()
 	}
-
-	ch := s.voiceStatus.subscribe(8)
-	defer s.voiceStatus.unsubscribe(ch)
 	for {
 		select {
 		case <-r.Context().Done():
 			return
 		case vs := <-ch:
-			fmt.Fprintf(w, "event: voice_status\ndata: %s\n\n", marshalJSON(vs))
+			fmt.Fprintf(w, "event: %s\ndata: %s\n\n", envelope.SSEEventVoiceStatus, marshalJSON(vs))
 			flusher.Flush()
 		}
 	}

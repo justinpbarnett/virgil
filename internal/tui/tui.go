@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"math/rand"
 	"strings"
 	"time"
 
@@ -12,7 +11,6 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/justinpbarnett/virgil/internal/config"
 	"github.com/justinpbarnett/virgil/internal/envelope"
-	"github.com/justinpbarnett/virgil/internal/router"
 	"github.com/justinpbarnett/virgil/internal/voice"
 )
 
@@ -96,8 +94,6 @@ type streamStepMsg struct {
 }
 
 type streamRouteMsg struct {
-	pipe     string
-	layer    int
 	streamID int
 	reader   *sseReader
 }
@@ -202,6 +198,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case voiceReconnectMsg:
+		m.currentVoiceMode = ""
+		m.voiceRecording = false
 		return m, connectVoiceStatus(m.serverAddr)
 
 	case voiceInputMsg:
@@ -224,32 +222,16 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, connectVoiceInput(m.serverAddr)
 
 	case streamRouteMsg:
-		if msg.streamID != m.activeStreamID {
-			return m, readNextEvent(msg.reader, msg.streamID)
-		}
-		var cmds []tea.Cmd
-		if m.currentVoiceMode != "" && m.currentVoiceMode != config.VoiceModeSilent {
-			var ann string
-			if msg.layer == router.LayerFallback {
-				ann = voice.ThinkingPhrases[rand.Intn(len(voice.ThinkingPhrases))]
-			} else {
-				ann = voice.StepAnnouncement(msg.pipe)
-			}
-			cmds = append(cmds, postVoiceSpeak(m.serverAddr, ann, "announcement"))
-		}
-		cmds = append(cmds, readNextEvent(msg.reader, msg.streamID))
-		return m, tea.Batch(cmds...)
+		return m, readNextEvent(msg.reader, msg.streamID)
 
 	case streamStepMsg:
 		if msg.streamID != m.activeStreamID {
 			return m, readNextEvent(msg.reader, msg.streamID)
 		}
 		var cmds []tea.Cmd
-		if msg.streamID == m.voiceStreamID {
-			if m.currentVoiceMode == config.VoiceModeSteps || m.currentVoiceMode == config.VoiceModeFull {
-				ann := voice.StepAnnouncement(msg.pipe)
-				cmds = append(cmds, postVoiceSpeak(m.serverAddr, ann, "announcement"))
-			}
+		if m.currentVoiceMode == config.VoiceModeSteps || m.currentVoiceMode == config.VoiceModeFull {
+			ann := voice.StepAnnouncement(msg.pipe)
+			cmds = append(cmds, postVoiceSpeak(m.serverAddr, ann, envelope.VoicePriorityAnnouncement))
 		}
 		cmds = append(cmds, readNextEvent(msg.reader, msg.streamID))
 		return m, tea.Batch(cmds...)
@@ -560,10 +542,14 @@ func (m model) sendSignal(text string) (tea.Model, tea.Cmd) {
 	streamID := m.activeStreamID
 	ctx, cancel := context.WithCancel(context.Background())
 	m.cancelFn = cancel
-	return m, tea.Batch(
+	cmds := []tea.Cmd{
 		startStream(ctx, m.serverAddr, text, streamID, ""),
 		tickCmd(),
-	)
+	}
+	if m.currentVoiceMode != "" && m.currentVoiceMode != config.VoiceModeSilent {
+		cmds = append(cmds, postVoiceSpeak(m.serverAddr, voice.ThinkingPhrase(), envelope.VoicePriorityAnnouncement))
+	}
+	return m, tea.Batch(cmds...)
 }
 
 func (m model) handleStreamChunk(msg streamChunkMsg) (tea.Model, tea.Cmd) {
@@ -592,12 +578,14 @@ func (m model) handleStreamDone(msg streamDoneMsg) (tea.Model, tea.Cmd) {
 	}
 
 	var speakCmd tea.Cmd
-	if msg.err == nil && msg.streamID == m.voiceStreamID {
+	if msg.err == nil {
 		responseText := pendingText
 		if responseText == "" {
 			responseText = contentText
 		}
 		speakCmd = m.speakResponse(responseText)
+	}
+	if msg.streamID == m.voiceStreamID {
 		m.voiceStreamID = 0
 	}
 
@@ -630,7 +618,7 @@ func (m model) speakResponse(text string) tea.Cmd {
 	if spoken == "" {
 		return nil
 	}
-	return postVoiceSpeak(m.serverAddr, spoken, "response")
+	return postVoiceSpeak(m.serverAddr, spoken, envelope.VoicePriorityResponse)
 }
 
 func (m model) handleReconnect(msg reconnectMsg) (tea.Model, tea.Cmd) {
@@ -787,14 +775,7 @@ func readNextEventSync(reader *sseReader, streamID int) tea.Msg {
 			return streamDoneMsg{env: env, streamID: streamID}
 
 		case envelope.SSEEventRoute:
-			var route struct {
-				Pipe  string `json:"pipe"`
-				Layer int    `json:"layer"`
-			}
-			if err := json.Unmarshal([]byte(event.Data), &route); err == nil {
-				return streamRouteMsg{pipe: route.Pipe, layer: route.Layer, streamID: streamID, reader: reader}
-			}
-			continue
+			return streamRouteMsg{streamID: streamID, reader: reader}
 
 		case envelope.SSEEventStep:
 			var step struct {
