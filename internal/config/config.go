@@ -1,6 +1,7 @@
 package config
 
 import (
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"os"
@@ -12,6 +13,84 @@ import (
 	"github.com/justinpbarnett/virgil/internal/pipe"
 	"gopkg.in/yaml.v3"
 )
+
+type VoiceOutputMode string
+
+const (
+	VoiceModeSilent VoiceOutputMode = "silent"
+	VoiceModeNotify VoiceOutputMode = "notify"
+	VoiceModeSteps  VoiceOutputMode = "steps"
+	VoiceModeFull   VoiceOutputMode = "full"
+)
+
+type VoiceConfig struct {
+	OpenAIKey       string          `json:"openai_api_key"`
+	ElevenLabsKey   string          `json:"elevenlabs_api_key"`
+	ElevenLabsVoice string          `json:"elevenlabs_voice_id"`
+	ElevenLabsModel string          `json:"elevenlabs_model_id"`
+	PushToTalkKey   string          `json:"push_to_talk_key"`
+	ModeCycleKey    string          `json:"mode_cycle_key"`
+	OutputMode      VoiceOutputMode `json:"output_mode"`
+	MaxSpokenChars  int             `json:"max_spoken_chars"`
+	VoiceModel      string          `json:"voice_model"`
+}
+
+func (c *VoiceConfig) Validate() error {
+	if c.OpenAIKey == "" {
+		return fmt.Errorf("openai_api_key is required in voice.json")
+	}
+	if c.ElevenLabsKey == "" {
+		return fmt.Errorf("elevenlabs_api_key is required in voice.json")
+	}
+	if c.ElevenLabsVoice == "" {
+		return fmt.Errorf("elevenlabs_voice_id is required in voice.json")
+	}
+	return nil
+}
+
+// LoadVoiceConfig reads voice.json from configDir. Returns nil, nil if the file doesn't exist.
+func LoadVoiceConfig(configDir string) (*VoiceConfig, error) {
+	path := filepath.Join(configDir, "voice.json")
+	data, err := os.ReadFile(path)
+	if os.IsNotExist(err) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("reading voice.json: %w", err)
+	}
+
+	var cfg VoiceConfig
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		return nil, fmt.Errorf("parsing voice.json: %w", err)
+	}
+
+	if cfg.ElevenLabsModel == "" {
+		cfg.ElevenLabsModel = "eleven_turbo_v2_5"
+	}
+	if cfg.PushToTalkKey == "" {
+		cfg.PushToTalkKey = "right_option"
+	}
+	if cfg.ModeCycleKey == "" {
+		cfg.ModeCycleKey = "f8"
+	}
+	if cfg.OutputMode == "" {
+		cfg.OutputMode = VoiceModeNotify
+	}
+	if cfg.MaxSpokenChars == 0 {
+		cfg.MaxSpokenChars = 200
+	}
+	if cfg.VoiceModel == "" {
+		cfg.VoiceModel = "haiku"
+	}
+
+	switch cfg.OutputMode {
+	case VoiceModeSilent, VoiceModeNotify, VoiceModeSteps, VoiceModeFull:
+	default:
+		return nil, fmt.Errorf("invalid output_mode %q: must be silent, notify, steps, or full", cfg.OutputMode)
+	}
+
+	return &cfg, nil
+}
 
 // LogLevel represents a logging verbosity level.
 type LogLevel int
