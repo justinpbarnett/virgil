@@ -290,3 +290,39 @@ func flagOrDefault(flags map[string]string, key, defaultVal string) string {
 	}
 	return defaultVal
 }
+
+// SearchCodebase runs a structural codebase search for the given query and
+// returns results as MemoryEntry values ready for injection into an envelope.
+// It uses TierElision compression (no AI) for speed.
+func SearchCodebase(ctx context.Context, query, workDir string, budget int) ([]envelope.MemoryEntry, error) {
+	result, err := runStudy(ctx, studyParams{
+		query:   query,
+		source:  "codebase",
+		role:    "planner",
+		depth:   "normal",
+		budget:  budget,
+		maxTier: TierElision,
+		workDir: workDir,
+		logger:  slog.Default(),
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	var entries []envelope.MemoryEntry
+	for _, item := range result.Items {
+		entries = append(entries, envelope.MemoryEntry{
+			ID:      item.Path + ":" + item.Symbol,
+			Type:    "codebase",
+			Content: item.Path + ":\n" + item.Content,
+		})
+	}
+	for _, s := range result.AISummaries {
+		entries = append(entries, envelope.MemoryEntry{
+			ID:      "ai-summary:" + s.Theme,
+			Type:    "codebase",
+			Content: s.Content,
+		})
+	}
+	return entries, nil
+}

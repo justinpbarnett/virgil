@@ -35,10 +35,13 @@ func main() {
 		}
 	}
 
-	// Determine workspace directory
-	workDir, err := os.Getwd()
-	if err != nil {
-		pipehost.Fatal("study", fmt.Sprintf("cannot determine working directory: %v", err))
+	// Determine workspace directory: prefer server's CWD over subprocess CWD
+	workDir := os.Getenv(pipehost.EnvWorkDir)
+	if workDir == "" {
+		workDir, err = os.Getwd()
+		if err != nil {
+			pipehost.Fatal("study", fmt.Sprintf("cannot determine working directory: %v", err))
+		}
 	}
 
 	handler := study.NewHandler(study.Config{
