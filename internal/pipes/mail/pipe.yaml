@@ -77,7 +77,10 @@ vocabulary:
     email: mail
     mail: mail
     inbox: mail
-  modifiers: {}
+  modifiers:
+    latest: latest
+    last: latest
+    newest: latest
 
 templates:
   priority: 50

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"net/mail"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -97,6 +98,8 @@ func handleList(client MailClient, _ envelope.Envelope, flags map[string]string,
 	limit := 10
 	if l, err := strconv.Atoi(flags["limit"]); err == nil && l > 0 {
 		limit = l
+	} else if m := flags["modifier"]; m == "latest" || m == "last" || m == "newest" {
+		limit = 1
 	}
 
 	logger.Debug("listing messages", "label", label, "limit", limit)
@@ -543,13 +546,13 @@ func (m *gmailMessage) toMessage() *Message {
 	for _, h := range m.Payload.Headers {
 		switch h.Name {
 		case "From":
-			msg.From = h.Value
+			msg.From = cleanAddress(h.Value)
 		case "To":
 			msg.To = h.Value
 		case "Subject":
 			msg.Subject = h.Value
 		case "Date":
-			msg.Date = h.Value
+			msg.Date = cleanDate(h.Value)
 		}
 	}
 
@@ -565,6 +568,44 @@ func (m *gmailMessage) toMessage() *Message {
 	msg.Body = m.extractBody()
 
 	return msg
+}
+
+// cleanDate parses a RFC 2822 date header and formats it simply:
+// "Today 2:47 PM", "Yesterday 9:00 AM", "Mar 4, 11:47 AM", "Mar 4 2024, 3:00 PM"
+func cleanDate(raw string) string {
+	t, err := mail.ParseDate(raw)
+	if err != nil {
+		return raw
+	}
+	t = t.Local()
+	now := time.Now()
+	today := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
+	yesterday := today.Add(-24 * time.Hour)
+	day := time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, t.Location())
+
+	switch day {
+	case today:
+		return "Today " + t.Format("3:04 PM")
+	case yesterday:
+		return "Yesterday " + t.Format("3:04 PM")
+	default:
+		if t.Year() == now.Year() {
+			return t.Format("Jan 2, 3:04 PM")
+		}
+		return t.Format("Jan 2 2006, 3:04 PM")
+	}
+}
+
+// cleanAddress extracts a display name from a RFC 2822 address header, falling
+// back to the bare email address, so angle brackets never reach the renderer.
+func cleanAddress(raw string) string {
+	if addr, err := mail.ParseAddress(raw); err == nil {
+		if addr.Name != "" {
+			return addr.Name
+		}
+		return addr.Address
+	}
+	return raw
 }
 
 func (m *gmailMessage) extractBody() string {
