@@ -32,8 +32,8 @@ func classifierDefs() []pipe.Definition {
 func TestClassifyBuildsCatalogue(t *testing.T) {
 	c := NewClassifier(&mockProvider{}, classifierDefs(), nil)
 
-	if strings.Contains(c.catalogue, "chat") {
-		t.Error("catalogue should not include chat pipe")
+	if strings.Contains(c.catalogue, "- chat:") {
+		t.Error("catalogue should not include chat pipe as an entry")
 	}
 	if !strings.Contains(c.catalogue, "calendar") {
 		t.Error("catalogue should include calendar pipe")

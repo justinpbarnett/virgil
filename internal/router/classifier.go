@@ -17,7 +17,7 @@ Available pipes:
 
 type Classifier struct {
 	provider  bridge.Provider
-	system    string
+	catalogue string
 	pipeNames map[string]bool
 	logger    *slog.Logger
 }
@@ -40,14 +40,14 @@ func NewClassifier(provider bridge.Provider, defs []pipe.Definition, logger *slo
 
 	return &Classifier{
 		provider:  provider,
-		system:    classifySystemPrefix + strings.Join(lines, "\n"),
+		catalogue: classifySystemPrefix + strings.Join(lines, "\n"),
 		pipeNames: pipeNames,
 		logger:    logger,
 	}
 }
 
 func (c *Classifier) Classify(ctx context.Context, signal string) (string, float64) {
-	response, err := c.provider.Complete(ctx, c.system, signal)
+	response, err := c.provider.Complete(ctx, c.catalogue, signal)
 	if err != nil {
 		c.logger.Warn("classifier error", "error", err)
 		return "chat", 0.0
