@@ -29,16 +29,45 @@ func (s *stubInjector) InjectContext(env envelope.Envelope, cfg config.MemoryCon
 
 // stubSaver records SaveInvocation calls.
 type stubSaver struct {
-	calls []struct{ pipe, signal, output string }
-	err   error
+	calls []struct {
+		pipe, signal, output string
+		contextIDs           []string
+	}
+	err  error
+	done chan struct{} // closed after each SaveInvocation call
 }
 
-func (s *stubSaver) SaveInvocation(pipe, signal, output string) error {
+func newStubSaver() *stubSaver {
+	return &stubSaver{done: make(chan struct{}, 1)}
+}
+
+func (s *stubSaver) SaveInvocation(pipe, signal, output string, contextIDs []string) error {
 	if s.err != nil {
+		select {
+		case s.done <- struct{}{}:
+		default:
+		}
 		return s.err
 	}
-	s.calls = append(s.calls, struct{ pipe, signal, output string }{pipe, signal, output})
+	s.calls = append(s.calls, struct {
+		pipe, signal, output string
+		contextIDs           []string
+	}{pipe, signal, output, contextIDs})
+	select {
+	case s.done <- struct{}{}:
+	default:
+	}
 	return nil
+}
+
+// waitCall blocks until SaveInvocation has been called or the timeout elapses.
+func (s *stubSaver) waitCall(t *testing.T) {
+	t.Helper()
+	select {
+	case <-s.done:
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("timed out waiting for SaveInvocation to be called")
+	}
 }
 
 func echoHandler(name string) pipe.Handler {
@@ -137,7 +166,7 @@ func TestAutoSaveFiredAfterSuccess(t *testing.T) {
 	reg := pipe.NewRegistry()
 	reg.Register(pipe.Definition{Name: "echo"}, echoHandler("echo"))
 
-	saver := &stubSaver{}
+	saver := newStubSaver()
 	rt := New(reg, nil, nil)
 	rt.WithMemory(nil, saver, nil)
 
@@ -146,6 +175,7 @@ func TestAutoSaveFiredAfterSuccess(t *testing.T) {
 	seed.ContentType = envelope.ContentText
 
 	rt.Execute(Plan{Steps: []Step{{Pipe: "echo"}}}, seed)
+	saver.waitCall(t)
 
 	if len(saver.calls) != 1 {
 		t.Fatalf("expected 1 save call, got %d", len(saver.calls))
@@ -155,6 +185,49 @@ func TestAutoSaveFiredAfterSuccess(t *testing.T) {
 	}
 	if saver.calls[0].signal != "hello world" {
 		t.Errorf("expected signal='hello world', got %s", saver.calls[0].signal)
+	}
+}
+
+func TestAutoSavePassesContextIDs(t *testing.T) {
+	reg := pipe.NewRegistry()
+	reg.Register(pipe.Definition{Name: "echo"}, echoHandler("echo"))
+
+	saver := newStubSaver()
+	inj := &stubInjector{entries: []envelope.MemoryEntry{
+		{ID: "mem-id-1", Type: "topic_history", Content: "previous session"},
+		{ID: "mem-id-2", Type: "working_state", Content: "current state"},
+		{ID: "", Type: "user_preferences", Content: "no id entry"},
+	}}
+	rt := New(reg, nil, nil)
+	rt.WithMemory(inj, saver, map[string]config.MemoryConfig{})
+
+	seed := envelope.New("input", "test")
+	seed.Content = "hello"
+	seed.ContentType = envelope.ContentText
+
+	rt.Execute(Plan{Steps: []Step{{Pipe: "echo"}}}, seed)
+	saver.waitCall(t)
+
+	if len(saver.calls) != 1 {
+		t.Fatalf("expected 1 save call, got %d", len(saver.calls))
+	}
+
+	contextIDs := saver.calls[0].contextIDs
+	if len(contextIDs) != 2 {
+		t.Errorf("expected 2 context IDs (non-empty IDs only), got %d: %v", len(contextIDs), contextIDs)
+	}
+	hasID1 := false
+	hasID2 := false
+	for _, id := range contextIDs {
+		if id == "mem-id-1" {
+			hasID1 = true
+		}
+		if id == "mem-id-2" {
+			hasID2 = true
+		}
+	}
+	if !hasID1 || !hasID2 {
+		t.Errorf("expected context IDs to include mem-id-1 and mem-id-2, got %v", contextIDs)
 	}
 }
 
@@ -234,8 +307,6 @@ func TestDefaultMemoryConfigApplied(t *testing.T) {
 	rt.Execute(Plan{Steps: []Step{{Pipe: "pipe"}}}, seed)
 
 	receivedCfg = inj.lastCfg
-	// Config for unregistered pipe should be zero value (Budget=0, no Context)
-	// The injector's InjectContext handles defaults internally
 	if receivedCfg.Disabled {
 		t.Error("expected non-disabled config for unregistered pipe")
 	}
@@ -288,6 +359,39 @@ func TestStoreMemoryInjectorIntegration(t *testing.T) {
 	}
 }
 
+func TestStoreMemoryInjectorPopulatesID(t *testing.T) {
+	dir := t.TempDir()
+	s, err := store.Open(filepath.Join(dir, "test.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer s.Close()
+
+	s.PutState("project", "active", "working on something")
+	s.SaveInvocation("educate", "teach me Go", "What do you know?")
+
+	inj := NewStoreMemoryInjector(s)
+	cfg := config.MemoryConfig{
+		Context: []config.MemoryContextEntry{
+			{Type: "working_state"},
+			{Type: "topic_history"},
+		},
+		Budget: 500,
+	}
+
+	env := envelope.New("educate", "run")
+	env.Content = "teach me Go"
+	env.ContentType = envelope.ContentText
+
+	result := inj.InjectContext(env, cfg)
+
+	for _, m := range result.Memory {
+		if m.ID == "" && m.Type != "user_preferences" {
+			t.Errorf("expected non-empty ID for memory type %q", m.Type)
+		}
+	}
+}
+
 func TestStoreMemorySaverIntegration(t *testing.T) {
 	dir := t.TempDir()
 	s, err := store.Open(filepath.Join(dir, "test.db"))
@@ -297,7 +401,7 @@ func TestStoreMemorySaverIntegration(t *testing.T) {
 	defer s.Close()
 
 	saver := NewStoreMemorySaver(s)
-	if err := saver.SaveInvocation("educate", "teach me Go", "What do you know?"); err != nil {
+	if err := saver.SaveInvocation("educate", "teach me Go", "What do you know?", nil); err != nil {
 		t.Fatalf("SaveInvocation: %v", err)
 	}
 
@@ -307,5 +411,48 @@ func TestStoreMemorySaverIntegration(t *testing.T) {
 	}
 	if len(results) == 0 {
 		t.Error("expected saved invocation to be searchable")
+	}
+}
+
+func TestStoreMemorySaverCreatesEdges(t *testing.T) {
+	dir := t.TempDir()
+	s, err := store.Open(filepath.Join(dir, "test.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer s.Close()
+
+	// Create two context memories
+	ctx1, _ := s.SaveInvocation("educate", "teach Go", "answer 1")
+	ctx2, _ := s.SaveInvocation("educate", "teach channels", "answer 2")
+
+	saver := NewStoreMemorySaver(s)
+	if err := saver.SaveInvocation("chat", "hello", "response", []string{ctx1, ctx2}); err != nil {
+		t.Fatalf("SaveInvocation with contextIDs: %v", err)
+	}
+
+	// co_occurred edge should connect ctx1 and ctx2
+	connected, err := s.TraverseFrom([]string{ctx1}, []string{"co_occurred"}, 10)
+	if err != nil {
+		t.Fatalf("TraverseFrom: %v", err)
+	}
+	found := false
+	for _, m := range connected {
+		if m.ID == ctx2 {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("expected ctx2 to be reachable from ctx1 via co_occurred edge")
+	}
+
+	// produced_by edges: new invocation should be reachable from ctx1
+	connected, err = s.TraverseFrom([]string{ctx1}, []string{"produced_by"}, 10)
+	if err != nil {
+		t.Fatalf("TraverseFrom produced_by: %v", err)
+	}
+	if len(connected) == 0 {
+		t.Error("expected new invocation to be reachable via produced_by from context")
 	}
 }

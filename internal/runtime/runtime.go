@@ -23,13 +23,13 @@ type Plan struct {
 }
 
 type Runtime struct {
-	registry     *pipe.Registry
-	observer     Observer
-	logger       *slog.Logger
-	level        config.LogLevel
-	formats      map[string]map[string]*template.Template
-	injector     MemoryInjector
-	saver        MemorySaver
+	registry      *pipe.Registry
+	observer      Observer
+	logger        *slog.Logger
+	level         config.LogLevel
+	formats       map[string]map[string]*template.Template
+	injector      MemoryInjector
+	saver         MemorySaver
 	memoryConfigs map[string]config.MemoryConfig
 }
 
@@ -78,13 +78,13 @@ func (r *Runtime) injectMemory(step Step, env envelope.Envelope) envelope.Envelo
 	return r.injector.InjectContext(env, r.memoryConfigs[step.Pipe])
 }
 
-func (r *Runtime) autoSave(pipe, signal string, result envelope.Envelope) {
+func (r *Runtime) autoSave(pipe, signal string, result envelope.Envelope, contextIDs []string) {
 	if r.saver == nil {
 		return
 	}
 	output := envelope.ContentToText(result.Content, result.ContentType)
 	go func() {
-		if err := r.saver.SaveInvocation(pipe, signal, output); err != nil {
+		if err := r.saver.SaveInvocation(pipe, signal, output, contextIDs); err != nil {
 			r.logger.Warn("auto-save failed", "error", err)
 		}
 	}()
@@ -112,23 +112,32 @@ func isFatal(env envelope.Envelope) bool {
 	return env.Error != nil && env.Error.Severity == envelope.SeverityFatal
 }
 
-// runStep executes a single pipeline step using the sync handler.
-func (r *Runtime) runStep(step Step, current envelope.Envelope) envelope.Envelope {
+// extractContextIDs collects non-empty IDs from memory entries.
+func extractContextIDs(entries []envelope.MemoryEntry) []string {
+	ids := make([]string, 0, len(entries))
+	for _, e := range entries {
+		if e.ID != "" {
+			ids = append(ids, e.ID)
+		}
+	}
+	return ids
+}
+
+// runStep executes a single pipeline step using the already-injected envelope.
+func (r *Runtime) runStep(step Step, env envelope.Envelope) envelope.Envelope {
 	handler, ok := r.registry.Get(step.Pipe)
 	if !ok {
-		current.Error = envelope.FatalError("pipe not found: " + step.Pipe)
-		r.observer.OnTransition(step.Pipe, current, 0)
-		return current
+		env.Error = envelope.FatalError("pipe not found: " + step.Pipe)
+		r.observer.OnTransition(step.Pipe, env, 0)
+		return env
 	}
 
-	current = r.injectMemory(step, current)
+	r.logEnvelope("step input", env)
 
-	r.logEnvelope("step input", current)
-
-	flags := mergeFlags(current.Args, step.Flags)
+	flags := mergeFlags(env.Args, step.Flags)
 
 	stepStart := time.Now()
-	result := handler(current, flags)
+	result := handler(env, flags)
 	stepDuration := time.Since(stepStart)
 	result.Duration = stepDuration
 
@@ -155,9 +164,14 @@ func (r *Runtime) Execute(plan Plan, seed envelope.Envelope) envelope.Envelope {
 	r.logEnvelope("seed envelope", seed)
 
 	var lastPipe string
-	for _, step := range plan.Steps {
+	var lastContextIDs []string
+	for i, step := range plan.Steps {
 		lastPipe = step.Pipe
-		current = r.runStep(step, current)
+		injected := r.injectMemory(step, current)
+		if i == len(plan.Steps)-1 {
+			lastContextIDs = extractContextIDs(injected.Memory)
+		}
+		current = r.runStep(step, injected)
 		if isFatal(current) {
 			current.Duration = time.Since(start)
 			return current
@@ -168,7 +182,7 @@ func (r *Runtime) Execute(plan Plan, seed envelope.Envelope) envelope.Envelope {
 	current.Duration = time.Since(start)
 	r.logger.Info("plan complete", "duration", current.Duration.String())
 
-	r.autoSave(lastPipe, seedSignal, current)
+	r.autoSave(lastPipe, seedSignal, current, lastContextIDs)
 
 	return current
 }
@@ -191,13 +205,14 @@ func (r *Runtime) ExecuteStream(ctx context.Context, plan Plan, seed envelope.En
 	for i, step := range plan.Steps {
 		// For the last step, try the stream handler
 		if i == lastIdx {
-			if sh, ok := r.registry.GetStream(step.Pipe); ok {
-				current = r.injectMemory(step, current)
+			injected := r.injectMemory(step, current)
+			contextIDs := extractContextIDs(injected.Memory)
 
-				flags := mergeFlags(current.Args, step.Flags)
+			if sh, ok := r.registry.GetStream(step.Pipe); ok {
+				flags := mergeFlags(injected.Args, step.Flags)
 
 				stepStart := time.Now()
-				result := sh(ctx, current, flags, sink)
+				result := sh(ctx, injected, flags, sink)
 				stepDuration := time.Since(stepStart)
 
 				if err := envelope.Validate(result); err != nil {
@@ -216,26 +231,42 @@ func (r *Runtime) ExecuteStream(ctx context.Context, plan Plan, seed envelope.En
 				result.Duration = time.Since(start)
 				r.logger.Info("plan complete", "duration", result.Duration.String())
 
-				r.autoSave(step.Pipe, seedSignal, result)
+				r.autoSave(step.Pipe, seedSignal, result, contextIDs)
 
 				return result
 			}
+
+			// No stream handler — fall through to regular handler
+			current = r.runStep(step, injected)
+			if isFatal(current) {
+				current.Duration = time.Since(start)
+				return current
+			}
+
+			current = formatTerminal(current, step.Pipe, r.formats)
+			current.Duration = time.Since(start)
+			r.logger.Info("plan complete", "duration", current.Duration.String())
+
+			r.autoSave(step.Pipe, seedSignal, current, contextIDs)
+			return current
 		}
 
-		// Regular handler path (shared with Execute)
-		current = r.runStep(step, current)
+		// Non-terminal step
+		injected := r.injectMemory(step, current)
+		current = r.runStep(step, injected)
 		if isFatal(current) {
 			current.Duration = time.Since(start)
 			return current
 		}
 	}
 
+	// Unreachable with non-empty plan, but handle defensively
 	lastPipe := plan.Steps[lastIdx].Pipe
 	current = formatTerminal(current, lastPipe, r.formats)
 	current.Duration = time.Since(start)
 	r.logger.Info("plan complete", "duration", current.Duration.String())
 
-	r.autoSave(lastPipe, seedSignal, current)
+	r.autoSave(lastPipe, seedSignal, current, nil)
 
 	return current
 }
