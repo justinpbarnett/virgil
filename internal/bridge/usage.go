@@ -25,8 +25,9 @@ var CostTable = map[string]ModelPricing{
 	"gpt-4.1-mini": {InputPerMToken: 0.40, OutputPerMToken: 1.60},
 	"gpt-4.1-nano": {InputPerMToken: 0.10, OutputPerMToken: 0.40},
 	// Google Gemini
-	"gemini-2.0-flash": {InputPerMToken: 0.10, OutputPerMToken: 0.40},
-	"gemini-2.5-pro":   {InputPerMToken: 1.25, OutputPerMToken: 10.00},
+	"gemini-3-flash-preview":   {InputPerMToken: 0.10, OutputPerMToken: 0.40},
+	"gemini-3.1-flash-preview": {InputPerMToken: 0.10, OutputPerMToken: 0.40},
+	"gemini-3.1-pro-preview":   {InputPerMToken: 1.25, OutputPerMToken: 10.00},
 	// xAI Grok
 	"grok-3":      {InputPerMToken: 3.00, OutputPerMToken: 15.00},
 	"grok-3-mini": {InputPerMToken: 0.30, OutputPerMToken: 0.50},

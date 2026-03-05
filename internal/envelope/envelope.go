@@ -32,6 +32,7 @@ const (
 	SSEEventDone   = "done"
 	SSEEventStep   = "step"
 	SSEEventRoute  = "route"
+	SSEEventAck    = "ack"
 	SSEContentType = "text/event-stream"
 
 	SSEEventVoiceStatus = "voice_status"
