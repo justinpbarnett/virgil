@@ -11,6 +11,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/justinpbarnett/virgil/internal/config"
 	"github.com/justinpbarnett/virgil/internal/envelope"
+	"github.com/justinpbarnett/virgil/internal/sse"
 	"github.com/justinpbarnett/virgil/internal/voice"
 )
 
@@ -76,7 +77,7 @@ type tickMsg struct{}
 type streamChunkMsg struct {
 	text     string
 	streamID int
-	reader   *sseReader
+	reader   *sse.Reader
 }
 
 type streamDoneMsg struct {
@@ -93,12 +94,12 @@ type reconnectMsg struct {
 type streamStepMsg struct {
 	pipe     string
 	streamID int
-	reader   *sseReader
+	reader   *sse.Reader
 }
 
 type streamRouteMsg struct {
 	streamID int
-	reader   *sseReader
+	reader   *sse.Reader
 }
 
 type pipesLoadedMsg struct{}
@@ -758,13 +759,13 @@ func startStream(ctx context.Context, addr, text string, streamID int, model str
 	}
 }
 
-func readNextEvent(reader *sseReader, streamID int) tea.Cmd {
+func readNextEvent(reader *sse.Reader, streamID int) tea.Cmd {
 	return func() tea.Msg {
 		return readNextEventSync(reader, streamID)
 	}
 }
 
-func readNextEventSync(reader *sseReader, streamID int) tea.Msg {
+func readNextEventSync(reader *sse.Reader, streamID int) tea.Msg {
 	for {
 		event, err := reader.Next()
 		if err != nil {

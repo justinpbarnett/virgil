@@ -16,12 +16,12 @@ import (
 
 	"github.com/justinpbarnett/virgil/internal/bridge"
 	"github.com/justinpbarnett/virgil/internal/config"
-	"github.com/justinpbarnett/virgil/internal/envelope"
 	"github.com/justinpbarnett/virgil/internal/parser"
 	"github.com/justinpbarnett/virgil/internal/pipe"
 	"github.com/justinpbarnett/virgil/internal/planner"
 	"github.com/justinpbarnett/virgil/internal/router"
 	"github.com/justinpbarnett/virgil/internal/runtime"
+	"github.com/justinpbarnett/virgil/internal/sse"
 )
 
 // broker is a generic pub/sub hub. Subscribers receive values broadcast by publishers.
@@ -62,25 +62,19 @@ func (b *broker[T]) broadcast(val T) {
 
 // serveSSE runs a standard SSE loop: subscribes to a broker, writes events until the client disconnects.
 func serveSSE[T any](w http.ResponseWriter, r *http.Request, b *broker[T], buf int, eventName string, marshal func(T) []byte) {
-	flusher, ok := w.(http.Flusher)
+	flusher, ok := sse.InitResponse(w)
 	if !ok {
 		http.Error(w, `{"error":"streaming not supported"}`, http.StatusInternalServerError)
 		return
 	}
 	ch := b.subscribe(buf)
 	defer b.unsubscribe(ch)
-	w.Header().Set("Content-Type", envelope.SSEContentType)
-	w.Header().Set("Cache-Control", "no-cache")
-	w.Header().Set("Connection", "keep-alive")
-	flusher.Flush()
 	for {
 		select {
 		case <-r.Context().Done():
 			return
 		case val := <-ch:
-			data := marshal(val)
-			fmt.Fprintf(w, "event: %s\ndata: %s\n\n", eventName, data)
-			flusher.Flush()
+			sse.WriteEvent(w, flusher, eventName, marshal(val))
 		}
 	}
 }

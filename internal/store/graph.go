@@ -1,7 +1,6 @@
 package store
 
 import (
-	"database/sql"
 	"fmt"
 	"strings"
 	"time"
@@ -33,31 +32,6 @@ type Edge struct {
 	Context   string
 }
 
-const edgeSchemaDDL = `
-CREATE TABLE IF NOT EXISTS memory_edges (
-    id TEXT PRIMARY KEY,
-    source_id TEXT NOT NULL REFERENCES memories(id) ON DELETE CASCADE,
-    target_id TEXT NOT NULL REFERENCES memories(id) ON DELETE CASCADE,
-    relation TEXT NOT NULL,
-    strength REAL NOT NULL DEFAULT 1.0,
-    created_at INTEGER NOT NULL,
-    context TEXT,
-    UNIQUE(source_id, target_id, relation)
-);
-
-CREATE INDEX IF NOT EXISTS idx_edges_source ON memory_edges(source_id);
-CREATE INDEX IF NOT EXISTS idx_edges_target ON memory_edges(target_id);
-CREATE INDEX IF NOT EXISTS idx_edges_relation ON memory_edges(relation);
-`
-
-// createEdgeSchema creates the memory_edges table. Accepts either *sql.DB or *sql.Tx
-// via a common Exec interface.
-func createEdgeSchema(exec interface {
-	Exec(query string, args ...any) (sql.Result, error)
-}) error {
-	_, err := exec.Exec(edgeSchemaDDL)
-	return err
-}
 
 // CreateEdge inserts or increments an edge. Self-referential edges are silently ignored.
 func (s *Store) CreateEdge(edge Edge) error {

@@ -1,7 +1,6 @@
 package tui
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -14,6 +13,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/justinpbarnett/virgil/internal/envelope"
+	"github.com/justinpbarnett/virgil/internal/sse"
 )
 
 var signalClient = &http.Client{
@@ -67,12 +67,7 @@ func postSignal(serverAddr, text string) (envelope.Envelope, error) {
 	return env, nil
 }
 
-type sseReader struct {
-	scanner *bufio.Scanner
-	body    io.ReadCloser
-}
-
-func openSSEStream(ctx context.Context, serverAddr, text, model string) (*sseReader, error) {
+func openSSEStream(ctx context.Context, serverAddr, text, model string) (*sse.Reader, error) {
 	req, err := http.NewRequestWithContext(ctx, "POST", signalURL(serverAddr), signalBody(text, model))
 	if err != nil {
 		return nil, fmt.Errorf("creating request: %w", err)
@@ -97,46 +92,14 @@ func openSSEStream(ctx context.Context, serverAddr, text, model string) (*sseRea
 		return nil, fmt.Errorf("server does not support streaming (got %s)", ct)
 	}
 
-	scanner := bufio.NewScanner(resp.Body)
-	scanner.Buffer(make([]byte, 4096), 1024*1024) // 1 MB max line for large envelopes
-	return &sseReader{
-		scanner: scanner,
-		body:    resp.Body,
-	}, nil
-}
-
-type sseEvent struct {
-	Type string
-	Data string
-}
-
-func (r *sseReader) Next() (sseEvent, error) {
-	var eventType, data string
-	for r.scanner.Scan() {
-		line := r.scanner.Text()
-		if after, ok := strings.CutPrefix(line, "event: "); ok {
-			eventType = after
-		} else if after, ok := strings.CutPrefix(line, "data: "); ok {
-			data = after
-		} else if line == "" && eventType != "" {
-			return sseEvent{Type: eventType, Data: data}, nil
-		}
-	}
-	if err := r.scanner.Err(); err != nil {
-		return sseEvent{}, err
-	}
-	return sseEvent{}, io.EOF
-}
-
-func (r *sseReader) Close() {
-	r.body.Close()
+	return sse.NewReader(resp.Body, 1024*1024), nil // 1 MB max line for large envelopes
 }
 
 type voiceStatusMsg struct {
 	Recording bool
 	Mode      string
 	Model     string
-	reader    *sseReader
+	reader    *sse.Reader
 }
 
 type voiceModeExpiredMsg struct {
@@ -145,23 +108,23 @@ type voiceModeExpiredMsg struct {
 
 type voiceReconnectMsg struct{}
 
-func connectVoiceSSE(serverAddr, endpoint string, onConnect func(*sseReader) tea.Msg, onFail tea.Msg) tea.Cmd {
+// reconnectDelay is the standard delay before retrying a failed SSE connection.
+const reconnectDelay = 5 * time.Second
+
+func connectVoiceSSE(serverAddr, endpoint string, onConnect func(*sse.Reader) tea.Msg, onFail tea.Msg) tea.Cmd {
 	return func() tea.Msg {
 		url := fmt.Sprintf("http://%s/voice/%s", serverAddr, endpoint)
 		resp, err := streamClient.Get(url)
 		if err != nil {
-			time.Sleep(5 * time.Second)
+			time.Sleep(reconnectDelay)
 			return onFail
 		}
 		if !strings.HasPrefix(resp.Header.Get("Content-Type"), envelope.SSEContentType) {
 			resp.Body.Close()
-			time.Sleep(5 * time.Second)
+			time.Sleep(reconnectDelay)
 			return onFail
 		}
-		scanner := bufio.NewScanner(resp.Body)
-		scanner.Buffer(make([]byte, 4096), 64*1024)
-		reader := &sseReader{scanner: scanner, body: resp.Body}
-		return onConnect(reader)
+		return onConnect(sse.NewReader(resp.Body, 64*1024))
 	}
 }
 
@@ -169,12 +132,12 @@ func connectVoiceStatus(serverAddr string) tea.Cmd {
 	return connectVoiceSSE(serverAddr, "status", readNextVoiceEvent, voiceReconnectMsg{})
 }
 
-func readNextVoiceEvent(reader *sseReader) tea.Msg {
+func readNextVoiceEvent(reader *sse.Reader) tea.Msg {
 	for {
 		event, err := reader.Next()
 		if err != nil {
 			reader.Close()
-			time.Sleep(5 * time.Second)
+			time.Sleep(reconnectDelay)
 			return voiceReconnectMsg{}
 		}
 		if event.Type == envelope.SSEEventVoiceStatus {
@@ -196,7 +159,7 @@ func readNextVoiceEvent(reader *sseReader) tea.Msg {
 	}
 }
 
-func readNextVoiceEventCmd(reader *sseReader) tea.Cmd {
+func readNextVoiceEventCmd(reader *sse.Reader) tea.Cmd {
 	return func() tea.Msg {
 		return readNextVoiceEvent(reader)
 	}
@@ -205,7 +168,7 @@ func readNextVoiceEventCmd(reader *sseReader) tea.Cmd {
 // voiceInputMsg carries a transcript from the daemon to the TUI.
 type voiceInputMsg struct {
 	Text   string
-	reader *sseReader
+	reader *sse.Reader
 }
 
 type voiceInputReconnectMsg struct{}
@@ -214,12 +177,12 @@ func connectVoiceInput(serverAddr string) tea.Cmd {
 	return connectVoiceSSE(serverAddr, "input", readNextVoiceInput, voiceInputReconnectMsg{})
 }
 
-func readNextVoiceInput(reader *sseReader) tea.Msg {
+func readNextVoiceInput(reader *sse.Reader) tea.Msg {
 	for {
 		event, err := reader.Next()
 		if err != nil {
 			reader.Close()
-			time.Sleep(5 * time.Second)
+			time.Sleep(reconnectDelay)
 			return voiceInputReconnectMsg{}
 		}
 		if event.Type == envelope.SSEEventVoiceInput {
@@ -234,7 +197,7 @@ func readNextVoiceInput(reader *sseReader) tea.Msg {
 	}
 }
 
-func readNextVoiceInputCmd(reader *sseReader) tea.Cmd {
+func readNextVoiceInputCmd(reader *sse.Reader) tea.Cmd {
 	return func() tea.Msg {
 		return readNextVoiceInput(reader)
 	}

@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/justinpbarnett/virgil/internal/nlp"
 	"github.com/justinpbarnett/virgil/internal/store"
 )
 
@@ -26,47 +27,10 @@ const maxCandidatesPerFile = 3
 // maxTotalCandidates caps the deduplicated total across all methods.
 const maxTotalCandidates = 100
 
-// queryStopWords are terms that are structurally necessary in natural language
-// but carry no signal for code search — articles, prepositions, auxiliaries,
-// question words, and pronouns. Filtering them prevents common words like "in"
-// from matching every Go file via import paths.
-var queryStopWords = map[string]bool{
-	// articles / prepositions / conjunctions
-	"a": true, "an": true, "the": true,
-	"in": true, "on": true, "at": true, "to": true, "for": true,
-	"of": true, "by": true, "as": true, "with": true, "from": true,
-	"into": true, "onto": true, "upon": true, "about": true, "than": true,
-	"and": true, "or": true, "but": true, "nor": true, "so": true,
-	"yet": true, "not": true,
-	// pronouns
-	"i": true, "me": true, "my": true, "we": true, "our": true,
-	"you": true, "your": true, "it": true, "its": true,
-	"he": true, "she": true, "they": true, "them": true,
-	"this": true, "that": true, "these": true, "those": true,
-	// be auxiliaries
-	"is": true, "are": true, "was": true, "were": true,
-	"be": true, "been": true, "being": true,
-	// have auxiliaries
-	"have": true, "has": true, "had": true,
-	// do auxiliaries
-	"do": true, "does": true, "did": true,
-	// modals
-	"can": true, "could": true, "will": true, "would": true,
-	"shall": true, "should": true, "may": true, "might": true, "must": true,
-	// question words
-	"how": true, "what": true, "when": true, "where": true,
-	"which": true, "who": true, "why": true,
-}
-
 // filterStopWords returns terms with stop words removed. If all terms are stop
 // words, the original slice is returned unchanged so the query still executes.
 func filterStopWords(terms []string) []string {
-	filtered := terms[:0:0]
-	for _, t := range terms {
-		if !queryStopWords[t] {
-			filtered = append(filtered, t)
-		}
-	}
+	filtered := nlp.Filter(terms)
 	if len(filtered) == 0 {
 		return terms
 	}

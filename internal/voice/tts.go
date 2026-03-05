@@ -11,10 +11,11 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
-	"strconv"
 	"strings"
 	"time"
 	"unicode"
+
+	"github.com/cenkalti/backoff/v4"
 )
 
 const elevenLabsBaseURL = "https://api.elevenlabs.io/v1/text-to-speech"
@@ -50,72 +51,61 @@ func (t *TTSClient) Speak(ctx context.Context, text string) (string, error) {
 	}
 	body, _ := json.Marshal(payload)
 
-	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(body))
-	if err != nil {
-		return "", fmt.Errorf("creating TTS request: %w", err)
-	}
-	req.Header.Set("xi-api-key", t.apiKey)
-	req.Header.Set("Content-Type", "application/json")
+	bo := backoff.WithContext(backoff.WithMaxRetries(backoff.NewExponentialBackOff(), 3), ctx)
 
-	const maxRetries = 3
-	var resp *http.Response
-	for retries := 0; ; retries++ {
-		resp, err = t.httpClient.Do(req)
+	var audioPath string
+	err := backoff.RetryNotify(func() error {
+		req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(body))
 		if err != nil {
-			return "", fmt.Errorf("TTS request failed: %w", err)
+			return backoff.Permanent(fmt.Errorf("creating TTS request: %w", err))
 		}
+		req.Header.Set("xi-api-key", t.apiKey)
+		req.Header.Set("Content-Type", "application/json")
 
-		if resp.StatusCode == http.StatusTooManyRequests {
-			resp.Body.Close()
-			if retries >= maxRetries {
-				return "", fmt.Errorf("TTS rate limited after %d retries", maxRetries)
-			}
+		resp, err := t.httpClient.Do(req)
+		if err != nil {
+			return backoff.Permanent(fmt.Errorf("TTS request failed: %w", err))
+		}
+		defer resp.Body.Close()
+
+		switch resp.StatusCode {
+		case http.StatusTooManyRequests:
 			retryAfter := resp.Header.Get("Retry-After")
-			delay := 5 * time.Second
-			if secs, err := strconv.Atoi(retryAfter); err == nil {
-				delay = time.Duration(secs) * time.Second
+			if retryAfter != "" {
+				return fmt.Errorf("rate limited (retry-after: %s)", retryAfter)
 			}
-			select {
-			case <-ctx.Done():
-				return "", ctx.Err()
-			case <-time.After(delay):
-			}
-			req, err = http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(body))
-			if err != nil {
-				return "", fmt.Errorf("creating retry TTS request: %w", err)
-			}
-			req.Header.Set("xi-api-key", t.apiKey)
-			req.Header.Set("Content-Type", "application/json")
-			continue
+			return fmt.Errorf("rate limited (429)")
+		case http.StatusOK:
+			// continue
+		case http.StatusUnauthorized:
+			return backoff.Permanent(fmt.Errorf("invalid ElevenLabs API key (401)"))
+		case http.StatusUnprocessableEntity:
+			data, _ := io.ReadAll(resp.Body)
+			return backoff.Permanent(fmt.Errorf("ElevenLabs validation error (422): %s", string(data)))
+		default:
+			data, _ := io.ReadAll(resp.Body)
+			return backoff.Permanent(fmt.Errorf("ElevenLabs API error (%d): %s", resp.StatusCode, string(data)))
 		}
-		break
-	}
-	defer resp.Body.Close()
 
-	switch resp.StatusCode {
-	case http.StatusOK:
-	case http.StatusUnauthorized:
-		return "", fmt.Errorf("invalid ElevenLabs API key (401)")
-	case http.StatusUnprocessableEntity:
-		data, _ := io.ReadAll(resp.Body)
-		return "", fmt.Errorf("ElevenLabs validation error (422): %s", string(data))
-	default:
-		data, _ := io.ReadAll(resp.Body)
-		return "", fmt.Errorf("ElevenLabs API error (%d): %s", resp.StatusCode, string(data))
-	}
+		f, err := os.CreateTemp("", "virgil-tts-*.mp3")
+		if err != nil {
+			return backoff.Permanent(fmt.Errorf("creating temp file: %w", err))
+		}
+		defer f.Close()
 
-	f, err := os.CreateTemp("", "virgil-tts-*.mp3")
+		if _, err := io.Copy(f, resp.Body); err != nil {
+			os.Remove(f.Name())
+			return backoff.Permanent(fmt.Errorf("writing audio: %w", err))
+		}
+
+		audioPath = f.Name()
+		return nil
+	}, bo, nil)
+
 	if err != nil {
-		return "", fmt.Errorf("creating temp file: %w", err)
+		return "", err
 	}
-	defer f.Close()
-
-	if _, err := io.Copy(f, resp.Body); err != nil {
-		os.Remove(f.Name())
-		return "", fmt.Errorf("writing audio: %w", err)
-	}
-
-	return f.Name(), nil
+	return audioPath, nil
 }
 
 var (

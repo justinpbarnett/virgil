@@ -3,6 +3,7 @@ package planner
 import (
 	"log/slog"
 	"strings"
+	"text/template"
 
 	"github.com/justinpbarnett/virgil/internal/config"
 	"github.com/justinpbarnett/virgil/internal/parser"
@@ -141,22 +142,47 @@ func (p *Planner) resolveTemplate(tmpl config.TemplateEntry, parsed parser.Parse
 	return runtime.Plan{Steps: steps}
 }
 
+// varSyntax converts pipe.yaml variable syntax ({verb}) to Go template syntax ({{.Verb}}).
+var varSyntax = strings.NewReplacer(
+	"{verb}", "{{.Verb}}",
+	"{type}", "{{.Type}}",
+	"{topic}", "{{.Topic}}",
+	"{modifier}", "{{.Modifier}}",
+	"{source}", "{{.Source}}",
+)
+
+type varData struct {
+	Verb     string
+	Type     string
+	Topic    string
+	Modifier string
+	Source   string
+}
+
 func (p *Planner) resolveVar(s string, parsed parser.ParsedSignal) string {
 	if !strings.Contains(s, "{") {
 		return s
 	}
 
-	s = strings.ReplaceAll(s, "{verb}", parsed.Verb)
-	s = strings.ReplaceAll(s, "{type}", parsed.Type)
-	s = strings.ReplaceAll(s, "{topic}", parsed.Topic)
-	s = strings.ReplaceAll(s, "{modifier}", parsed.Modifier)
-
-	// Resolve source: map source name to pipe name
 	sourcePipe := parsed.Source
 	if mapped, ok := p.sources[parsed.Source]; ok {
 		sourcePipe = mapped
 	}
-	s = strings.ReplaceAll(s, "{source}", sourcePipe)
 
-	return s
+	tmpl, err := template.New("").Option("missingkey=zero").Parse(varSyntax.Replace(s))
+	if err != nil {
+		return s
+	}
+
+	var buf strings.Builder
+	if err := tmpl.Execute(&buf, varData{
+		Verb:     parsed.Verb,
+		Type:     parsed.Type,
+		Topic:    parsed.Topic,
+		Modifier: parsed.Modifier,
+		Source:   sourcePipe,
+	}); err != nil {
+		return s
+	}
+	return buf.String()
 }
