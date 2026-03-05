@@ -2,6 +2,7 @@ package bridge
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"os"
@@ -137,6 +138,94 @@ func (p *anthropicProvider) CompleteStream(ctx context.Context, system, user str
 	result := full.String()
 	p.logger.Info("provider responded", "bytes", len(result))
 	return result, nil
+}
+
+func (p *anthropicProvider) CompleteWithTools(ctx context.Context, system string, messages []AgenticMessage, tools []Tool) (AgenticResponse, error) {
+	p.logger.Info("provider called", "provider", "anthropic", "model", p.model, "agentic", true, "tools", len(tools))
+
+	// Build tool params.
+	anthropicTools := make([]anthropic.ToolUnionParam, len(tools))
+	for i, t := range tools {
+		var schema struct {
+			Properties map[string]any `json:"properties"`
+			Required   []string       `json:"required"`
+		}
+		_ = json.Unmarshal(t.InputSchema, &schema)
+		tp := anthropic.ToolParam{
+			Name: t.Name,
+			InputSchema: anthropic.ToolInputSchemaParam{
+				Properties: schema.Properties,
+				Required:   schema.Required,
+			},
+		}
+		if t.Description != "" {
+			tp.Description = anthropic.String(t.Description)
+		}
+		anthropicTools[i] = anthropic.ToolUnionParam{OfTool: &tp}
+	}
+
+	params := anthropic.MessageNewParams{
+		Model:     anthropic.Model(p.model),
+		MaxTokens: int64(p.maxTokens),
+		Tools:     anthropicTools,
+		Messages:  buildAnthropicMessages(messages),
+	}
+	if system != "" {
+		params.System = []anthropic.TextBlockParam{{Text: system}}
+	}
+
+	msg, err := p.client.Messages.New(ctx, params)
+	if err != nil {
+		return AgenticResponse{}, fmt.Errorf("anthropic request: %w", err)
+	}
+
+	var toolCalls []ToolCall
+	var textBuilder strings.Builder
+	for _, block := range msg.Content {
+		switch b := block.AsAny().(type) {
+		case anthropic.TextBlock:
+			textBuilder.WriteString(b.Text)
+		case anthropic.ToolUseBlock:
+			toolCalls = append(toolCalls, ToolCall{
+				ID:    b.ID,
+				Name:  b.Name,
+				Input: b.Input,
+			})
+		}
+	}
+
+	return buildAgenticResponse(toolCalls, textBuilder.String(), "anthropic", p.logger)
+}
+
+func buildAnthropicMessages(messages []AgenticMessage) []anthropic.MessageParam {
+	result := make([]anthropic.MessageParam, 0, len(messages))
+	for _, m := range messages {
+		switch m.Role {
+		case RoleUser:
+			if len(m.ToolResults) > 0 {
+				blocks := make([]anthropic.ContentBlockParamUnion, len(m.ToolResults))
+				for i, tr := range m.ToolResults {
+					blocks[i] = anthropic.NewToolResultBlock(tr.CallID, tr.Content, tr.IsError)
+				}
+				result = append(result, anthropic.NewUserMessage(blocks...))
+			} else {
+				result = append(result, anthropic.NewUserMessage(anthropic.NewTextBlock(m.Content)))
+			}
+		case RoleAssistant:
+			if len(m.ToolCalls) > 0 {
+				blocks := make([]anthropic.ContentBlockParamUnion, len(m.ToolCalls))
+				for i, tc := range m.ToolCalls {
+					var input any
+					_ = json.Unmarshal(tc.Input, &input)
+					blocks[i] = anthropic.NewToolUseBlock(tc.ID, input, tc.Name)
+				}
+				result = append(result, anthropic.NewAssistantMessage(blocks...))
+			} else {
+				result = append(result, anthropic.NewAssistantMessage(anthropic.NewTextBlock(m.Content)))
+			}
+		}
+	}
+	return result
 }
 
 // resolveAnthropicModel maps CLI shorthands to full Anthropic model IDs.

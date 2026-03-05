@@ -2,6 +2,7 @@ package bridge
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"os"
@@ -9,6 +10,7 @@ import (
 
 	"github.com/openai/openai-go"
 	"github.com/openai/openai-go/option"
+	"github.com/openai/openai-go/shared"
 )
 
 type openaiProvider struct {
@@ -137,4 +139,87 @@ func (p *openaiProvider) CompleteStream(ctx context.Context, system, user string
 	result := full.String()
 	p.logger.Info("provider responded", "bytes", len(result))
 	return result, nil
+}
+
+func (p *openaiProvider) CompleteWithTools(ctx context.Context, system string, messages []AgenticMessage, tools []Tool) (AgenticResponse, error) {
+	p.logger.Info("provider called", "provider", p.providerName, "model", p.model, "agentic", true, "tools", len(tools))
+
+	// Build tool params.
+	openaiTools := make([]openai.ChatCompletionToolParam, len(tools))
+	for i, t := range tools {
+		var params shared.FunctionParameters
+		_ = json.Unmarshal(t.InputSchema, &params)
+		openaiTools[i] = openai.ChatCompletionToolParam{
+			Function: shared.FunctionDefinitionParam{
+				Name:        t.Name,
+				Description: openai.String(t.Description),
+				Parameters:  params,
+			},
+		}
+	}
+
+	completion, err := p.client.Chat.Completions.New(ctx, openai.ChatCompletionNewParams{
+		Model:     openai.ChatModel(p.model),
+		MaxTokens: openai.Int(int64(p.maxTokens)),
+		Messages:  buildOpenAIMessages(system, messages),
+		Tools:     openaiTools,
+	})
+	if err != nil {
+		return AgenticResponse{}, fmt.Errorf("openai request: %w", err)
+	}
+	if len(completion.Choices) == 0 {
+		return AgenticResponse{}, fmt.Errorf("empty response from openai")
+	}
+
+	choice := completion.Choices[0]
+	var toolCalls []ToolCall
+	for _, tc := range choice.Message.ToolCalls {
+		toolCalls = append(toolCalls, ToolCall{
+			ID:    tc.ID,
+			Name:  tc.Function.Name,
+			Input: json.RawMessage(tc.Function.Arguments),
+		})
+	}
+	return buildAgenticResponse(toolCalls, choice.Message.Content, p.providerName, p.logger)
+}
+
+func buildOpenAIMessages(system string, messages []AgenticMessage) []openai.ChatCompletionMessageParamUnion {
+	var result []openai.ChatCompletionMessageParamUnion
+	if system != "" {
+		result = append(result, openai.SystemMessage(system))
+	}
+	for _, m := range messages {
+		switch m.Role {
+		case RoleUser:
+			if len(m.ToolResults) > 0 {
+				for _, tr := range m.ToolResults {
+					content := tr.Content
+					if tr.IsError {
+						content = "Error: " + content
+					}
+					result = append(result, openai.ToolMessage(content, tr.CallID))
+				}
+			} else {
+				result = append(result, openai.UserMessage(m.Content))
+			}
+		case RoleAssistant:
+			if len(m.ToolCalls) > 0 {
+				var assistant openai.ChatCompletionAssistantMessageParam
+				assistant.ToolCalls = make([]openai.ChatCompletionMessageToolCallParam, len(m.ToolCalls))
+				for i, tc := range m.ToolCalls {
+					assistant.ToolCalls[i] = openai.ChatCompletionMessageToolCallParam{
+						ID: tc.ID,
+						Function: openai.ChatCompletionMessageToolCallFunctionParam{
+							Name:      tc.Name,
+							Arguments: string(tc.Input),
+						},
+					}
+				}
+				result = append(result, openai.ChatCompletionMessageParamUnion{OfAssistant: &assistant})
+			} else {
+				result = append(result, openai.AssistantMessage(m.Content))
+			}
+		}
+	}
+	return result
 }

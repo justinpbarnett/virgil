@@ -151,6 +151,161 @@ func (p *geminiProvider) buildRequest(system, user string) ([]byte, error) {
 	return json.Marshal(reqBody)
 }
 
+func (p *geminiProvider) CompleteWithTools(ctx context.Context, system string, messages []AgenticMessage, tools []Tool) (AgenticResponse, error) {
+	p.logger.Info("provider called", "provider", "gemini", "model", p.model, "agentic", true, "tools", len(tools))
+
+	// Build function declarations.
+	funcDecls := make([]map[string]any, len(tools))
+	for i, t := range tools {
+		var schema map[string]any
+		_ = json.Unmarshal(t.InputSchema, &schema)
+		funcDecls[i] = map[string]any{
+			"name":        t.Name,
+			"description": t.Description,
+			"parameters":  schema,
+		}
+	}
+
+	// Build contents from message history.
+	contents := buildGeminiContents(messages)
+
+	reqBody := map[string]any{
+		"contents": contents,
+		"tools": []map[string]any{
+			{"functionDeclarations": funcDecls},
+		},
+		"generationConfig": map[string]any{
+			"maxOutputTokens": p.maxTokens,
+		},
+	}
+	if system != "" {
+		reqBody["system_instruction"] = map[string]any{
+			"parts": []map[string]string{{"text": system}},
+		}
+	}
+
+	body, err := json.Marshal(reqBody)
+	if err != nil {
+		return AgenticResponse{}, fmt.Errorf("building request: %w", err)
+	}
+
+	url := fmt.Sprintf("%s/models/%s:generateContent?key=%s", p.baseURL, p.model, p.apiKey)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
+	if err != nil {
+		return AgenticResponse{}, fmt.Errorf("building request: %w", err)
+	}
+	req.Header.Set("content-type", "application/json")
+
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return AgenticResponse{}, fmt.Errorf("gemini request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if err := checkStatus(resp); err != nil {
+		return AgenticResponse{}, err
+	}
+
+	data, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return AgenticResponse{}, fmt.Errorf("reading gemini response: %w", err)
+	}
+
+	return parseGeminiAgenticResponse(data, p.model, p.logger)
+}
+
+func buildGeminiContents(messages []AgenticMessage) []map[string]any {
+	contents := make([]map[string]any, 0, len(messages))
+	for _, m := range messages {
+		switch m.Role {
+		case RoleUser:
+			if len(m.ToolResults) > 0 {
+				parts := make([]map[string]any, len(m.ToolResults))
+				for i, tr := range m.ToolResults {
+					response := map[string]any{"result": tr.Content}
+					if tr.IsError {
+						response = map[string]any{"error": tr.Content}
+					}
+					parts[i] = map[string]any{
+						"functionResponse": map[string]any{
+							"name":     tr.Name,
+							"response": response,
+						},
+					}
+				}
+				contents = append(contents, map[string]any{"role": "user", "parts": parts})
+			} else {
+				contents = append(contents, map[string]any{
+					"role":  "user",
+					"parts": []map[string]any{{"text": m.Content}},
+				})
+			}
+		case RoleAssistant:
+			if len(m.ToolCalls) > 0 {
+				parts := make([]map[string]any, len(m.ToolCalls))
+				for i, tc := range m.ToolCalls {
+					var args map[string]any
+					_ = json.Unmarshal(tc.Input, &args)
+					parts[i] = map[string]any{
+						"functionCall": map[string]any{
+							"name": tc.Name,
+							"args": args,
+						},
+					}
+				}
+				contents = append(contents, map[string]any{"role": "model", "parts": parts})
+			} else {
+				contents = append(contents, map[string]any{
+					"role":  "model",
+					"parts": []map[string]any{{"text": m.Content}},
+				})
+			}
+		}
+	}
+	return contents
+}
+
+func parseGeminiAgenticResponse(data []byte, model string, logger *slog.Logger) (AgenticResponse, error) {
+	var result struct {
+		Candidates []struct {
+			Content struct {
+				Parts []struct {
+					Text         string `json:"text"`
+					FunctionCall *struct {
+						Name string         `json:"name"`
+						Args map[string]any `json:"args"`
+					} `json:"functionCall"`
+				} `json:"parts"`
+			} `json:"content"`
+		} `json:"candidates"`
+	}
+	if err := json.Unmarshal(data, &result); err != nil {
+		return AgenticResponse{}, fmt.Errorf("parsing gemini response: %w", err)
+	}
+	if len(result.Candidates) == 0 {
+		return AgenticResponse{}, fmt.Errorf("empty response from gemini")
+	}
+
+	var toolCalls []ToolCall
+	var textBuilder strings.Builder
+	for i, part := range result.Candidates[0].Content.Parts {
+		if part.FunctionCall != nil {
+			input, _ := json.Marshal(part.FunctionCall.Args)
+			// Gemini does not provide call IDs; generate a unique ID per call so
+			// that multiple calls to the same function in one turn are distinguishable.
+			toolCalls = append(toolCalls, ToolCall{
+				ID:    fmt.Sprintf("%s_%d", part.FunctionCall.Name, i),
+				Name:  part.FunctionCall.Name,
+				Input: input,
+			})
+		} else if part.Text != "" {
+			textBuilder.WriteString(part.Text)
+		}
+	}
+
+	return buildAgenticResponse(toolCalls, textBuilder.String(), "gemini", logger)
+}
+
 func parseGeminiResponse(r io.Reader, model string) (string, Usage, error) {
 	data, err := io.ReadAll(r)
 	if err != nil {

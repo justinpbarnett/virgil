@@ -2,6 +2,7 @@ package bridge
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
@@ -10,8 +11,61 @@ import (
 	"time"
 )
 
+// Role constants for AgenticMessage.
+const (
+	RoleUser      = "user"
+	RoleAssistant = "assistant"
+)
+
 type Provider interface {
 	Complete(ctx context.Context, system string, user string) (string, error)
+}
+
+// Tool defines a capability the model can invoke during an agentic loop.
+type Tool struct {
+	Name        string
+	Description string
+	InputSchema json.RawMessage // JSON Schema object describing the input
+	Execute     func(ctx context.Context, input json.RawMessage) (string, error)
+}
+
+// ToolCall is a single tool invocation returned by the model.
+type ToolCall struct {
+	ID    string          // provider-assigned call ID, echoed in the result
+	Name  string
+	Input json.RawMessage
+}
+
+// AgenticResponse is the result of one turn in an agentic loop.
+// Either Text is set (model is done) or ToolCalls is set (model wants tools executed).
+type AgenticResponse struct {
+	Text      string
+	ToolCalls []ToolCall
+}
+
+// AgenticMessage is a single entry in the conversation history.
+type AgenticMessage struct {
+	Role        string       // "user", "assistant"
+	Content     string
+	ToolCalls   []ToolCall   // populated for assistant turns that requested tools
+	ToolResults []ToolResult // populated for user turns responding to tool calls
+}
+
+// ToolResult carries the output of an executed tool call.
+type ToolResult struct {
+	CallID  string
+	Name    string // tool name, needed by Gemini's functionResponse
+	Content string
+	IsError bool
+}
+
+// AgenticProvider extends Provider with tool use support.
+type AgenticProvider interface {
+	Provider
+	// CompleteWithTools sends one turn with the current message history and
+	// available tools. Returns either a final text response or tool call
+	// requests. The caller manages the loop.
+	CompleteWithTools(ctx context.Context, system string, messages []AgenticMessage, tools []Tool) (AgenticResponse, error)
 }
 
 type StreamingProvider interface {
@@ -74,6 +128,19 @@ func resolveDefaults(cfg ProviderConfig, defaultModel string) (model string, max
 		logger = slog.Default()
 	}
 	return
+}
+
+// buildAgenticResponse assembles an AgenticResponse from parsed tool calls and
+// text, shared by all provider CompleteWithTools implementations.
+func buildAgenticResponse(toolCalls []ToolCall, text, providerName string, logger *slog.Logger) (AgenticResponse, error) {
+	if len(toolCalls) > 0 {
+		return AgenticResponse{ToolCalls: toolCalls}, nil
+	}
+	if text == "" {
+		return AgenticResponse{}, fmt.Errorf("empty response from %s", providerName)
+	}
+	logger.Info("provider responded", "bytes", len(text))
+	return AgenticResponse{Text: text}, nil
 }
 
 func CreateProvider(config ProviderConfig) (Provider, error) {
