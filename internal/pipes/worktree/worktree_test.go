@@ -11,7 +11,6 @@ import (
 
 // mockCall records a single invocation of GitExecutor.Run.
 type mockCall struct {
-	args   []string
 	stdout string
 	err    error
 }

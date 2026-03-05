@@ -11,6 +11,8 @@ build-pipes:
         go build -o "$pipe_dir/run" "./$cmd"
     done
 
+check: lint test
+
 test:
     go test ./... -v -count=1
 
@@ -44,4 +46,4 @@ auth:
     ./bin/auth
 
 lint:
-    golangci-lint run ./...
+    $HOME/go/bin/golangci-lint run ./...
