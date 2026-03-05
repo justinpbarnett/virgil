@@ -155,10 +155,7 @@ func TestCreateProviderMissingAPIKey(t *testing.T) {
 
 func TestParseClaudeResponseJSON(t *testing.T) {
 	data := []byte(`{"result":"Hello, world!"}`)
-	result, err := parseClaudeResponse(data)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	result, _ := parseClaudeResponseWithUsage(data, "")
 	if result != "Hello, world!" {
 		t.Errorf("expected 'Hello, world!', got '%s'", result)
 	}
@@ -166,10 +163,7 @@ func TestParseClaudeResponseJSON(t *testing.T) {
 
 func TestParseClaudeResponseContentBlocks(t *testing.T) {
 	data := []byte(`[{"type":"text","text":"Hello"},{"type":"text","text":" world"}]`)
-	result, err := parseClaudeResponse(data)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	result, _ := parseClaudeResponseWithUsage(data, "")
 	if result != "Hello\n world" {
 		t.Errorf("expected 'Hello\\n world', got '%s'", result)
 	}
@@ -177,19 +171,16 @@ func TestParseClaudeResponseContentBlocks(t *testing.T) {
 
 func TestParseClaudeResponsePlainText(t *testing.T) {
 	data := []byte("Just plain text response")
-	result, err := parseClaudeResponse(data)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	result, _ := parseClaudeResponseWithUsage(data, "")
 	if result != "Just plain text response" {
 		t.Errorf("expected plain text, got '%s'", result)
 	}
 }
 
 func TestParseClaudeResponseEmpty(t *testing.T) {
-	_, err := parseClaudeResponse([]byte(""))
-	if err == nil {
-		t.Fatal("expected error for empty response")
+	result, _ := parseClaudeResponseWithUsage([]byte(""), "")
+	if result != "" {
+		t.Errorf("expected empty result, got '%s'", result)
 	}
 }
 
