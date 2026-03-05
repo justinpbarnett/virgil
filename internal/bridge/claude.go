@@ -172,14 +172,6 @@ func (c *claudeProvider) CompleteStream(ctx context.Context, system, user string
 	return result, nil
 }
 
-func parseClaudeResponse(data []byte) (string, error) {
-	text, _ := parseClaudeResponseWithUsage(data, "")
-	if text == "" {
-		return "", fmt.Errorf("empty response from claude CLI")
-	}
-	return text, nil
-}
-
 func parseClaudeResponseWithUsage(data []byte, model string) (string, Usage) {
 	// Try parsing as JSON with result field (may include usage)
 	var response struct {
