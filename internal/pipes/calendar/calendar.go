@@ -13,6 +13,9 @@ import (
 
 	"github.com/justinpbarnett/virgil/internal/envelope"
 	"github.com/justinpbarnett/virgil/internal/pipe"
+	"github.com/olebedev/when"
+	"github.com/olebedev/when/rules/common"
+	"github.com/olebedev/when/rules/en"
 	"golang.org/x/oauth2"
 	"golang.org/x/oauth2/google"
 )
@@ -79,24 +82,42 @@ func NewHandler(client CalendarClient, logger *slog.Logger) pipe.Handler {
 	}
 }
 
+// whenParser is shared across calls.
+var whenParser = func() *when.Parser {
+	w := when.New(nil)
+	w.Add(en.All...)
+	w.Add(common.All...)
+	return w
+}()
+
 func resolveRange(r string) (time.Time, time.Time) {
 	now := time.Now()
 	today := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
 
-	switch r {
-	case "next":
-		// Search from now through the end of the week so we find the next upcoming event.
+	// "next" is a special modifier meaning "next upcoming event" — not a date expression.
+	if r == "next" {
 		return now, today.Add(7 * 24 * time.Hour)
-	case "tomorrow":
-		start := today.Add(24 * time.Hour)
-		return start, start.Add(24 * time.Hour)
-	case "this-week":
-		weekday := int(today.Weekday())
-		start := today.Add(-time.Duration(weekday) * 24 * time.Hour)
-		return start, start.Add(7 * 24 * time.Hour)
-	default: // "today"
-		return today, today.Add(24 * time.Hour)
 	}
+
+	// Normalise "this-week" → "this week" for the parser.
+	expr := r
+	if expr == "this-week" {
+		expr = "this week"
+	}
+
+	// Try natural language parsing (handles "tomorrow", "next friday", "in 3 days", etc.)
+	if result, err := whenParser.Parse(expr, now); err == nil && result != nil {
+		t := result.Time
+		start := time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, now.Location())
+		// "this week" expands to a 7-day window; single-day expressions get a 1-day window.
+		if r == "this-week" {
+			return start, start.Add(7 * 24 * time.Hour)
+		}
+		return start, start.Add(24 * time.Hour)
+	}
+
+	// Default to today.
+	return today, today.Add(24 * time.Hour)
 }
 
 // GoogleCalendarClient implements CalendarClient using Google Calendar API
