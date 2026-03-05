@@ -63,9 +63,9 @@ func (r *Registry) Definitions() []Definition {
 }
 
 // RegisterPersistent starts a PersistentProcess for the given pipe and
-// registers its handler and (if the pipe is streaming) stream handler.
+// registers its handler and (if streaming is true) stream handler.
 // The process is tracked for shutdown via Shutdown().
-func (r *Registry) RegisterPersistent(def Definition, cfg SubprocessConfig) error {
+func (r *Registry) RegisterPersistent(def Definition, cfg SubprocessConfig, streaming bool) error {
 	proc := NewPersistentProcess(cfg)
 	if err := proc.Start(); err != nil {
 		return err
@@ -73,7 +73,9 @@ func (r *Registry) RegisterPersistent(def Definition, cfg SubprocessConfig) erro
 
 	r.mu.Lock()
 	r.handlers[def.Name] = proc.Handler()
-	r.streamHandlers[def.Name] = proc.StreamHandler()
+	if streaming {
+		r.streamHandlers[def.Name] = proc.StreamHandler()
+	}
 	r.definitions[def.Name] = def
 	r.persistentProcesses = append(r.persistentProcesses, proc)
 	r.mu.Unlock()

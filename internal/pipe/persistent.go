@@ -100,7 +100,7 @@ func (p *PersistentProcess) stopLocked() {
 		select {
 		case <-done:
 		case <-time.After(2 * time.Second):
-			p.cmd.Process.Kill()
+			_ = p.cmd.Process.Kill()
 		}
 	}
 }
@@ -189,6 +189,7 @@ func (p *PersistentProcess) StreamHandler() StreamHandler {
 			return *errEnv
 		}
 
+		chunked := false
 		for p.scanner.Scan() {
 			// Check for context cancellation between lines
 			select {
@@ -213,12 +214,47 @@ func (p *PersistentProcess) StreamHandler() StreamHandler {
 			}
 			if chunk.Chunk != "" {
 				sink(chunk.Chunk)
+				chunked = true
 			}
 		}
 
-		// Scanner stopped — process likely died
+		// Scanner stopped — process likely died. Only retry if no chunks
+		// were forwarded to the caller yet; once partial output is in the
+		// stream, replaying would produce duplicate/garbled content.
+		if chunked {
+			return envelope.NewFatalError(p.cfg.Name, "process died mid-stream")
+		}
 		if err := p.restart(); err != nil {
 			return envelope.NewFatalError(p.cfg.Name, "process died, restart failed")
+		}
+		if err := p.writeRequest(req); err != nil {
+			return envelope.NewFatalError(p.cfg.Name, "write after restart: "+err.Error())
+		}
+
+		// Second attempt — no further retries.
+		for p.scanner.Scan() {
+			select {
+			case <-ctx.Done():
+				for p.scanner.Scan() {
+					var c SubprocessChunk
+					if json.Unmarshal(p.scanner.Bytes(), &c) == nil && c.Envelope != nil {
+						break
+					}
+				}
+				return envelope.NewRetryableError(p.cfg.Name, "context cancelled")
+			default:
+			}
+
+			var chunk SubprocessChunk
+			if err := json.Unmarshal(p.scanner.Bytes(), &chunk); err != nil {
+				continue
+			}
+			if chunk.Envelope != nil {
+				return *chunk.Envelope
+			}
+			if chunk.Chunk != "" {
+				sink(chunk.Chunk)
+			}
 		}
 		return envelope.NewFatalError(p.cfg.Name, "process closed without response")
 	}

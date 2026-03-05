@@ -190,6 +190,108 @@ func TestPersistentStreamHandler(t *testing.T) {
 	}
 }
 
+// TestPersistentStreamHandlerRetriesAfterCrash verifies that the StreamHandler
+// restarts the process and retries the request when the subprocess dies mid-stream.
+// Regression test: previously StreamHandler restarted but returned a fatal error
+// without resending the request ("process closed without response").
+func TestPersistentStreamHandlerRetriesAfterCrash(t *testing.T) {
+	binPath := buildCrashOnceHelper(t)
+
+	cfg := pipe.SubprocessConfig{
+		Name:       "crash-once",
+		Executable: binPath,
+		Timeout:    5 * time.Second,
+		Env:        os.Environ(),
+	}
+	proc := pipe.NewPersistentProcess(cfg)
+	if err := proc.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer proc.Stop()
+
+	sh := proc.StreamHandler()
+	var chunks []string
+	result := sh(context.Background(), makeSeed("retry test"), nil, func(c string) {
+		chunks = append(chunks, c)
+	})
+	if result.Error != nil {
+		t.Fatalf("expected successful retry, got error: %v", result.Error.Message)
+	}
+	got := fmt.Sprintf("%v", result.Content)
+	if got != "retry test" {
+		t.Errorf("expected content %q, got %q", "retry test", got)
+	}
+}
+
+// buildCrashOnceHelper compiles a helper binary that exits immediately on the
+// first stream request (simulating a crash) but works normally after restart.
+// Uses a marker file to track whether it has crashed before.
+func buildCrashOnceHelper(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	markerPath := filepath.Join(dir, "crashed")
+
+	src := filepath.Join(dir, "main.go")
+	srcContent := fmt.Sprintf(`package main
+
+import (
+	"encoding/json"
+	"io"
+	"os"
+	"github.com/justinpbarnett/virgil/internal/pipe"
+	"github.com/justinpbarnett/virgil/internal/envelope"
+)
+
+const markerPath = %q
+
+func main() {
+	if os.Getenv("VIRGIL_PERSISTENT") != "1" {
+		os.Exit(1)
+	}
+	dec := json.NewDecoder(os.Stdin)
+	enc := json.NewEncoder(os.Stdout)
+	for {
+		var req pipe.SubprocessRequest
+		if err := dec.Decode(&req); err != nil {
+			if err == io.EOF {
+				return
+			}
+			os.Exit(1)
+		}
+		// First stream request: crash (exit without response)
+		if req.Stream {
+			if _, err := os.Stat(markerPath); os.IsNotExist(err) {
+				os.WriteFile(markerPath, []byte("1"), 0o644)
+				os.Exit(0) // simulate crash
+			}
+		}
+		out := envelope.New("crash-once", "response")
+		out.Content = req.Envelope.Content
+		out.ContentType = envelope.ContentText
+		if req.Stream {
+			enc.Encode(pipe.SubprocessChunk{Chunk: "chunk1"})
+			enc.Encode(pipe.SubprocessChunk{Envelope: &out})
+		} else {
+			enc.Encode(out)
+		}
+	}
+}
+`, markerPath)
+	if err := os.WriteFile(src, []byte(srcContent), 0o644); err != nil {
+		t.Fatalf("write crash-once src: %v", err)
+	}
+
+	binPath := filepath.Join(dir, "crash-once-helper")
+	projectRoot, _ := filepath.Abs("../..")
+	cmd := exec.Command("go", "build", "-o", binPath, src)
+	cmd.Dir = projectRoot
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Skipf("cannot build crash-once helper (build env unavailable): %v\n%s", err, out)
+	}
+	return binPath
+}
+
 func TestPersistentHandlerMarshalledRequest(t *testing.T) {
 	// Verify the SubprocessRequest is correctly marshalled to JSON
 	req := pipe.SubprocessRequest{
