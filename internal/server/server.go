@@ -14,6 +14,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/justinpbarnett/virgil/internal/bridge"
 	"github.com/justinpbarnett/virgil/internal/config"
 	"github.com/justinpbarnett/virgil/internal/envelope"
 	"github.com/justinpbarnett/virgil/internal/parser"
@@ -95,16 +96,17 @@ type Deps struct {
 }
 
 type Server struct {
-	config    *config.Config
-	router    *router.Router
-	parser    *parser.Parser
-	planner   *planner.Planner
-	runtime   *runtime.Runtime
-	registry  *pipe.Registry
-	server    *http.Server
-	pidPath   string
-	logger    *slog.Logger
-	startedAt time.Time
+	config      *config.Config
+	router      *router.Router
+	parser      *parser.Parser
+	planner     *planner.Planner
+	runtime     *runtime.Runtime
+	registry    *pipe.Registry
+	ackProvider bridge.StreamingProvider
+	server      *http.Server
+	pidPath     string
+	logger      *slog.Logger
+	startedAt   time.Time
 
 	voiceStatus    broker[voiceStatus]
 	lastVoiceStatus struct {
@@ -125,7 +127,7 @@ type voiceSpeakMsg struct {
 func New(d Deps) *Server {
 	pidPath := filepath.Join(config.DataDir(), "virgil.pid")
 
-	return &Server{
+	s := &Server{
 		config:      d.Config,
 		router:      d.Router,
 		parser:      d.Parser,
@@ -141,6 +143,26 @@ func New(d Deps) *Server {
 		voiceCycle:  newBroker[struct{}](),
 		voiceStop:   newBroker[struct{}](),
 	}
+
+	if d.Config != nil {
+		ackCfg := bridge.ProviderConfig{
+			Name:      d.Config.Ack.Provider,
+			Model:     d.Config.Ack.Model,
+			MaxTokens: d.Config.Ack.MaxTokens,
+		}
+		if ackCfg.Name != "" {
+			provider, err := bridge.CreateProvider(ackCfg)
+			if err != nil {
+				d.Logger.Warn("ack provider unavailable", "error", err)
+			} else if sp, ok := provider.(bridge.StreamingProvider); ok {
+				s.ackProvider = sp
+			} else {
+				d.Logger.Warn("ack provider does not support streaming")
+			}
+		}
+	}
+
+	return s
 }
 
 func (s *Server) Start() error {
@@ -166,7 +188,9 @@ func (s *Server) Start() error {
 		s.logger.Info("shutting down server")
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		s.Shutdown(ctx)
+		if err := s.Shutdown(ctx); err != nil {
+			s.logger.Error("shutdown error", "error", err)
+		}
 	}()
 
 	s.logger.Info("server starting", "addr", addr)

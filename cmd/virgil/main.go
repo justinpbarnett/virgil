@@ -53,7 +53,7 @@ func main() {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
 
 	if *serverMode {
-		if err := runServer(cfgDir, logger); err != nil {
+		if err := runServer(cfgDir); err != nil {
 			logger.Error("server failed", "error", err)
 			os.Exit(1)
 		}
@@ -151,7 +151,7 @@ func runVoiceDaemon(cfgDir string, logger *slog.Logger) error {
 	return daemon.Run(ctx)
 }
 
-func runServer(cfgDir string, logger *slog.Logger) error {
+func runServer(cfgDir string) error {
 	// 1. Load configuration
 	cfg, err := config.Load(cfgDir, defaultPipesDir)
 	if err != nil {
@@ -159,7 +159,7 @@ func runServer(cfgDir string, logger *slog.Logger) error {
 	}
 
 	// Set log level from config
-	logger = slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: config.ToSlogLevel(cfg.LogLevel)}))
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: config.ToSlogLevel(cfg.LogLevel)}))
 
 	logger.Info("server started", "log_level", cfg.LogLevel, "config_dir", cfgDir, "port", cfg.Server.Port)
 
@@ -202,7 +202,7 @@ func runServer(cfgDir string, logger *slog.Logger) error {
 			Env:        env,
 			Logger:     logger,
 		}
-		if err := reg.RegisterPersistent(pc.ToDefinition(), sc); err != nil {
+		if err := reg.RegisterPersistent(pc.ToDefinition(), sc, pc.Streaming); err != nil {
 			logger.Warn("failed to start persistent pipe, falling back to spawn-per-call", "pipe", name, "error", err)
 			reg.Register(pc.ToDefinition(), pipe.SubprocessHandler(sc))
 			if pc.Streaming {
