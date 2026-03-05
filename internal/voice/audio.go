@@ -37,9 +37,9 @@ func (r *Recorder) Stop() (string, error) {
 		return "", fmt.Errorf("recording process not started")
 	}
 	if err := r.cmd.Process.Signal(syscall.SIGINT); err != nil {
-		r.cmd.Process.Kill()
+		_ = r.cmd.Process.Kill()
 	}
-	r.cmd.Wait()
+	_ = r.cmd.Wait()
 	return r.path, nil
 }
 
@@ -55,7 +55,7 @@ func PlayAudio(path string) error {
 		return fmt.Errorf("starting afplay: %w", err)
 	}
 	go func() {
-		cmd.Wait()
+		_ = cmd.Wait()
 		os.Remove(path)
 	}()
 	return nil

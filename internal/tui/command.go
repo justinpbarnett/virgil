@@ -51,11 +51,16 @@ func NewCommandRegistry() *CommandRegistry {
 				n = parsed
 			}
 		}
-		lines, err := tailFile(ServerLogPath(), n)
+		path := ServerLogPath()
+		lines, err := tailFile(path, n)
 		if err != nil {
 			return CommandResult{Output: fmt.Sprintf("no log file: %v", err)}
 		}
-		return CommandResult{Output: strings.Join(lines, "\n")}
+		display := path
+		if home, err := os.UserHomeDir(); err == nil {
+			display = strings.Replace(path, home, "~", 1)
+		}
+		return CommandResult{Output: display + "\n" + strings.Join(lines, "\n")}
 	})
 
 	r.Register("help", func(args string) CommandResult {

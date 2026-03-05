@@ -115,7 +115,7 @@ func (d *Daemon) playFileOnce(path string) {
 	d.playing = true
 	d.playingCmd = cmd
 	d.playingMu.Unlock()
-	cmd.Run()
+	_ = cmd.Run()
 	d.playingMu.Lock()
 	d.playing = false
 	d.playingCmd = nil
@@ -473,7 +473,7 @@ func (d *Daemon) speakAsync(ctx context.Context, text string) {
 		d.playingCmd = cmd
 		d.playingMu.Unlock()
 
-		cmd.Run()
+		_ = cmd.Run()
 		os.Remove(path)
 
 		d.playingMu.Lock()
@@ -489,19 +489,8 @@ func (d *Daemon) stopAudio() {
 	cmd := d.playingCmd
 	d.playingMu.Unlock()
 	if cmd != nil && cmd.Process != nil {
-		cmd.Process.Kill()
+		_ = cmd.Process.Kill()
 	}
-}
-
-// speakNonBlocking speaks text only if nothing is currently playing (drops if busy).
-func (d *Daemon) speakNonBlocking(ctx context.Context, text string) {
-	d.playingMu.Lock()
-	busy := d.playing
-	d.playingMu.Unlock()
-	if busy {
-		return
-	}
-	d.speakAsync(ctx, text)
 }
 
 // abortRecording stops and discards any in-progress recording, and kills audio.
@@ -511,7 +500,7 @@ func (d *Daemon) abortRecording() {
 	d.recording = nil
 	d.recordingMu.Unlock()
 	if rec != nil {
-		rec.Stop()
+		_, _ = rec.Stop()
 		d.postVoiceStatus(false, "")
 		d.logger.Println("Recording aborted")
 	}

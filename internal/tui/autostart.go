@@ -19,7 +19,9 @@ func EnsureServer(binary string, serverAddr string) error {
 	pidPath := filepath.Join(dataDir, "virgil.pid")
 	lockPath := filepath.Join(dataDir, "virgil.lock")
 
-	os.MkdirAll(dataDir, 0o755)
+	if err := os.MkdirAll(dataDir, 0o755); err != nil {
+		return fmt.Errorf("creating data dir: %w", err)
+	}
 
 	// Acquire file lock
 	lockFile, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0o644)
@@ -32,7 +34,7 @@ func EnsureServer(binary string, serverAddr string) error {
 	if err := syscall.Flock(int(lockFile.Fd()), syscall.LOCK_EX); err != nil {
 		return fmt.Errorf("locking: %w", err)
 	}
-	defer syscall.Flock(int(lockFile.Fd()), syscall.LOCK_UN)
+	defer syscall.Flock(int(lockFile.Fd()), syscall.LOCK_UN) //nolint:errcheck
 
 	// Check if server is already running
 	if isServerRunning(pidPath, serverAddr) {

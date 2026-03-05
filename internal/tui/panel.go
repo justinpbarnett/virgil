@@ -52,12 +52,12 @@ func (p *Panel) SetSize(width, height int) {
 
 // ScrollDown scrolls the viewport down by n lines.
 func (p *Panel) ScrollDown(n int) {
-	p.viewport.LineDown(n)
+	p.viewport.ScrollDown(n)
 }
 
 // ScrollUp scrolls the viewport up by n lines.
 func (p *Panel) ScrollUp(n int) {
-	p.viewport.LineUp(n)
+	p.viewport.ScrollUp(n)
 }
 
 // Update processes messages when the panel is open. If the panel is closed

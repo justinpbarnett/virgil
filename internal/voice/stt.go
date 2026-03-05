@@ -52,8 +52,8 @@ func (s *STTClient) Transcribe(ctx context.Context, audioPath string) (string, e
 	if _, err := io.Copy(part, f); err != nil {
 		return "", fmt.Errorf("copying audio data: %w", err)
 	}
-	mw.WriteField("model", "whisper-1")
-	mw.WriteField("response_format", "text")
+	_ = mw.WriteField("model", "whisper-1")
+	_ = mw.WriteField("response_format", "text")
 	mw.Close()
 
 	req, err := http.NewRequestWithContext(ctx, "POST", whisperURL, &body)
