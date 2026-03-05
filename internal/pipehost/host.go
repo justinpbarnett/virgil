@@ -169,12 +169,7 @@ func injectProviderUsage(result *envelope.Envelope, ur bridge.UsageReporter) {
 	if u.InputTokens == 0 && u.OutputTokens == 0 {
 		return
 	}
-	result.Usage = &envelope.EnvelopeUsage{
-		InputTokens:  u.InputTokens,
-		OutputTokens: u.OutputTokens,
-		Model:        u.Model,
-		Cost:         u.Cost,
-	}
+	result.Usage = &u
 }
 
 // Fatal writes a fatal error envelope to stdout and exits with code 1.

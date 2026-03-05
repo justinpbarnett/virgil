@@ -1,12 +1,9 @@
 package bridge
 
-// Usage contains token counts and computed cost for a single provider call.
-type Usage struct {
-	InputTokens  int
-	OutputTokens int
-	Model        string
-	Cost         float64
-}
+import "github.com/justinpbarnett/virgil/internal/envelope"
+
+// Usage is an alias for envelope.Usage, the canonical token usage type.
+type Usage = envelope.Usage
 
 // ModelPricing holds per-million-token prices for a model.
 type ModelPricing struct {
