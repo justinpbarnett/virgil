@@ -11,7 +11,6 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/justinpbarnett/virgil/internal/bridge"
 	"github.com/justinpbarnett/virgil/internal/config"
 	"github.com/justinpbarnett/virgil/internal/envelope"
 	"github.com/justinpbarnett/virgil/internal/parser"
@@ -42,6 +41,12 @@ func main() {
 		if _, err := os.Stat(filepath.Join(cfgDir, "virgil.yaml")); os.IsNotExist(err) {
 			cfgDir = "config"
 		}
+	}
+
+	// Load credentials file before any provider is initialized.
+	// System env vars take precedence; this is a fallback only.
+	if err := config.LoadCredentials(); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: credentials.yaml: %v\n", err)
 	}
 
 	// Set up logging
@@ -169,8 +174,9 @@ func runServer(cfgDir string, logger *slog.Logger) error {
 	// Capture server's working directory for passing to subprocesses
 	workDir, _ := os.Getwd()
 
-	// 3. Register all pipes as subprocesses
+	// 3. Register all pipes as persistent subprocesses
 	reg := pipe.NewRegistry()
+	defer reg.Shutdown()
 	baseEnv := pipeEnv(cfg, cfgDir, workDir)
 	baseEnv = baseEnv[:len(baseEnv):len(baseEnv)] // clip capacity to prevent aliasing
 
@@ -183,8 +189,10 @@ func runServer(cfgDir string, logger *slog.Logger) error {
 		pipeLogLevel := pc.EffectiveLogLevel(cfg.LogLevel)
 		env := append(baseEnv,
 			pipehost.EnvLogLevel+"="+pipeLogLevel.String(),
+			pipehost.EnvProvider+"="+pc.EffectiveProvider(cfg.Provider.Name),
 			pipehost.EnvModel+"="+pc.EffectiveModel(cfg.Provider.Model),
 			pipehost.EnvMaxTurns+"="+strconv.Itoa(pc.EffectiveMaxTurns()),
+			pipehost.EnvMaxTokens+"="+strconv.Itoa(pc.EffectiveMaxTokens(cfg.Provider.MaxTokens)),
 		)
 		sc := pipe.SubprocessConfig{
 			Name:       name,
@@ -194,9 +202,12 @@ func runServer(cfgDir string, logger *slog.Logger) error {
 			Env:        env,
 			Logger:     logger,
 		}
-		reg.Register(pc.ToDefinition(), pipe.SubprocessHandler(sc))
-		if pc.Streaming {
-			reg.RegisterStream(name, pipe.SubprocessStreamHandler(sc))
+		if err := reg.RegisterPersistent(pc.ToDefinition(), sc); err != nil {
+			logger.Warn("failed to start persistent pipe, falling back to spawn-per-call", "pipe", name, "error", err)
+			reg.Register(pc.ToDefinition(), pipe.SubprocessHandler(sc))
+			if pc.Streaming {
+				reg.RegisterStream(name, pipe.SubprocessStreamHandler(sc))
+			}
 		}
 		logger.Info("registered pipe", "pipe", name, "handler", handlerPath)
 	}
@@ -211,21 +222,7 @@ func runServer(cfgDir string, logger *slog.Logger) error {
 		defer missLog.Close()
 	}
 
-	var classifier *router.Classifier
-	classifierProvider, err := bridge.NewProvider(bridge.ProviderConfig{
-		Name:     cfg.Provider.Name,
-		Model:    "haiku",
-		Binary:   cfg.Provider.Binary,
-		MaxTurns: 1,
-		Logger:   logger,
-	})
-	if err != nil {
-		logger.Warn("classifier provider unavailable, Layer 4 AI routing disabled", "error", err)
-	} else {
-		classifier = router.NewClassifier(classifierProvider, reg.Definitions(), logger)
-	}
-
-	rt := router.NewRouter(reg.Definitions(), missLog, classifier, logger)
+	rt := router.NewRouter(reg.Definitions(), missLog, logger)
 
 	// Build planner
 	pl := planner.New(cfg.Templates, cfg.Vocabulary.Sources, logger)

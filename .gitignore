@@ -1,5 +1,5 @@
 bin/
-virgil
+/virgil
 internal/pipes/*/run
 .env
 

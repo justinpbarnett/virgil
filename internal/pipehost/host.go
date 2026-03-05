@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -27,8 +28,13 @@ const (
 	EnvProviderBinary = "VIRGIL_PROVIDER_BINARY"
 	EnvLogLevel       = "VIRGIL_LOG_LEVEL"
 	EnvMaxTurns       = "VIRGIL_MAX_TURNS"
+	EnvMaxTokens      = "VIRGIL_MAX_TOKENS"
 	EnvIdentity       = "VIRGIL_IDENTITY"
 	EnvWorkDir        = "VIRGIL_WORK_DIR"
+	// EnvPersistent enables persistent (loop) mode: when set to "1", Run
+	// processes requests in a loop until stdin is closed rather than exiting
+	// after a single request.
+	EnvPersistent = "VIRGIL_PERSISTENT"
 )
 
 // NewPipeLogger creates an slog.Logger for a pipe subprocess.
@@ -45,7 +51,14 @@ func NewPipeLogger(pipeName string) *slog.Logger {
 // Run reads a SubprocessRequest from stdin, calls the appropriate handler,
 // and writes the response to stdout. If req.Stream is true and streamHandler
 // is non-nil, uses the streaming protocol (chunk lines + final envelope).
+//
+// When VIRGIL_PERSISTENT=1 is set, Run processes requests in a loop until
+// stdin is closed, keeping the process alive for reuse by PersistentProcess.
 func Run(handler pipe.Handler, streamHandler pipe.StreamHandler) {
+	if os.Getenv(EnvPersistent) == "1" {
+		runLoop(handler, streamHandler)
+		return
+	}
 	var req pipe.SubprocessRequest
 	if err := json.NewDecoder(os.Stdin).Decode(&req); err != nil {
 		fmt.Fprintf(os.Stderr, "failed to decode request: %v\n", err)
@@ -56,6 +69,26 @@ func Run(handler pipe.Handler, streamHandler pipe.StreamHandler) {
 		runStream(streamHandler, req)
 	} else {
 		runSync(handler, req)
+	}
+}
+
+// runLoop processes requests continuously until stdin is closed (EOF).
+func runLoop(handler pipe.Handler, streamHandler pipe.StreamHandler) {
+	dec := json.NewDecoder(os.Stdin)
+	for {
+		var req pipe.SubprocessRequest
+		if err := dec.Decode(&req); err != nil {
+			if err == io.EOF {
+				return
+			}
+			fmt.Fprintf(os.Stderr, "failed to decode request: %v\n", err)
+			return
+		}
+		if req.Stream && streamHandler != nil {
+			runStream(streamHandler, req)
+		} else {
+			runSync(handler, req)
+		}
 	}
 }
 
@@ -87,14 +120,61 @@ func runStream(handler pipe.StreamHandler, req pipe.SubprocessRequest) {
 // RunWithStreaming is a convenience wrapper that handles the StreamingProvider
 // type assertion. If the provider implements StreamingProvider and makeStream
 // is non-nil, the stream handler is used; otherwise only the sync handler runs.
+// Both sync and stream handlers are wrapped to inject token usage into the
+// result envelope when the provider implements UsageReporter.
 func RunWithStreaming(provider bridge.Provider, handler pipe.Handler, makeStream func(bridge.StreamingProvider) pipe.StreamHandler) {
+	wrappedHandler := wrapHandlerWithUsage(provider, handler)
 	if makeStream != nil {
 		if sp, ok := provider.(bridge.StreamingProvider); ok {
-			Run(handler, makeStream(sp))
+			wrappedStream := wrapStreamHandlerWithUsage(provider, makeStream(sp))
+			Run(wrappedHandler, wrappedStream)
 			return
 		}
 	}
-	Run(handler, nil)
+	Run(wrappedHandler, nil)
+}
+
+// wrapHandlerWithUsage wraps a Handler to inject provider usage into the result
+// envelope after the handler returns.
+func wrapHandlerWithUsage(provider bridge.Provider, h pipe.Handler) pipe.Handler {
+	ur, ok := provider.(bridge.UsageReporter)
+	if !ok {
+		return h
+	}
+	return func(env envelope.Envelope, flags map[string]string) envelope.Envelope {
+		result := h(env, flags)
+		injectProviderUsage(&result, ur)
+		return result
+	}
+}
+
+// wrapStreamHandlerWithUsage wraps a StreamHandler to inject provider usage into
+// the result envelope after the handler returns.
+func wrapStreamHandlerWithUsage(provider bridge.Provider, sh pipe.StreamHandler) pipe.StreamHandler {
+	ur, ok := provider.(bridge.UsageReporter)
+	if !ok {
+		return sh
+	}
+	return func(ctx context.Context, env envelope.Envelope, flags map[string]string, sink func(string)) envelope.Envelope {
+		result := sh(ctx, env, flags, sink)
+		injectProviderUsage(&result, ur)
+		return result
+	}
+}
+
+// injectProviderUsage reads the last usage from the provider and attaches it
+// to the envelope. Only injects when there were actual tokens consumed.
+func injectProviderUsage(result *envelope.Envelope, ur bridge.UsageReporter) {
+	u := ur.LastUsage()
+	if u.InputTokens == 0 && u.OutputTokens == 0 {
+		return
+	}
+	result.Usage = &envelope.EnvelopeUsage{
+		InputTokens:  u.InputTokens,
+		OutputTokens: u.OutputTokens,
+		Model:        u.Model,
+		Cost:         u.Cost,
+	}
 }
 
 // Fatal writes a fatal error envelope to stdout and exits with code 1.
@@ -123,15 +203,22 @@ func BuildProviderFromEnvWithLogger(logger *slog.Logger) (bridge.Provider, error
 			maxTurns = v
 		}
 	}
-	cfg := bridge.ProviderConfig{
-		Name:     name,
-		Model:    os.Getenv(EnvModel),
-		Binary:   os.Getenv(EnvProviderBinary),
-		MaxTurns: maxTurns,
-		Verbose:  config.ParseLogLevel(os.Getenv(EnvLogLevel)) == config.Verbose,
-		Logger:   logger,
+	maxTokens := 8192
+	if s := os.Getenv(EnvMaxTokens); s != "" {
+		if v, err := strconv.Atoi(s); err == nil {
+			maxTokens = v
+		}
 	}
-	return bridge.NewProvider(cfg)
+	cfg := bridge.ProviderConfig{
+		Name:      name,
+		Model:     os.Getenv(EnvModel),
+		Binary:    os.Getenv(EnvProviderBinary),
+		MaxTurns:  maxTurns,
+		MaxTokens: maxTokens,
+		Verbose:   config.ParseLogLevel(os.Getenv(EnvLogLevel)) == config.Verbose,
+		Logger:    logger,
+	}
+	return bridge.CreateProvider(cfg)
 }
 
 // LoadPipeConfig loads and returns the PipeConfig from pipe.yaml in the

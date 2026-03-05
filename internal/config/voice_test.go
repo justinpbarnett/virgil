@@ -17,12 +17,12 @@ func TestLoadVoiceConfigMissingFile(t *testing.T) {
 
 func TestLoadVoiceConfigValid(t *testing.T) {
 	dir := t.TempDir()
-	writeFile(t, dir, "voice.json", `{
-		"openai_api_key": "sk-test",
-		"elevenlabs_api_key": "el-test",
-		"elevenlabs_voice_id": "voice123",
-		"output_mode": "steps"
-	}`)
+	writeFile(t, dir, "voice.yaml", `
+openai_api_key: sk-test
+elevenlabs_api_key: el-test
+elevenlabs_voice_id: voice123
+output_mode: steps
+`)
 
 	cfg, err := LoadVoiceConfig(dir)
 	if err != nil {
@@ -41,11 +41,11 @@ func TestLoadVoiceConfigValid(t *testing.T) {
 
 func TestLoadVoiceConfigDefaults(t *testing.T) {
 	dir := t.TempDir()
-	writeFile(t, dir, "voice.json", `{
-		"openai_api_key": "sk-test",
-		"elevenlabs_api_key": "el-test",
-		"elevenlabs_voice_id": "voice123"
-	}`)
+	writeFile(t, dir, "voice.yaml", `
+openai_api_key: sk-test
+elevenlabs_api_key: el-test
+elevenlabs_voice_id: voice123
+`)
 
 	cfg, err := LoadVoiceConfig(dir)
 	if err != nil {
@@ -68,22 +68,22 @@ func TestLoadVoiceConfigDefaults(t *testing.T) {
 	}
 }
 
-func TestLoadVoiceConfigMalformedJSON(t *testing.T) {
+func TestLoadVoiceConfigMalformedYAML(t *testing.T) {
 	dir := t.TempDir()
-	writeFile(t, dir, "voice.json", `{not valid json}`)
+	writeFile(t, dir, "voice.yaml", "key: [unclosed")
 
 	_, err := LoadVoiceConfig(dir)
 	if err == nil {
-		t.Fatal("expected error for malformed JSON")
+		t.Fatal("expected error for malformed YAML")
 	}
 }
 
 func TestLoadVoiceConfigInvalidMode(t *testing.T) {
 	dir := t.TempDir()
-	writeFile(t, dir, "voice.json", `{
-		"openai_api_key": "sk-test",
-		"output_mode": "loudly"
-	}`)
+	writeFile(t, dir, "voice.yaml", `
+openai_api_key: sk-test
+output_mode: loudly
+`)
 
 	_, err := LoadVoiceConfig(dir)
 	if err == nil {

@@ -3,10 +3,11 @@ package pipe
 import "sync"
 
 type Registry struct {
-	mu             sync.RWMutex
-	handlers       map[string]Handler
-	streamHandlers map[string]StreamHandler
-	definitions    map[string]Definition
+	mu                  sync.RWMutex
+	handlers            map[string]Handler
+	streamHandlers      map[string]StreamHandler
+	definitions         map[string]Definition
+	persistentProcesses []*PersistentProcess
 }
 
 func NewRegistry() *Registry {
@@ -59,4 +60,35 @@ func (r *Registry) Definitions() []Definition {
 		defs = append(defs, d)
 	}
 	return defs
+}
+
+// RegisterPersistent starts a PersistentProcess for the given pipe and
+// registers its handler and (if the pipe is streaming) stream handler.
+// The process is tracked for shutdown via Shutdown().
+func (r *Registry) RegisterPersistent(def Definition, cfg SubprocessConfig) error {
+	proc := NewPersistentProcess(cfg)
+	if err := proc.Start(); err != nil {
+		return err
+	}
+
+	r.mu.Lock()
+	r.handlers[def.Name] = proc.Handler()
+	r.streamHandlers[def.Name] = proc.StreamHandler()
+	r.definitions[def.Name] = def
+	r.persistentProcesses = append(r.persistentProcesses, proc)
+	r.mu.Unlock()
+
+	return nil
+}
+
+// Shutdown stops all persistent pipe processes. Safe to call multiple times.
+func (r *Registry) Shutdown() {
+	r.mu.Lock()
+	procs := r.persistentProcesses
+	r.persistentProcesses = nil
+	r.mu.Unlock()
+
+	for _, proc := range procs {
+		proc.Stop()
+	}
 }

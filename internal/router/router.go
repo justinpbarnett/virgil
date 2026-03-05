@@ -25,17 +25,16 @@ type RouteResult struct {
 
 type Router struct {
 	exactMap     map[string]string            // signal → pipe name
-	keywordIndex map[string][]string          // keyword → []pipe names
-	pipeKeywords map[string][]string          // pipe name → []keywords
+	keywordIndex map[string][]string          // stemmed keyword → []pipe names
+	pipeKeywords map[string][]string          // pipe name → []stemmed keywords
 	categories   map[string][]pipe.Definition // category → []definitions
 	definitions  map[string]pipe.Definition
 	missLog      *MissLog
-	classifier   *Classifier
 	threshold    float64
 	logger       *slog.Logger
 }
 
-func NewRouter(defs []pipe.Definition, missLog *MissLog, classifier *Classifier, logger *slog.Logger) *Router {
+func NewRouter(defs []pipe.Definition, missLog *MissLog, logger *slog.Logger) *Router {
 	if logger == nil {
 		logger = slog.Default()
 	}
@@ -46,7 +45,6 @@ func NewRouter(defs []pipe.Definition, missLog *MissLog, classifier *Classifier,
 		categories:   make(map[string][]pipe.Definition),
 		definitions:  make(map[string]pipe.Definition),
 		missLog:      missLog,
-		classifier:   classifier,
 		threshold:    0.6,
 		logger:       logger,
 	}
@@ -59,15 +57,19 @@ func NewRouter(defs []pipe.Definition, missLog *MissLog, classifier *Classifier,
 			r.exactMap[strings.ToLower(exact)] = def.Name
 		}
 
-		// Build keyword inverted index (pre-lowered for scoring)
-		lowered := make([]string, len(def.Triggers.Keywords))
-		for i, kw := range def.Triggers.Keywords {
-			lowered[i] = strings.ToLower(kw)
+		// Build keyword inverted index using stemmed forms so that morphological
+		// variants of a keyword match at query time.
+		stemmed := make([]string, 0, len(def.Triggers.Keywords))
+		seen := make(map[string]bool)
+		for _, kw := range def.Triggers.Keywords {
+			sk := Stem(strings.ToLower(kw))
+			if !seen[sk] {
+				seen[sk] = true
+				stemmed = append(stemmed, sk)
+				r.keywordIndex[sk] = append(r.keywordIndex[sk], def.Name)
+			}
 		}
-		r.pipeKeywords[def.Name] = lowered
-		for _, lkw := range lowered {
-			r.keywordIndex[lkw] = append(r.keywordIndex[lkw], def.Name)
-		}
+		r.pipeKeywords[def.Name] = stemmed
 
 		// Build category map
 		r.categories[def.Category] = append(r.categories[def.Category], def)
@@ -87,16 +89,19 @@ func (r *Router) Route(ctx context.Context, signal string, parsed parser.ParsedS
 		return result
 	}
 
-	// Layer 2: Keyword scoring
+	// Layer 2: Keyword scoring with stemming and synonym expansion
 	words := tokenize(lower)
 	scores := make(map[string]int)
 	var keywordsFound []string
 
 	for _, w := range words {
-		if pipes, ok := r.keywordIndex[w]; ok {
-			keywordsFound = append(keywordsFound, w)
-			for _, p := range pipes {
-				scores[p]++
+		for _, form := range StemAndExpand(w) {
+			if pipes, ok := r.keywordIndex[form]; ok {
+				keywordsFound = append(keywordsFound, w)
+				for _, p := range pipes {
+					scores[p]++
+				}
+				break // only count each signal word once even if it expands to multiple hits
 			}
 		}
 	}
@@ -161,18 +166,15 @@ func (r *Router) Route(ctx context.Context, signal string, parsed parser.ParsedS
 		}
 	}
 
-	// Layer 4: AI classification
+	// Layer 4: Deterministic fallback — default to chat and log the miss.
+	// The classifier has been removed; signals that reach here are either
+	// genuinely conversational or have no matching keyword/category.
 	var keywordsNotFound []string
 	for _, w := range words {
-		if _, ok := r.keywordIndex[w]; !ok {
+		stemmed := Stem(w)
+		if _, ok := r.keywordIndex[stemmed]; !ok {
 			keywordsNotFound = append(keywordsNotFound, w)
 		}
-	}
-
-	aiPipe := "chat"
-	aiConf := 0.0
-	if r.classifier != nil {
-		aiPipe, aiConf = r.classifier.Classify(ctx, signal)
 	}
 
 	if r.missLog != nil {
@@ -180,15 +182,9 @@ func (r *Router) Route(ctx context.Context, signal string, parsed parser.ParsedS
 			Signal:           signal,
 			KeywordsFound:    keywordsFound,
 			KeywordsNotFound: keywordsNotFound,
-			FallbackPipe:     aiPipe,
-			AIConfidence:     aiConf,
+			FallbackPipe:     "chat",
+			AIConfidence:     0.0,
 		})
-	}
-
-	if aiPipe != "chat" {
-		result := RouteResult{Pipe: aiPipe, Confidence: aiConf, Layer: LayerFallback}
-		r.logger.Info("routed", "pipe", result.Pipe, "layer", result.Layer)
-		return result
 	}
 
 	r.logger.Warn("miss", "signal", signal)
@@ -237,8 +233,9 @@ func (r *Router) scoreParsedMatch(def pipe.Definition, parsed parser.ParsedSigna
 	return score / checks
 }
 
+// tokenize splits s into cleaned tokens. Callers must pass a lowercased string.
 func tokenize(s string) []string {
-	fields := strings.Fields(strings.ToLower(s))
+	fields := strings.Fields(s)
 	for i, f := range fields {
 		fields[i] = parser.CleanToken(f)
 	}

@@ -48,7 +48,7 @@ func testDefs() []pipe.Definition {
 }
 
 func TestLayer1ExactMatch(t *testing.T) {
-	r := NewRouter(testDefs(), nil, nil, nil)
+	r := NewRouter(testDefs(), nil, nil)
 	result := r.Route(context.Background(), "check my calendar", parser.ParsedSignal{})
 
 	if result.Pipe != "calendar" {
@@ -63,7 +63,7 @@ func TestLayer1ExactMatch(t *testing.T) {
 }
 
 func TestLayer2KeywordScoring(t *testing.T) {
-	r := NewRouter(testDefs(), nil, nil, nil)
+	r := NewRouter(testDefs(), nil, nil)
 	// Signal hits 3 of 4 calendar keywords: calendar, schedule, meeting → 75% > 60% threshold
 	result := r.Route(context.Background(), "show my calendar schedule for the meeting", parser.ParsedSignal{})
 
@@ -76,7 +76,7 @@ func TestLayer2KeywordScoring(t *testing.T) {
 }
 
 func TestLayer3CategoryNarrowing(t *testing.T) {
-	r := NewRouter(testDefs(), nil, nil, nil)
+	r := NewRouter(testDefs(), nil, nil)
 	parsed := parser.ParsedSignal{
 		Verb:   "memory",
 		Action: "retrieve",
@@ -95,7 +95,7 @@ func TestLayer4StubFallback(t *testing.T) {
 	missLog, _ := NewMissLog(filepath.Join(dir, "misses.jsonl"))
 	defer missLog.Close()
 
-	r := NewRouter(testDefs(), missLog, nil, nil)
+	r := NewRouter(testDefs(), missLog, nil)
 	result := r.Route(context.Background(), "xyzzy foobar", parser.ParsedSignal{})
 
 	if result.Pipe != "chat" {
@@ -127,7 +127,7 @@ func TestMissLogStructure(t *testing.T) {
 	}
 	defer missLog.Close()
 
-	r := NewRouter(testDefs(), missLog, nil, nil)
+	r := NewRouter(testDefs(), missLog, nil)
 	r.Route(context.Background(), "completely unknown input", parser.ParsedSignal{})
 
 	data, err := os.ReadFile(path)
@@ -158,7 +158,7 @@ func TestWhQuestionFallsToChat(t *testing.T) {
 			Keywords: []string{"visualize", "animate", "animation", "illustrate", "diagram", "visualization", "manim"},
 		},
 	})
-	r := NewRouter(defs, nil, nil, nil)
+	r := NewRouter(defs, nil, nil)
 
 	// "visualize" appears in the signal as a topic of a question, not as a command
 	parsed := parser.ParsedSignal{Verb: "visualize", IsQuestion: true}
@@ -173,7 +173,7 @@ func TestWhQuestionFallsToChat(t *testing.T) {
 }
 
 func TestExactMatchCaseInsensitive(t *testing.T) {
-	r := NewRouter(testDefs(), nil, nil, nil)
+	r := NewRouter(testDefs(), nil, nil)
 	result := r.Route(context.Background(), "Check My Calendar", parser.ParsedSignal{})
 
 	if result.Pipe != "calendar" {
@@ -184,62 +184,14 @@ func TestExactMatchCaseInsensitive(t *testing.T) {
 	}
 }
 
-func TestLayer4AIRouting(t *testing.T) {
-	provider := &mockProvider{response: "draft"}
-	classifier := NewClassifier(provider, testDefs(), nil)
-	r := NewRouter(testDefs(), nil, classifier, nil)
-
-	result := r.Route(context.Background(), "xyzzy foobar totally unmatched", parser.ParsedSignal{})
-
-	if result.Pipe != "draft" {
-		t.Errorf("expected draft from AI routing, got %s", result.Pipe)
-	}
-	if result.Confidence != 0.7 {
-		t.Errorf("expected confidence 0.7, got %f", result.Confidence)
-	}
-	if result.Layer != LayerFallback {
-		t.Errorf("expected layer %d, got %d", LayerFallback, result.Layer)
-	}
-}
-
-func TestLayer4FallbackAfterAI(t *testing.T) {
-	provider := &mockProvider{response: "chat"}
-	classifier := NewClassifier(provider, testDefs(), nil)
-	r := NewRouter(testDefs(), nil, classifier, nil)
+// TestLayer4FallbackToChat verifies that unrecognized signals default to chat.
+func TestLayer4FallbackToChat(t *testing.T) {
+	r := NewRouter(testDefs(), nil, nil)
 
 	result := r.Route(context.Background(), "xyzzy foobar totally unmatched", parser.ParsedSignal{})
 
 	if result.Pipe != "chat" {
-		t.Errorf("expected chat, got %s", result.Pipe)
-	}
-	if result.Confidence != 0.0 {
-		t.Errorf("expected confidence 0.0, got %f", result.Confidence)
-	}
-	if result.Layer != LayerFallback {
-		t.Errorf("expected layer %d, got %d", LayerFallback, result.Layer)
-	}
-}
-
-func TestWhQuestionReachesAI(t *testing.T) {
-	defs := append(testDefs(), pipe.Definition{
-		Name:     "visualize",
-		Category: "comms",
-		Triggers: pipe.Triggers{
-			Keywords: []string{"visualize", "animate", "animation", "illustrate", "diagram", "visualization", "manim"},
-		},
-	})
-	provider := &mockProvider{response: "visualize"}
-	classifier := NewClassifier(provider, defs, nil)
-	r := NewRouter(defs, nil, classifier, nil)
-
-	parsed := parser.ParsedSignal{Verb: "visualize", IsQuestion: true}
-	result := r.Route(context.Background(), "what's a complicated workflow that would be cool to visualize?", parsed)
-
-	if !provider.called {
-		t.Error("expected classifier to be called for wh-question that skips Layer 3")
-	}
-	if result.Pipe != "visualize" {
-		t.Errorf("expected visualize from AI routing, got %s", result.Pipe)
+		t.Errorf("expected chat fallback, got %s", result.Pipe)
 	}
 	if result.Layer != LayerFallback {
 		t.Errorf("expected layer %d, got %d", LayerFallback, result.Layer)
