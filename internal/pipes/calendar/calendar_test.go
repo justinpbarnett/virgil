@@ -11,12 +11,43 @@ import (
 )
 
 type mockCalendarClient struct {
-	events []Event
-	err    error
+	events      []Event
+	event       *Event
+	err         error
+	lastTitle   string
+	lastEventID string
 }
 
 func (m *mockCalendarClient) GetEvents(_ context.Context, _ string, _, _ time.Time) ([]Event, error) {
 	return m.events, m.err
+}
+
+func (m *mockCalendarClient) CreateEvent(_ context.Context, _ string, title string, start, end time.Time, location, description string) (*Event, error) {
+	m.lastTitle = title
+	if m.err != nil {
+		return nil, m.err
+	}
+	if m.event != nil {
+		return m.event, nil
+	}
+	return &Event{ID: "new1", Title: title, Start: start.Format(time.RFC3339), End: end.Format(time.RFC3339), Location: location, Description: description}, nil
+}
+
+func (m *mockCalendarClient) UpdateEvent(_ context.Context, _ string, eventID, title string, _, _ time.Time, _, _ string) (*Event, error) {
+	m.lastEventID = eventID
+	m.lastTitle = title
+	if m.err != nil {
+		return nil, m.err
+	}
+	if m.event != nil {
+		return m.event, nil
+	}
+	return &Event{ID: eventID, Title: title}, nil
+}
+
+func (m *mockCalendarClient) DeleteEvent(_ context.Context, _ string, eventID string) error {
+	m.lastEventID = eventID
+	return m.err
 }
 
 func TestCalendarReturnsEvents(t *testing.T) {
@@ -146,5 +177,164 @@ func TestCalendarEnvelopeCompliance(t *testing.T) {
 	}
 	if result.Error != nil {
 		t.Errorf("expected no error, got %v", result.Error)
+	}
+}
+
+func TestCalendarDefaultActionIsList(t *testing.T) {
+	client := &mockCalendarClient{events: []Event{}}
+	handler := NewHandler(client, nil)
+	input := envelope.New("input", "test")
+
+	result := handler(input, map[string]string{})
+
+	if result.Action != "list" {
+		t.Errorf("expected action=list, got %s", result.Action)
+	}
+}
+
+func TestCalendarCreateEvent(t *testing.T) {
+	client := &mockCalendarClient{}
+	handler := NewHandler(client, nil)
+	input := envelope.New("input", "test")
+
+	result := handler(input, map[string]string{
+		"action": "create",
+		"title":  "Team Meeting",
+		"start":  time.Now().Add(time.Hour).Format(time.RFC3339),
+	})
+
+	if result.Error != nil {
+		t.Fatalf("unexpected error: %v", result.Error)
+	}
+	if result.ContentType != envelope.ContentStructured {
+		t.Errorf("expected content_type=structured, got %s", result.ContentType)
+	}
+	if client.lastTitle != "Team Meeting" {
+		t.Errorf("expected title=Team Meeting, got %s", client.lastTitle)
+	}
+}
+
+func TestCalendarCreateEventMissingTitle(t *testing.T) {
+	client := &mockCalendarClient{}
+	handler := NewHandler(client, nil)
+	input := envelope.New("input", "test")
+
+	result := handler(input, map[string]string{
+		"action": "create",
+		"start":  time.Now().Add(time.Hour).Format(time.RFC3339),
+	})
+
+	testutil.AssertFatalError(t, result)
+}
+
+func TestCalendarCreateEventMissingStart(t *testing.T) {
+	client := &mockCalendarClient{}
+	handler := NewHandler(client, nil)
+	input := envelope.New("input", "test")
+
+	result := handler(input, map[string]string{
+		"action": "create",
+		"title":  "Meeting",
+	})
+
+	testutil.AssertFatalError(t, result)
+}
+
+func TestCalendarUpdateEvent(t *testing.T) {
+	client := &mockCalendarClient{}
+	handler := NewHandler(client, nil)
+	input := envelope.New("input", "test")
+
+	result := handler(input, map[string]string{
+		"action":   "update",
+		"event_id": "evt123",
+		"title":    "Updated Meeting",
+	})
+
+	if result.Error != nil {
+		t.Fatalf("unexpected error: %v", result.Error)
+	}
+	if result.ContentType != envelope.ContentStructured {
+		t.Errorf("expected content_type=structured, got %s", result.ContentType)
+	}
+	if client.lastEventID != "evt123" {
+		t.Errorf("expected event_id=evt123, got %s", client.lastEventID)
+	}
+}
+
+func TestCalendarUpdateEventMissingID(t *testing.T) {
+	client := &mockCalendarClient{}
+	handler := NewHandler(client, nil)
+	input := envelope.New("input", "test")
+
+	result := handler(input, map[string]string{
+		"action": "update",
+		"title":  "New Title",
+	})
+
+	testutil.AssertFatalError(t, result)
+}
+
+func TestCalendarDeleteEvent(t *testing.T) {
+	client := &mockCalendarClient{}
+	handler := NewHandler(client, nil)
+	input := envelope.New("input", "test")
+
+	result := handler(input, map[string]string{
+		"action":   "delete",
+		"event_id": "evt456",
+	})
+
+	if result.Error != nil {
+		t.Fatalf("unexpected error: %v", result.Error)
+	}
+	if result.ContentType != envelope.ContentStructured {
+		t.Errorf("expected content_type=structured, got %s", result.ContentType)
+	}
+	if client.lastEventID != "evt456" {
+		t.Errorf("expected event_id=evt456, got %s", client.lastEventID)
+	}
+}
+
+func TestCalendarDeleteEventMissingID(t *testing.T) {
+	client := &mockCalendarClient{}
+	handler := NewHandler(client, nil)
+	input := envelope.New("input", "test")
+
+	result := handler(input, map[string]string{"action": "delete"})
+
+	testutil.AssertFatalError(t, result)
+}
+
+func TestCalendarCreateEnvelopeCompliance(t *testing.T) {
+	client := &mockCalendarClient{}
+	handler := NewHandler(client, nil)
+	input := envelope.New("input", "test")
+
+	result := handler(input, map[string]string{
+		"action": "create",
+		"title":  "Standup",
+		"start":  time.Now().Add(time.Hour).Format(time.RFC3339),
+	})
+
+	testutil.AssertEnvelope(t, result, "calendar", "create")
+	if result.ContentType != envelope.ContentStructured {
+		t.Errorf("expected content_type=structured, got %s", result.ContentType)
+	}
+}
+
+func TestCalendarDeleteEnvelopeCompliance(t *testing.T) {
+	client := &mockCalendarClient{}
+	handler := NewHandler(client, nil)
+	input := envelope.New("input", "test")
+
+	result := handler(input, map[string]string{
+		"action":   "delete",
+		"event_id": "evt789",
+	})
+
+	testutil.AssertEnvelope(t, result, "calendar", "delete")
+	if result.ContentType != envelope.ContentStructured {
+		t.Errorf("expected content_type=structured, got %s", result.ContentType)
 	}
 }

@@ -1,5 +1,5 @@
 name: calendar
-description: Reads events from calendar services.
+description: Reads and manages events on calendar services.
 category: time
 
 triggers:
@@ -7,29 +7,66 @@ triggers:
     - "check my calendar"
     - "what's on my schedule"
     - "what's on my calendar"
+    - "create an event"
+    - "add to my calendar"
+    - "schedule a meeting"
   keywords:
     - calendar
     - schedule
     - meeting
     - event
     - appointment
+    - add
+    - create
+    - cancel
+    - delete
+    - update
+    - move
+    - reschedule
   patterns:
     - "what's on my calendar {modifier}"
     - "check my calendar {modifier}"
+    - "schedule {topic} for {modifier}"
+    - "cancel my {topic}"
+    - "move my {topic} to {modifier}"
 
 flags:
+  action:
+    description: Which calendar operation to perform.
+    values: [list, create, update, delete]
+    default: list
   range:
-    description: Time range to query.
-    values: [today, tomorrow, this-week]
+    description: Time range to query (for list action).
+    values: [today, tomorrow, this-week, next-week]
     default: today
   calendar:
     description: Which calendar to use.
     default: primary
+  event_id:
+    description: Event ID for update/delete operations.
+    default: ""
+  title:
+    description: Event title for create/update.
+    default: ""
+  start:
+    description: Start time for create/update (RFC3339 or natural language).
+    default: ""
+  end:
+    description: End time for create/update (defaults to start + 1 hour).
+    default: ""
+  location:
+    description: Event location for create/update.
+    default: ""
+  description:
+    description: Event description for create/update.
+    default: ""
 
 format:
   list: |-
     {{if eq .Count 0}}Your calendar is clear.{{else}}You have {{.Count}} event{{if gt .Count 1}}s{{end}}{{if eq .Range "tomorrow"}} tomorrow{{else if eq .Range "this-week"}} this week{{else if eq .Range "next"}} coming up{{else}} today{{end}}:{{range .Items}}
     - {{.title}}{{if .time}} — {{.time}}{{end}}{{if .location}} ({{.location}}){{end}}{{end}}{{end}}
+  structured: |-
+    {{if .status}}{{.status}}{{end}}{{if .id}} [{{.id}}]{{end}}{{if .title}} — {{.title}}{{end}}
 
 memory:
   disabled: true
@@ -37,6 +74,9 @@ memory:
 vocabulary:
   verbs:
     show: calendar
+    schedule: calendar
+    cancel: calendar
+    reschedule: calendar
   types: {}
   sources:
     calendar: calendar
@@ -46,3 +86,4 @@ vocabulary:
     today: today
     tomorrow: tomorrow
     "this week": this-week
+    "next week": next-week
