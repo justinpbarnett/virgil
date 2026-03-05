@@ -1,19 +1,23 @@
 package store
 
 import (
-	"crypto/rand"
 	"database/sql"
+	"embed"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/justinpbarnett/virgil/internal/envelope"
+	"github.com/pressly/goose/v3"
 	_ "modernc.org/sqlite"
 )
+
+//go:embed migrations/*.sql
+var migrationsFS embed.FS
 
 // Memory is the unified memory record stored in the memories table.
 type Memory struct {
@@ -71,16 +75,8 @@ type Store struct {
 	searchInvSinceStmt     *sql.Stmt     // no pipe, with since
 }
 
-// newID generates a UUID v4.
 func newID() string {
-	b := make([]byte, 16)
-	if _, err := io.ReadFull(rand.Reader, b); err != nil {
-		panic("crypto/rand failed: " + err.Error())
-	}
-	b[6] = (b[6] & 0x0f) | 0x40
-	b[8] = (b[8] & 0x3f) | 0x80
-	return fmt.Sprintf("%08x-%04x-%04x-%04x-%012x",
-		b[0:4], b[4:6], b[6:8], b[8:10], b[10:16])
+	return uuid.New().String()
 }
 
 func Open(path string) (*Store, error) {
@@ -112,7 +108,7 @@ func Open(path string) (*Store, error) {
 	db.SetMaxOpenConns(1)
 	db.SetMaxIdleConns(1)
 
-	if err := migrate(db); err != nil {
+	if err := runMigrations(db); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("running migrations: %w", err)
 	}
@@ -175,84 +171,39 @@ func (s *Store) prepareStatements() error {
 	return nil
 }
 
-const newSchemaDDL = `
-CREATE TABLE IF NOT EXISTS memories (
-    id TEXT PRIMARY KEY,
-    created_at INTEGER NOT NULL,
-    updated_at INTEGER NOT NULL,
-    kind TEXT NOT NULL,
-    source_pipe TEXT,
-    signal TEXT,
-    content TEXT NOT NULL,
-    tags TEXT NOT NULL DEFAULT '',
-    embedding BLOB
-);
+// runMigrations handles schema setup using goose. Goose runs first to create
+// (or update) all tables, then any legacy pre-goose data is migrated.
+func runMigrations(db *sql.DB) error {
+	goose.SetLogger(goose.NopLogger())
+	goose.SetBaseFS(migrationsFS)
+	if err := goose.SetDialect("sqlite3"); err != nil {
+		return fmt.Errorf("goose dialect: %w", err)
+	}
+	if err := goose.Up(db, "migrations"); err != nil {
+		return err
+	}
 
-CREATE INDEX IF NOT EXISTS idx_memories_kind ON memories(kind);
-CREATE INDEX IF NOT EXISTS idx_memories_kind_id ON memories(kind, id);
-CREATE INDEX IF NOT EXISTS idx_memories_source_pipe ON memories(source_pipe);
-CREATE INDEX IF NOT EXISTS idx_memories_created_at ON memories(created_at);
-
-CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts USING fts5(
-    content,
-    signal,
-    content='memories',
-    content_rowid='rowid',
-    tokenize='porter unicode61'
-);
-
-CREATE TRIGGER IF NOT EXISTS memories_ai AFTER INSERT ON memories BEGIN
-    INSERT INTO memories_fts(rowid, content, signal) VALUES (new.rowid, new.content, COALESCE(new.signal, ''));
-END;
-
-CREATE TRIGGER IF NOT EXISTS memories_ad AFTER DELETE ON memories BEGIN
-    INSERT INTO memories_fts(memories_fts, rowid, content, signal) VALUES('delete', old.rowid, old.content, COALESCE(old.signal, ''));
-END;
-
-CREATE TRIGGER IF NOT EXISTS memories_au AFTER UPDATE ON memories BEGIN
-    INSERT INTO memories_fts(memories_fts, rowid, content, signal) VALUES('delete', old.rowid, old.content, COALESCE(old.signal, ''));
-    INSERT INTO memories_fts(rowid, content, signal) VALUES (new.rowid, new.content, COALESCE(new.signal, ''));
-END;
-`
-
-func migrate(db *sql.DB) error {
+	// One-time data migration from the old entries/working_state/invocations schema.
 	var count int
 	_ = db.QueryRow("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='entries'").Scan(&count)
 	if count > 0 {
-		return migrateOldSchema(db)
+		if err := migrateOldSchema(db); err != nil {
+			return fmt.Errorf("legacy migration: %w", err)
+		}
 	}
-	return createNewSchema(db)
+
+	return nil
 }
 
-func createNewSchema(db *sql.DB) error {
-	tx, err := db.Begin()
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback() //nolint:errcheck
-
-	if _, err := tx.Exec(newSchemaDDL); err != nil {
-		return err
-	}
-	if err := createEdgeSchema(tx); err != nil {
-		return err
-	}
-	return tx.Commit()
-}
-
+// migrateOldSchema copies data from the pre-goose schema into the new memories
+// table structure. Runs inside a single transaction and drops the old tables on
+// success. Safe to call only when the "entries" table exists.
 func migrateOldSchema(db *sql.DB) error {
 	tx, err := db.Begin()
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback() //nolint:errcheck
-
-	if _, err := tx.Exec(newSchemaDDL); err != nil {
-		return err
-	}
-	if err := createEdgeSchema(tx); err != nil {
-		return err
-	}
 
 	// Migrate entries → memories (kind='explicit')
 	rows, err := tx.Query("SELECT content, tags, created_at, updated_at FROM entries")
@@ -333,7 +284,6 @@ func migrateOldSchema(db *sql.DB) error {
 		return err
 	}
 
-	// Drop old tables and associated FTS/triggers
 	for _, stmt := range []string{
 		"DROP TRIGGER IF EXISTS entries_ai",
 		"DROP TRIGGER IF EXISTS entries_ad",
