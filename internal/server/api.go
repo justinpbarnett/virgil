@@ -3,6 +3,7 @@ package server
 import (
 	"encoding/json"
 	"net/http"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -51,6 +52,9 @@ func buildSeed(req signalRequest) envelope.Envelope {
 	seed.Args["signal"] = req.Text
 	if req.Model != "" {
 		seed.Args[envelope.FlagModelOverride] = req.Model
+	}
+	if cwd, err := os.Getwd(); err == nil {
+		seed.Args["cwd"] = cwd
 	}
 	return seed
 }

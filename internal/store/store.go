@@ -502,7 +502,12 @@ func (s *Store) SearchInvocations(query, pipeName string, limit int, since time.
 		return nil, err
 	}
 	defer rows.Close()
+	return scanInvocations(rows)
+}
 
+// scanInvocations reads invocation entries from rows that select
+// (id, source_pipe, signal, content, created_at).
+func scanInvocations(rows *sql.Rows) ([]InvocationEntry, error) {
 	var entries []InvocationEntry
 	for rows.Next() {
 		var e InvocationEntry
@@ -517,6 +522,25 @@ func (s *Store) SearchInvocations(query, pipeName string, limit int, since time.
 		entries = append(entries, e)
 	}
 	return entries, rows.Err()
+}
+
+// RecentInvocations returns the most recent invocations ordered by time, regardless of content match.
+func (s *Store) RecentInvocations(limit int) ([]InvocationEntry, error) {
+	if limit <= 0 {
+		limit = 3
+	}
+	rows, err := s.db.Query(`
+		SELECT id, source_pipe, signal, content, created_at
+		FROM memories
+		WHERE kind = 'invocation'
+		ORDER BY created_at DESC
+		LIMIT ?
+	`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return scanInvocations(rows)
 }
 
 // parseStateID splits a composite "namespace/key" ID back into its parts.
@@ -659,6 +683,25 @@ func (s *Store) RetrieveContext(query string, requests []ContextRequest, budget 
 				id := e.Namespace + "/" + e.Key
 				results = append(results, envelope.MemoryEntry{ID: id, Type: "working_state", Content: text})
 				seenIDs[id] = true
+				usedChars += len(text)
+			}
+
+		case "recent_history":
+			entries, err := s.RecentInvocations(3)
+			if err != nil {
+				continue
+			}
+			for _, e := range entries {
+				if seenIDs[e.ID] {
+					continue
+				}
+				text := e.Signal + " → " + e.Output
+				text = truncateRunes(text, share)
+				if usedChars+len(text) > charBudget {
+					break
+				}
+				results = append(results, envelope.MemoryEntry{ID: e.ID, Type: "recent_history", Content: text})
+				seenIDs[e.ID] = true
 				usedChars += len(text)
 			}
 

@@ -216,6 +216,21 @@ func BuildProviderFromEnvWithLogger(logger *slog.Logger) (bridge.Provider, error
 	return bridge.CreateProvider(cfg)
 }
 
+// BuildAgenticProviderFromEnvWithLogger creates a bridge.AgenticProvider from
+// environment variables. Returns an error if the resolved provider does not
+// implement AgenticProvider (e.g. the "claude" CLI provider).
+func BuildAgenticProviderFromEnvWithLogger(logger *slog.Logger) (bridge.AgenticProvider, error) {
+	p, err := BuildProviderFromEnvWithLogger(logger)
+	if err != nil {
+		return nil, err
+	}
+	ap, ok := p.(bridge.AgenticProvider)
+	if !ok {
+		return nil, fmt.Errorf("provider %T does not support agentic tool use; use anthropic, openai, or gemini", p)
+	}
+	return ap, nil
+}
+
 // LoadPipeConfig loads and returns the PipeConfig from pipe.yaml in the
 // current working directory.
 func LoadPipeConfig() (config.PipeConfig, error) {
