@@ -2,6 +2,8 @@ package parser
 
 import (
 	"strings"
+
+	"github.com/justinpbarnett/virgil/internal/nlp"
 )
 
 type ParsedSignal struct {
@@ -21,19 +23,6 @@ type Parser struct {
 
 func New(vocab *Vocabulary) *Parser {
 	return &Parser{vocab: vocab}
-}
-
-var stopWords = map[string]bool{
-	"a": true, "an": true, "the": true, "my": true,
-	"on": true, "in": true, "at": true, "to": true,
-	"for": true, "of": true, "is": true, "that": true,
-	"about": true, "do": true, "i": true, "it": true,
-	"me": true, "and": true, "or": true, "but": true,
-	"with": true, "from": true, "post": true,
-	"what": true, "what's": true, "how": true, "when": true, "where": true,
-	"can": true, "does": true, "did": true, "will": true,
-	"you": true, "could": true, "would": true, "should": true,
-	"are": true, "was": true, "were": true, "has": true, "have": true,
 }
 
 // whWords are wh-question starters used to detect question signals.
@@ -98,13 +87,14 @@ func (p *Parser) Parse(signal string) ParsedSignal {
 		}
 	}
 
-	// Extract verb (first match wins)
+	// Extract verb (first match wins; try exact token then Porter2 stem)
 	verbIdx := -1
 	for i, w := range words {
 		if used[i] {
 			continue
 		}
-		if mapping, ok := p.vocab.Verbs[w]; ok {
+		mapping, ok := nlp.LookupStemmed(p.vocab.Verbs, w)
+		if ok {
 			if strings.Contains(mapping, ".") {
 				parts := strings.SplitN(mapping, ".", 2)
 				result.Verb = parts[0]
@@ -140,24 +130,26 @@ func (p *Parser) Parse(signal string) ParsedSignal {
 		}
 	}
 
-	// Extract type
+	// Extract type (exact then stemmed fallback)
 	for i, w := range words {
 		if used[i] {
 			continue
 		}
-		if canonical, ok := p.vocab.Types[w]; ok {
+		canonical, ok := nlp.LookupStemmed(p.vocab.Types, w)
+		if ok {
 			result.Type = canonical
 			used[i] = true
 			break
 		}
 	}
 
-	// Extract source
+	// Extract source (exact then stemmed fallback)
 	for i, w := range words {
 		if used[i] {
 			continue
 		}
-		if canonical, ok := p.vocab.Sources[w]; ok {
+		canonical, ok := nlp.LookupStemmed(p.vocab.Sources, w)
+		if ok {
 			result.Source = canonical
 			used[i] = true
 			break
@@ -184,7 +176,7 @@ func (p *Parser) Parse(signal string) ParsedSignal {
 		if used[i] {
 			continue
 		}
-		if stopWords[w] {
+		if nlp.IsStopWord(w) {
 			continue
 		}
 		topicWords = append(topicWords, w)
