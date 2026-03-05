@@ -813,6 +813,54 @@ func TestMemoryConfigAbsentGivesZeroValue(t *testing.T) {
 	}
 }
 
+func TestEffectiveProvider(t *testing.T) {
+	// Pipe provider set → use pipe provider
+	pc := PipeConfig{Provider: "openai"}
+	if got := pc.EffectiveProvider("anthropic"); got != "openai" {
+		t.Errorf("expected pipe provider openai, got %s", got)
+	}
+
+	// Pipe provider unset → use global default
+	pc = PipeConfig{}
+	if got := pc.EffectiveProvider("anthropic"); got != "anthropic" {
+		t.Errorf("expected global default anthropic, got %s", got)
+	}
+}
+
+func TestEffectiveMaxTokens(t *testing.T) {
+	// Pipe max_tokens set → use pipe value
+	val := 4096
+	pc := PipeConfig{MaxTokens: &val}
+	if got := pc.EffectiveMaxTokens(8192); got != 4096 {
+		t.Errorf("expected pipe max_tokens 4096, got %d", got)
+	}
+
+	// Pipe max_tokens unset → use global default
+	pc = PipeConfig{}
+	if got := pc.EffectiveMaxTokens(8192); got != 8192 {
+		t.Errorf("expected global default 8192, got %d", got)
+	}
+
+	// Zero value pointer → use override value
+	zero := 0
+	pc = PipeConfig{MaxTokens: &zero}
+	if got := pc.EffectiveMaxTokens(8192); got != 0 {
+		t.Errorf("expected 0 (explicit pipe override), got %d", got)
+	}
+}
+
+func TestProviderConfigMaxTokensDefault(t *testing.T) {
+	configDir, pipesDir := setupTestConfig(t)
+	cfg, err := Load(configDir, pipesDir)
+	if err != nil {
+		t.Fatalf("failed to load config: %v", err)
+	}
+	// Default max_tokens should be 8192 when not set in yaml
+	if cfg.Provider.MaxTokens != 8192 {
+		t.Errorf("expected default MaxTokens 8192, got %d", cfg.Provider.MaxTokens)
+	}
+}
+
 func TestPipeConfigModelAndMaxTurnsFromYAML(t *testing.T) {
 	var pc PipeConfig
 	data := []byte(`

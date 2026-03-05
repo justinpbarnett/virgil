@@ -1,7 +1,6 @@
 package config
 
 import (
-	"encoding/json"
 	"fmt"
 	"log/slog"
 	"os"
@@ -24,44 +23,44 @@ const (
 )
 
 type VoiceConfig struct {
-	OpenAIKey       string          `json:"openai_api_key"`
-	ElevenLabsKey   string          `json:"elevenlabs_api_key"`
-	ElevenLabsVoice string          `json:"elevenlabs_voice_id"`
-	ElevenLabsModel string          `json:"elevenlabs_model_id"`
-	PushToTalkKey   string          `json:"push_to_talk_key"`
-	ModeCycleKey    string          `json:"mode_cycle_key"`
-	OutputMode      VoiceOutputMode `json:"output_mode"`
-	MaxSpokenChars  int             `json:"max_spoken_chars"`
-	VoiceModel      string          `json:"voice_model"`
+	OpenAIKey       string          `yaml:"openai_api_key"`
+	ElevenLabsKey   string          `yaml:"elevenlabs_api_key"`
+	ElevenLabsVoice string          `yaml:"elevenlabs_voice_id"`
+	ElevenLabsModel string          `yaml:"elevenlabs_model_id"`
+	PushToTalkKey   string          `yaml:"push_to_talk_key"`
+	ModeCycleKey    string          `yaml:"mode_cycle_key"`
+	OutputMode      VoiceOutputMode `yaml:"output_mode"`
+	MaxSpokenChars  int             `yaml:"max_spoken_chars"`
+	VoiceModel      string          `yaml:"voice_model"`
 }
 
 func (c *VoiceConfig) Validate() error {
 	if c.OpenAIKey == "" {
-		return fmt.Errorf("openai_api_key is required in voice.json")
+		return fmt.Errorf("openai_api_key is required in voice.yaml")
 	}
 	if c.ElevenLabsKey == "" {
-		return fmt.Errorf("elevenlabs_api_key is required in voice.json")
+		return fmt.Errorf("elevenlabs_api_key is required in voice.yaml")
 	}
 	if c.ElevenLabsVoice == "" {
-		return fmt.Errorf("elevenlabs_voice_id is required in voice.json")
+		return fmt.Errorf("elevenlabs_voice_id is required in voice.yaml")
 	}
 	return nil
 }
 
-// LoadVoiceConfig reads voice.json from configDir. Returns nil, nil if the file doesn't exist.
+// LoadVoiceConfig reads voice.yaml from configDir. Returns nil, nil if the file doesn't exist.
 func LoadVoiceConfig(configDir string) (*VoiceConfig, error) {
-	path := filepath.Join(configDir, "voice.json")
+	path := filepath.Join(configDir, "voice.yaml")
 	data, err := os.ReadFile(path)
 	if os.IsNotExist(err) {
 		return nil, nil
 	}
 	if err != nil {
-		return nil, fmt.Errorf("reading voice.json: %w", err)
+		return nil, fmt.Errorf("reading voice.yaml: %w", err)
 	}
 
 	var cfg VoiceConfig
-	if err := json.Unmarshal(data, &cfg); err != nil {
-		return nil, fmt.Errorf("parsing voice.json: %w", err)
+	if err := yaml.Unmarshal(data, &cfg); err != nil {
+		return nil, fmt.Errorf("parsing voice.yaml: %w", err)
 	}
 
 	if cfg.ElevenLabsModel == "" {
@@ -80,7 +79,7 @@ func LoadVoiceConfig(configDir string) (*VoiceConfig, error) {
 		cfg.MaxSpokenChars = 200
 	}
 	if cfg.VoiceModel == "" {
-		cfg.VoiceModel = "haiku"
+		cfg.VoiceModel = "gemini-3.1-flash-lite-preview"
 	}
 
 	switch cfg.OutputMode {
@@ -209,9 +208,10 @@ type ServerConfig struct {
 }
 
 type ProviderConfig struct {
-	Name   string `yaml:"name"`
-	Model  string `yaml:"model"`
-	Binary string `yaml:"binary"`
+	Name      string `yaml:"name"`
+	Model     string `yaml:"model"`
+	Binary    string `yaml:"binary"`
+	MaxTokens int    `yaml:"max_tokens"`
 }
 
 type MemoryContextEntry struct {
@@ -240,7 +240,9 @@ type PipeConfig struct {
 	Category     string                `yaml:"category"`
 	Streaming    bool                  `yaml:"streaming"`
 	Timeout      string                `yaml:"timeout"`
+	Provider     string                `yaml:"provider"`
 	Model        string                `yaml:"model"`
+	MaxTokens    *int                  `yaml:"max_tokens"`
 	MaxTurns     *int                  `yaml:"max_turns"`
 	PipeLogLevel LogLevel              `yaml:"log_level"`
 	Triggers     pipe.Triggers         `yaml:"triggers"`
@@ -265,6 +267,22 @@ func (pc PipeConfig) EffectiveLogLevel(globalDefault LogLevel) LogLevel {
 func (pc PipeConfig) EffectiveModel(globalDefault string) string {
 	if pc.Model != "" {
 		return pc.Model
+	}
+	return globalDefault
+}
+
+// EffectiveProvider returns the pipe's provider if set, otherwise the global default.
+func (pc PipeConfig) EffectiveProvider(globalDefault string) string {
+	if pc.Provider != "" {
+		return pc.Provider
+	}
+	return globalDefault
+}
+
+// EffectiveMaxTokens returns the pipe's max_tokens if set, otherwise the global default.
+func (pc PipeConfig) EffectiveMaxTokens(globalDefault int) int {
+	if pc.MaxTokens != nil {
+		return *pc.MaxTokens
 	}
 	return globalDefault
 }
@@ -313,7 +331,7 @@ func Load(configDir string, pipesDir string) (*Config, error) {
 	cfg := &Config{
 		ConfigDir: configDir,
 		Server:    ServerConfig{Host: "localhost", Port: 7890},
-		Provider:  ProviderConfig{Name: "claude", Model: "sonnet", Binary: "claude"},
+		Provider:  ProviderConfig{Name: "claude", Model: "sonnet", Binary: "claude", MaxTokens: 8192},
 		LogLevel:  Info,
 		Pipes:     make(map[string]PipeConfig),
 	}
@@ -494,6 +512,31 @@ func (pc PipeConfig) TimeoutDuration() time.Duration {
 		return 30 * time.Second
 	}
 	return d
+}
+
+// LoadCredentials reads ~/.config/virgil/credentials.yaml and sets any listed
+// environment variables that are not already present in the process environment.
+// System environment variables always take precedence — this file is a fallback.
+// Returns nil if the file doesn't exist.
+func LoadCredentials() error {
+	path := filepath.Join(UserDir(), "credentials.yaml")
+	data, err := os.ReadFile(path)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("reading credentials.yaml: %w", err)
+	}
+	var creds map[string]string
+	if err := yaml.Unmarshal(data, &creds); err != nil {
+		return fmt.Errorf("parsing credentials.yaml: %w", err)
+	}
+	for k, v := range creds {
+		if os.Getenv(k) == "" {
+			os.Setenv(k, v)
+		}
+	}
+	return nil
 }
 
 // UserDir returns the path to the user's virgil config directory (~/.config/virgil).
