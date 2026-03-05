@@ -36,6 +36,11 @@ identity: |
   - Protective when stakes warrant it. Push back on ambiguous or risky
     requests rather than blindly executing.
 
+ack:
+  provider: gemini
+  model: gemini-3.1-flash-preview
+  max_tokens: 256
+
 log_level: info
 
 database_path: ~/.local/share/virgil/memory.db

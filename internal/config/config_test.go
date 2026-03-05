@@ -882,3 +882,59 @@ max_turns: 0
 	}
 }
 
+func TestAckConfigDefaults(t *testing.T) {
+	configDir := t.TempDir()
+	pipesDir := t.TempDir()
+
+	writeFile(t, configDir, "virgil.yaml", `
+server:
+  host: localhost
+  port: 7890
+`)
+
+	cfg, err := Load(configDir, pipesDir)
+	if err != nil {
+		t.Fatalf("failed to load config: %v", err)
+	}
+
+	if cfg.Ack.Provider != "gemini" {
+		t.Errorf("expected ack provider gemini, got %s", cfg.Ack.Provider)
+	}
+	if cfg.Ack.Model != "gemini-3.1-flash-preview" {
+		t.Errorf("expected ack model gemini-3.1-flash-preview, got %s", cfg.Ack.Model)
+	}
+	if cfg.Ack.MaxTokens != 256 {
+		t.Errorf("expected ack max_tokens 256, got %d", cfg.Ack.MaxTokens)
+	}
+}
+
+func TestAckConfigFromYAML(t *testing.T) {
+	configDir := t.TempDir()
+	pipesDir := t.TempDir()
+
+	writeFile(t, configDir, "virgil.yaml", `
+server:
+  host: localhost
+  port: 7890
+ack:
+  provider: openai
+  model: gpt-4o-mini
+  max_tokens: 128
+`)
+
+	cfg, err := Load(configDir, pipesDir)
+	if err != nil {
+		t.Fatalf("failed to load config: %v", err)
+	}
+
+	if cfg.Ack.Provider != "openai" {
+		t.Errorf("expected ack provider openai, got %s", cfg.Ack.Provider)
+	}
+	if cfg.Ack.Model != "gpt-4o-mini" {
+		t.Errorf("expected ack model gpt-4o-mini, got %s", cfg.Ack.Model)
+	}
+	if cfg.Ack.MaxTokens != 128 {
+		t.Errorf("expected ack max_tokens 128, got %d", cfg.Ack.MaxTokens)
+	}
+}
+

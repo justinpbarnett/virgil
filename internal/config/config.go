@@ -179,9 +179,16 @@ func (l LogLevel) String() string {
 	}
 }
 
+type AckConfig struct {
+	Provider  string `yaml:"provider"`
+	Model     string `yaml:"model"`
+	MaxTokens int    `yaml:"max_tokens"`
+}
+
 type Config struct {
 	Server       ServerConfig          `yaml:"server"`
 	Provider     ProviderConfig        `yaml:"provider"`
+	Ack          AckConfig             `yaml:"ack"`
 	Identity     string                `yaml:"identity"`
 	LogLevel     LogLevel              `yaml:"log_level"`
 	DatabasePath string                `yaml:"database_path"`
@@ -339,6 +346,17 @@ func Load(configDir string, pipesDir string) (*Config, error) {
 	// Load virgil.yaml
 	if err := loadYAML(filepath.Join(configDir, "virgil.yaml"), cfg); err != nil {
 		return nil, fmt.Errorf("loading virgil.yaml: %w", err)
+	}
+
+	// Ack defaults
+	if cfg.Ack.Provider == "" {
+		cfg.Ack.Provider = "gemini"
+	}
+	if cfg.Ack.Model == "" {
+		cfg.Ack.Model = "gemini-3.1-flash-preview"
+	}
+	if cfg.Ack.MaxTokens == 0 {
+		cfg.Ack.MaxTokens = 256
 	}
 
 	// Expand ~ in database path
