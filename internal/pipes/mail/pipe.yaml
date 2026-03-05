@@ -84,6 +84,8 @@ vocabulary:
     latest: latest
     last: latest
     newest: latest
+    recent: latest
+    most recent: latest
 
 templates:
   priority: 50

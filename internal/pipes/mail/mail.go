@@ -97,7 +97,7 @@ func handleList(client MailClient, _ envelope.Envelope, flags map[string]string,
 	limit := 10
 	if l, err := strconv.Atoi(flags["limit"]); err == nil && l > 0 {
 		limit = l
-	} else if m := flags["modifier"]; m == "latest" || m == "last" || m == "newest" {
+	} else if flags["modifier"] == "latest" {
 		limit = 1
 	}
 

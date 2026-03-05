@@ -36,6 +36,7 @@ flags:
 memory:
   context:
     - type: working_state
+    - type: recent_history
     - type: topic_history
       depth: 1d
     - type: codebase

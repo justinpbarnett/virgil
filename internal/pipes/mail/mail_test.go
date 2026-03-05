@@ -497,6 +497,19 @@ func TestDefaultLimit(t *testing.T) {
 	}
 }
 
+func TestLatestModifierSetsLimitOne(t *testing.T) {
+	client := &mockMailClient{messages: []Message{{ID: "1"}}}
+	handler := NewHandler(client, nil)
+	input := envelope.New("input", "test")
+
+	// The parser normalizes "last", "recent", "most recent", "newest" → "latest"
+	result := handler(input, map[string]string{"action": "list", "modifier": "latest"})
+
+	if result.Error != nil {
+		t.Fatalf("unexpected error: %v", result.Error)
+	}
+}
+
 func TestEnvelopeComplianceList(t *testing.T) {
 	client := &mockMailClient{
 		messages: []Message{{ID: "1", From: "a@b.com", Subject: "Hi"}},
