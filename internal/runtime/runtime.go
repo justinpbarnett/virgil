@@ -82,6 +82,20 @@ func (r *Runtime) WithMemory(injector MemoryInjector, saver MemorySaver, memConf
 	r.memoryConfigs = memConfigs
 }
 
+// resolveMemory decides how to inject memory for a given step. It handles
+// three cases: skip (caller already injected), prefetch channel available,
+// or synchronous injection.
+func (r *Runtime) resolveMemory(step Step, env envelope.Envelope, stepIdx int, skipFirst bool, prefetchCh <-chan envelope.Envelope) envelope.Envelope {
+	switch {
+	case stepIdx == 0 && skipFirst:
+		return env
+	case stepIdx == 0 && prefetchCh != nil:
+		return <-prefetchCh
+	default:
+		return r.injectMemory(step, env)
+	}
+}
+
 func (r *Runtime) injectMemory(step Step, env envelope.Envelope) envelope.Envelope {
 	if r.injector == nil {
 		return env
@@ -207,15 +221,7 @@ func (r *Runtime) Execute(plan Plan, seed envelope.Envelope) envelope.Envelope {
 	for i, step := range plan.Steps {
 		lastPipe = step.Pipe
 
-		var injected envelope.Envelope
-		switch {
-		case i == 0 && plan.SkipFirstMemoryInjection:
-			injected = current
-		case i == 0 && firstMemCh != nil:
-			injected = <-firstMemCh
-		default:
-			injected = r.injectMemory(step, current)
-		}
+		injected := r.resolveMemory(step, current, i, plan.SkipFirstMemoryInjection, firstMemCh)
 
 		if i == len(plan.Steps)-1 {
 			lastContextIDs = extractContextIDs(injected.Memory)
@@ -255,25 +261,18 @@ func (r *Runtime) ExecuteStream(ctx context.Context, plan Plan, seed envelope.En
 		sink(StreamEvent{Type: envelope.SSEEventChunk, Data: chunk})
 	}
 
-	// Prefetch memory for the terminal step asynchronously. For single-step
-	// plans (the common case) this overlaps the memory I/O with any setup work.
-	var terminalMemCh <-chan envelope.Envelope
-	if !plan.SkipFirstMemoryInjection {
-		terminalMemCh = r.injectMemoryAsync(plan.Steps[lastIdx], current)
+	// For single-step plans, prefetch memory asynchronously so it runs
+	// concurrently with any setup work. Multi-step plans inject memory
+	// synchronously at each step to avoid using a stale seed.
+	var firstMemCh <-chan envelope.Envelope
+	if lastIdx == 0 && !plan.SkipFirstMemoryInjection {
+		firstMemCh = r.injectMemoryAsync(plan.Steps[0], current)
 	}
 
 	for i, step := range plan.Steps {
 		// For the last step, try the stream handler
 		if i == lastIdx {
-			var injected envelope.Envelope
-			switch {
-			case plan.SkipFirstMemoryInjection && i == 0:
-				injected = current
-			case terminalMemCh != nil:
-				injected = <-terminalMemCh
-			default:
-				injected = r.injectMemory(step, current)
-			}
+			injected := r.resolveMemory(step, current, i, plan.SkipFirstMemoryInjection, firstMemCh)
 			contextIDs := extractContextIDs(injected.Memory)
 
 			if sh, ok := r.registry.GetStream(step.Pipe); ok {
