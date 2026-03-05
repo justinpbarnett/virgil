@@ -8,6 +8,8 @@ triggers:
     - "check my mail"
     - "check my inbox"
     - "what's in my inbox"
+    - "save email as draft"
+    - "save as draft"
   keywords:
     - email
     - mail
@@ -20,11 +22,12 @@ triggers:
     - "send email to {topic}"
     - "search email for {topic}"
     - "archive email {topic}"
+    - "save email to {topic} as draft"
 
 flags:
   action:
     description: Which email operation to perform.
-    values: [list, read, search, send, archive, label, trash]
+    values: [list, read, search, send, archive, label, trash, save]
     default: list
 
   label:

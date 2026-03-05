@@ -13,6 +13,7 @@ type mockMailClient struct {
 	messages    []Message
 	message     *Message
 	sentID      string
+	draftID     string
 	err         error
 	lastTo      string
 	lastCC      string
@@ -59,6 +60,15 @@ func (m *mockMailClient) ModifyLabels(_ context.Context, messageID string, addLa
 func (m *mockMailClient) TrashMessage(_ context.Context, messageID string) error {
 	m.lastMsgID = messageID
 	return m.err
+}
+
+func (m *mockMailClient) SaveDraft(_ context.Context, to, cc, subject, body, threadID string) (string, error) {
+	m.lastTo = to
+	m.lastCC = cc
+	m.lastSubject = subject
+	m.lastBody = body
+	m.lastThread = threadID
+	return m.draftID, m.err
 }
 
 func TestListMessages(t *testing.T) {
@@ -593,5 +603,102 @@ func TestSendMessageWithCC(t *testing.T) {
 
 	if client.lastCC != "cc@test.com" {
 		t.Errorf("expected cc=cc@test.com, got %s", client.lastCC)
+	}
+}
+
+func TestSaveDraft(t *testing.T) {
+	client := &mockMailClient{draftID: "draft123"}
+	handler := NewHandler(client, nil)
+
+	input := envelope.New("input", "test")
+	input.Content = "Draft email body"
+	input.ContentType = envelope.ContentText
+
+	result := handler(input, map[string]string{
+		"action":  "save",
+		"to":      "bob@test.com",
+		"subject": "Draft Subject",
+	})
+
+	if result.Error != nil {
+		t.Fatalf("unexpected error: %v", result.Error)
+	}
+	if result.ContentType != envelope.ContentStructured {
+		t.Errorf("expected content_type=structured, got %s", result.ContentType)
+	}
+	content, ok := result.Content.(map[string]string)
+	if !ok {
+		t.Fatalf("expected map[string]string, got %T", result.Content)
+	}
+	if content["draft_id"] != "draft123" {
+		t.Errorf("expected draft_id=draft123, got %s", content["draft_id"])
+	}
+	if content["status"] != "saved" {
+		t.Errorf("expected status=saved, got %s", content["status"])
+	}
+	if client.lastTo != "bob@test.com" {
+		t.Errorf("expected to=bob@test.com, got %s", client.lastTo)
+	}
+	if client.lastBody != "Draft email body" {
+		t.Errorf("expected body match, got %s", client.lastBody)
+	}
+}
+
+func TestSaveDraftMissingTo(t *testing.T) {
+	client := &mockMailClient{draftID: "draft1"}
+	handler := NewHandler(client, nil)
+	input := envelope.New("input", "test")
+	input.Content = "body"
+	input.ContentType = envelope.ContentText
+
+	result := handler(input, map[string]string{"action": "save"})
+
+	testutil.AssertFatalError(t, result)
+}
+
+func TestSaveDraftEmptyBody(t *testing.T) {
+	client := &mockMailClient{draftID: "draft1"}
+	handler := NewHandler(client, nil)
+	input := envelope.New("input", "test")
+	input.ContentType = envelope.ContentText
+
+	result := handler(input, map[string]string{"action": "save", "to": "bob@test.com"})
+
+	testutil.AssertFatalError(t, result)
+}
+
+func TestSaveDraftWithThread(t *testing.T) {
+	client := &mockMailClient{draftID: "draft2"}
+	handler := NewHandler(client, nil)
+
+	input := envelope.New("input", "test")
+	input.Content = "Reply draft"
+	input.ContentType = envelope.ContentText
+
+	handler(input, map[string]string{
+		"action":    "save",
+		"to":        "bob@test.com",
+		"subject":   "Re: Test",
+		"thread_id": "thread456",
+	})
+
+	if client.lastThread != "thread456" {
+		t.Errorf("expected thread_id=thread456, got %s", client.lastThread)
+	}
+}
+
+func TestSaveDraftEnvelopeCompliance(t *testing.T) {
+	client := &mockMailClient{draftID: "draft3"}
+	handler := NewHandler(client, nil)
+
+	input := envelope.New("input", "test")
+	input.Content = "body text"
+	input.ContentType = envelope.ContentText
+
+	result := handler(input, map[string]string{"action": "save", "to": "a@b.com"})
+
+	testutil.AssertEnvelope(t, result, "mail", "save")
+	if result.ContentType != envelope.ContentStructured {
+		t.Errorf("expected content_type=structured, got %s", result.ContentType)
 	}
 }

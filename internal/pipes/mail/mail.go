@@ -3,22 +3,18 @@ package mail
 import (
 	"context"
 	"encoding/base64"
-	"encoding/json"
 	"fmt"
 	"log/slog"
-	"net/http"
 	"net/mail"
-	"net/url"
-	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/justinpbarnett/virgil/internal/envelope"
+	"github.com/justinpbarnett/virgil/internal/googleauth"
 	"github.com/justinpbarnett/virgil/internal/pipe"
-	"golang.org/x/oauth2"
-	"golang.org/x/oauth2/google"
+	gmailapi "google.golang.org/api/gmail/v1"
+	"google.golang.org/api/option"
 )
 
 type Message struct {
@@ -41,6 +37,7 @@ type MailClient interface {
 	SendMessage(ctx context.Context, to, cc, subject, body, threadID string) (string, error)
 	ModifyLabels(ctx context.Context, messageID string, addLabels, removeLabels []string) error
 	TrashMessage(ctx context.Context, messageID string) error
+	SaveDraft(ctx context.Context, to, cc, subject, body, threadID string) (string, error)
 }
 
 func NewHandler(client MailClient, logger *slog.Logger) pipe.Handler {
@@ -76,6 +73,8 @@ func NewHandler(client MailClient, logger *slog.Logger) pipe.Handler {
 			return handleLabel(client, input, flags, logger)
 		case "trash":
 			return handleTrash(client, input, flags, logger)
+		case "save":
+			return handleSave(client, input, flags, logger)
 		default:
 			out := envelope.New("mail", action)
 			out.Args = flags
@@ -316,230 +315,186 @@ func handleTrash(client MailClient, _ envelope.Envelope, flags map[string]string
 	return out
 }
 
-// GmailClient implements MailClient using the Gmail REST API.
+func handleSave(client MailClient, input envelope.Envelope, flags map[string]string, logger *slog.Logger) envelope.Envelope {
+	out := envelope.New("mail", "save")
+	out.Args = flags
+
+	to := flags["to"]
+	if to == "" {
+		out.Error = envelope.FatalError("to is required for save action")
+		out.Duration = time.Since(out.Timestamp)
+		return out
+	}
+
+	body := envelope.ContentToText(input.Content, input.ContentType)
+	if body == "" {
+		out.Error = envelope.FatalError("email body is required (pass content in input envelope)")
+		out.Duration = time.Since(out.Timestamp)
+		return out
+	}
+
+	subject := flags["subject"]
+	cc := flags["cc"]
+	threadID := flags["thread_id"]
+
+	logger.Debug("saving draft", "to", to, "subject", subject)
+	draftID, err := client.SaveDraft(context.Background(), to, cc, subject, body, threadID)
+	if err != nil {
+		logger.Error("save draft failed", "error", err)
+		out.Error = envelope.ClassifyError("mail API", err)
+		out.Duration = time.Since(out.Timestamp)
+		return out
+	}
+
+	logger.Info("draft saved", "draft_id", draftID)
+	out.Content = map[string]string{
+		"status":   "saved",
+		"draft_id": draftID,
+	}
+	out.ContentType = envelope.ContentStructured
+	out.Duration = time.Since(out.Timestamp)
+	return out
+}
+
+// GmailClient implements MailClient using the Gmail API.
 type GmailClient struct {
-	httpClient *http.Client
+	svc *gmailapi.Service
 }
 
 func NewGmailClient(configDir string) (*GmailClient, error) {
-	credPath := filepath.Join(configDir, "google-credentials.json")
-	credData, err := os.ReadFile(credPath)
-	if err != nil {
-		return nil, fmt.Errorf("reading credentials: %w (see SETUP.md)", err)
-	}
-
-	config, err := google.ConfigFromJSON(credData,
+	httpClient, err := googleauth.NewHTTPClient(configDir,
 		"https://www.googleapis.com/auth/gmail.readonly",
 		"https://www.googleapis.com/auth/gmail.send",
 		"https://www.googleapis.com/auth/gmail.modify",
 	)
 	if err != nil {
-		return nil, fmt.Errorf("parsing credentials: %w", err)
-	}
-
-	tokenPath := filepath.Join(configDir, "google-token.json")
-	tokenData, err := os.ReadFile(tokenPath)
-	if err != nil {
-		return nil, fmt.Errorf("reading token: %w (run token flow first, see SETUP.md)", err)
-	}
-
-	var token oauth2.Token
-	if err := json.Unmarshal(tokenData, &token); err != nil {
-		return nil, fmt.Errorf("parsing token: %w", err)
-	}
-
-	return &GmailClient{
-		httpClient: config.Client(context.Background(), &token),
-	}, nil
-}
-
-const gmailBase = "https://www.googleapis.com/gmail/v1/users/me"
-
-func (g *GmailClient) ListMessages(ctx context.Context, label string, maxResults int) ([]Message, error) {
-	u, _ := url.Parse(gmailBase + "/messages")
-	q := u.Query()
-	q.Set("labelIds", label)
-	q.Set("maxResults", strconv.Itoa(maxResults))
-	u.RawQuery = q.Encode()
-
-	var list struct {
-		Messages []struct {
-			ID       string `json:"id"`
-			ThreadID string `json:"threadId"`
-		} `json:"messages"`
-	}
-	if err := g.doJSON(ctx, "GET", u.String(), nil, &list); err != nil {
 		return nil, err
 	}
 
-	return g.fetchMessageMetadata(ctx, list.Messages)
+	ctx := context.Background()
+	svc, err := gmailapi.NewService(ctx, option.WithHTTPClient(httpClient))
+	if err != nil {
+		return nil, fmt.Errorf("creating gmail service: %w", err)
+	}
+
+	return &GmailClient{svc: svc}, nil
+}
+
+func (g *GmailClient) ListMessages(ctx context.Context, label string, maxResults int) ([]Message, error) {
+	result, err := g.svc.Users.Messages.List("me").
+		LabelIds(label).
+		MaxResults(int64(maxResults)).
+		Context(ctx).
+		Do()
+	if err != nil {
+		return nil, err
+	}
+
+	return g.fetchMessageMetadata(ctx, result.Messages)
 }
 
 func (g *GmailClient) GetMessage(ctx context.Context, messageID string) (*Message, error) {
-	u := fmt.Sprintf("%s/messages/%s?format=full", gmailBase, messageID)
-
-	var raw gmailMessage
-	if err := g.doJSON(ctx, "GET", u, nil, &raw); err != nil {
+	msg, err := g.svc.Users.Messages.Get("me", messageID).
+		Format("full").
+		Context(ctx).
+		Do()
+	if err != nil {
 		return nil, err
 	}
-
-	return raw.toMessage(), nil
+	m := mapMessageFull(msg)
+	return &m, nil
 }
 
 func (g *GmailClient) SearchMessages(ctx context.Context, query string, maxResults int) ([]Message, error) {
-	u, _ := url.Parse(gmailBase + "/messages")
-	q := u.Query()
-	q.Set("q", query)
-	q.Set("maxResults", strconv.Itoa(maxResults))
-	u.RawQuery = q.Encode()
-
-	var list struct {
-		Messages []struct {
-			ID       string `json:"id"`
-			ThreadID string `json:"threadId"`
-		} `json:"messages"`
-	}
-	if err := g.doJSON(ctx, "GET", u.String(), nil, &list); err != nil {
+	result, err := g.svc.Users.Messages.List("me").
+		Q(query).
+		MaxResults(int64(maxResults)).
+		Context(ctx).
+		Do()
+	if err != nil {
 		return nil, err
 	}
 
-	return g.fetchMessageMetadata(ctx, list.Messages)
+	return g.fetchMessageMetadata(ctx, result.Messages)
 }
 
-func (g *GmailClient) SendMessage(ctx context.Context, to, cc, subject, body, threadID string) (string, error) {
-	var msg strings.Builder
-	msg.WriteString(fmt.Sprintf("To: %s\r\n", to))
-	if cc != "" {
-		msg.WriteString(fmt.Sprintf("Cc: %s\r\n", cc))
-	}
-	msg.WriteString(fmt.Sprintf("Subject: %s\r\n", subject))
-	msg.WriteString("Content-Type: text/plain; charset=\"UTF-8\"\r\n")
-	msg.WriteString("\r\n")
-	msg.WriteString(body)
-
-	encoded := base64.URLEncoding.EncodeToString([]byte(msg.String()))
-
-	payload := map[string]string{"raw": encoded}
-	if threadID != "" {
-		payload["threadId"] = threadID
-	}
-
-	var result struct {
-		ID string `json:"id"`
-	}
-	if err := g.doJSON(ctx, "POST", gmailBase+"/messages/send", payload, &result); err != nil {
-		return "", err
-	}
-
-	return result.ID, nil
-}
-
-func (g *GmailClient) ModifyLabels(ctx context.Context, messageID string, addLabels, removeLabels []string) error {
-	u := fmt.Sprintf("%s/messages/%s/modify", gmailBase, messageID)
-	payload := map[string][]string{
-		"addLabelIds":    addLabels,
-		"removeLabelIds": removeLabels,
-	}
-	return g.doJSON(ctx, "POST", u, payload, nil)
-}
-
-func (g *GmailClient) TrashMessage(ctx context.Context, messageID string) error {
-	u := fmt.Sprintf("%s/messages/%s/trash", gmailBase, messageID)
-	return g.doJSON(ctx, "POST", u, nil, nil)
-}
-
-// doJSON performs an HTTP request, optionally encoding a JSON body, and decoding the response.
-func (g *GmailClient) doJSON(ctx context.Context, method, rawURL string, body any, dest any) error {
-	var reqBody *strings.Reader
-	if body != nil {
-		b, err := json.Marshal(body)
+func (g *GmailClient) fetchMessageMetadata(ctx context.Context, msgs []*gmailapi.Message) ([]Message, error) {
+	messages := make([]Message, 0, len(msgs))
+	for _, m := range msgs {
+		msg, err := g.svc.Users.Messages.Get("me", m.Id).
+			Format("metadata").
+			MetadataHeaders("From", "Subject", "Date").
+			Context(ctx).
+			Do()
 		if err != nil {
-			return fmt.Errorf("encoding request: %w", err)
+			return nil, fmt.Errorf("fetching message %s: %w", m.Id, err)
 		}
-		reqBody = strings.NewReader(string(b))
-	}
-
-	var req *http.Request
-	var err error
-	if reqBody != nil {
-		req, err = http.NewRequestWithContext(ctx, method, rawURL, reqBody)
-		req.Header.Set("Content-Type", "application/json")
-	} else {
-		req, err = http.NewRequestWithContext(ctx, method, rawURL, nil)
-	}
-	if err != nil {
-		return err
-	}
-
-	resp, err := g.httpClient.Do(req)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return fmt.Errorf("Gmail API returned %d", resp.StatusCode)
-	}
-
-	if dest != nil {
-		if err := json.NewDecoder(resp.Body).Decode(dest); err != nil {
-			return fmt.Errorf("decoding response: %w", err)
-		}
-	}
-
-	return nil
-}
-
-// fetchMessageMetadata fetches metadata for a list of message IDs.
-func (g *GmailClient) fetchMessageMetadata(ctx context.Context, ids []struct {
-	ID       string `json:"id"`
-	ThreadID string `json:"threadId"`
-}) ([]Message, error) {
-	messages := make([]Message, 0, len(ids))
-	for _, m := range ids {
-		u := fmt.Sprintf("%s/messages/%s?format=metadata&metadataHeaders=From&metadataHeaders=Subject&metadataHeaders=Date", gmailBase, m.ID)
-
-		var raw gmailMessage
-		if err := g.doJSON(ctx, "GET", u, nil, &raw); err != nil {
-			return nil, fmt.Errorf("fetching message %s: %w", m.ID, err)
-		}
-
-		msg := raw.toMessage()
-		messages = append(messages, *msg)
+		messages = append(messages, mapMessage(msg))
 	}
 	return messages, nil
 }
 
-// gmailMessage represents the raw Gmail API message structure.
-type gmailMessage struct {
-	ID       string   `json:"id"`
-	ThreadID string   `json:"threadId"`
-	LabelIDs []string `json:"labelIds"`
-	Snippet  string   `json:"snippet"`
-	Payload  struct {
-		Headers []struct {
-			Name  string `json:"name"`
-			Value string `json:"value"`
-		} `json:"headers"`
-		MimeType string `json:"mimeType"`
-		Body     struct {
-			Data string `json:"data"`
-		} `json:"body"`
-		Parts []struct {
-			MimeType string `json:"mimeType"`
-			Body     struct {
-				Data string `json:"data"`
-			} `json:"body"`
-		} `json:"parts"`
-	} `json:"payload"`
+func (g *GmailClient) SendMessage(ctx context.Context, to, cc, subject, body, threadID string) (string, error) {
+	msg := buildGmailMessage(to, cc, subject, body, threadID)
+	sent, err := g.svc.Users.Messages.Send("me", msg).Context(ctx).Do()
+	if err != nil {
+		return "", err
+	}
+	return sent.Id, nil
 }
 
-func (m *gmailMessage) toMessage() *Message {
-	msg := &Message{
-		ID:       m.ID,
-		ThreadID: m.ThreadID,
+func (g *GmailClient) ModifyLabels(ctx context.Context, messageID string, addLabels, removeLabels []string) error {
+	req := &gmailapi.ModifyMessageRequest{
+		AddLabelIds:    addLabels,
+		RemoveLabelIds: removeLabels,
+	}
+	_, err := g.svc.Users.Messages.Modify("me", messageID, req).Context(ctx).Do()
+	return err
+}
+
+func (g *GmailClient) TrashMessage(ctx context.Context, messageID string) error {
+	_, err := g.svc.Users.Messages.Trash("me", messageID).Context(ctx).Do()
+	return err
+}
+
+func (g *GmailClient) SaveDraft(ctx context.Context, to, cc, subject, body, threadID string) (string, error) {
+	msg := buildGmailMessage(to, cc, subject, body, threadID)
+	draft, err := g.svc.Users.Drafts.Create("me", &gmailapi.Draft{Message: msg}).Context(ctx).Do()
+	if err != nil {
+		return "", err
+	}
+	return draft.Id, nil
+}
+
+func buildGmailMessage(to, cc, subject, body, threadID string) *gmailapi.Message {
+	raw := buildRFC2822(to, cc, subject, body)
+	encoded := base64.URLEncoding.EncodeToString([]byte(raw))
+	msg := &gmailapi.Message{Raw: encoded}
+	if threadID != "" {
+		msg.ThreadId = threadID
+	}
+	return msg
+}
+
+func buildRFC2822(to, cc, subject, body string) string {
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("To: %s\r\n", to))
+	if cc != "" {
+		sb.WriteString(fmt.Sprintf("Cc: %s\r\n", cc))
+	}
+	sb.WriteString(fmt.Sprintf("Subject: %s\r\n", subject))
+	sb.WriteString("Content-Type: text/plain; charset=\"UTF-8\"\r\n")
+	sb.WriteString("\r\n")
+	sb.WriteString(body)
+	return sb.String()
+}
+
+func mapMessage(m *gmailapi.Message) Message {
+	msg := Message{
+		ID:       m.Id,
+		ThreadID: m.ThreadId,
 		Snippet:  m.Snippet,
-		Labels:   m.LabelIDs,
+		Labels:   m.LabelIds,
 		Read:     true,
 	}
 
@@ -556,22 +511,53 @@ func (m *gmailMessage) toMessage() *Message {
 		}
 	}
 
-	// Check if UNREAD label is present
-	for _, l := range m.LabelIDs {
+	for _, l := range m.LabelIds {
 		if l == "UNREAD" {
 			msg.Read = false
 			break
 		}
 	}
 
-	// Extract body from payload
-	msg.Body = m.extractBody()
-
 	return msg
 }
 
-// cleanDate parses a RFC 2822 date header and formats it simply:
-// "Today 2:47 PM", "Yesterday 9:00 AM", "Mar 4, 11:47 AM", "Mar 4 2024, 3:00 PM"
+func mapMessageFull(m *gmailapi.Message) Message {
+	msg := mapMessage(m)
+	msg.Body = extractBody(m.Payload)
+	return msg
+}
+
+func extractBody(payload *gmailapi.MessagePart) string {
+	if payload == nil {
+		return ""
+	}
+
+	if payload.Body != nil && payload.Body.Data != "" {
+		if decoded, err := base64.URLEncoding.DecodeString(payload.Body.Data); err == nil {
+			return string(decoded)
+		}
+	}
+
+	for _, part := range payload.Parts {
+		if part.MimeType == "text/plain" && part.Body != nil && part.Body.Data != "" {
+			if decoded, err := base64.URLEncoding.DecodeString(part.Body.Data); err == nil {
+				return string(decoded)
+			}
+		}
+	}
+
+	for _, part := range payload.Parts {
+		if part.MimeType == "text/html" && part.Body != nil && part.Body.Data != "" {
+			if decoded, err := base64.URLEncoding.DecodeString(part.Body.Data); err == nil {
+				return string(decoded)
+			}
+		}
+	}
+
+	return ""
+}
+
+// cleanDate parses a RFC 2822 date header and formats it simply.
 func cleanDate(raw string) string {
 	t, err := mail.ParseDate(raw)
 	if err != nil {
@@ -596,8 +582,7 @@ func cleanDate(raw string) string {
 	}
 }
 
-// cleanAddress extracts a display name from a RFC 2822 address header, falling
-// back to the bare email address, so angle brackets never reach the renderer.
+// cleanAddress extracts a display name from a RFC 2822 address header.
 func cleanAddress(raw string) string {
 	if addr, err := mail.ParseAddress(raw); err == nil {
 		if addr.Name != "" {
@@ -606,33 +591,4 @@ func cleanAddress(raw string) string {
 		return addr.Address
 	}
 	return raw
-}
-
-func (m *gmailMessage) extractBody() string {
-	// Try direct body first (simple messages)
-	if m.Payload.Body.Data != "" {
-		if decoded, err := base64.URLEncoding.DecodeString(m.Payload.Body.Data); err == nil {
-			return string(decoded)
-		}
-	}
-
-	// Try parts (multipart messages) — prefer text/plain
-	for _, part := range m.Payload.Parts {
-		if part.MimeType == "text/plain" && part.Body.Data != "" {
-			if decoded, err := base64.URLEncoding.DecodeString(part.Body.Data); err == nil {
-				return string(decoded)
-			}
-		}
-	}
-
-	// Fall back to text/html
-	for _, part := range m.Payload.Parts {
-		if part.MimeType == "text/html" && part.Body.Data != "" {
-			if decoded, err := base64.URLEncoding.DecodeString(part.Body.Data); err == nil {
-				return string(decoded)
-			}
-		}
-	}
-
-	return ""
 }
