@@ -15,6 +15,10 @@ import (
 	"github.com/justinpbarnett/virgil/internal/runtime"
 )
 
+// defaultSpecPipe is the pipe name used for speculative execution and memory
+// prefetch. Chat is the most common destination for user signals.
+const defaultSpecPipe = "chat"
+
 // writeSSEEvent marshals data as JSON and writes an SSE event to w.
 func writeSSEEvent(w io.Writer, flusher http.Flusher, eventType string, data any) {
 	encoded, _ := json.Marshal(data)
@@ -121,13 +125,13 @@ func (s *Server) handleSignal(w http.ResponseWriter, r *http.Request) {
 
 	// Start memory prefetch concurrently with routing; chat is the most
 	// common destination so we prefetch for that pipe by default.
-	memCh := s.runtime.PrefetchMemory(seed, "chat")
+	memCh := s.runtime.PrefetchMemory(seed, defaultSpecPipe)
 
 	route := s.router.Route(r.Context(), req.Text, parsed)
 	plan := s.planner.Plan(route, parsed)
 
 	var execSeed envelope.Envelope
-	if route.Pipe == "chat" && len(plan.Steps) == 1 {
+	if route.Pipe == defaultSpecPipe && len(plan.Steps) == 1 {
 		execSeed = <-memCh
 		plan.SkipFirstMemoryInjection = true
 	} else {
@@ -162,10 +166,10 @@ func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request, req signalReq
 	// Prefetch memory for the chat pipe concurrently with routing. The channel
 	// is buffered (capacity 1) so the background goroutine never blocks if its
 	// result is not consumed (e.g. routing resolves to a non-chat pipe).
-	memCh := s.runtime.PrefetchMemory(seed, "chat")
+	memCh := s.runtime.PrefetchMemory(seed, defaultSpecPipe)
 
 	// Start speculative chat stream: begin the AI call immediately, buffer
-	// its output until routing confirms the route is "chat".
+	// its output until routing confirms the route is chat.
 	specCtx, specCancel := context.WithCancel(r.Context())
 	ss := &specSink{w: w, flusher: flusher}
 	specDone := make(chan envelope.Envelope, 1)
@@ -180,7 +184,7 @@ func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request, req signalReq
 			return
 		}
 		chatPlan := runtime.Plan{
-			Steps:                    []runtime.Step{{Pipe: "chat"}},
+			Steps:                    []runtime.Step{{Pipe: defaultSpecPipe}},
 			SkipFirstMemoryInjection: true,
 		}
 		result := s.runtime.ExecuteStream(specCtx, chatPlan, chatSeed, ss.write)
@@ -191,10 +195,10 @@ func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request, req signalReq
 	route := s.router.Route(r.Context(), req.Text, parsed)
 	plan := s.planner.Plan(route, parsed)
 
-	if route.Pipe == "chat" && len(plan.Steps) == 1 {
+	if route.Pipe == defaultSpecPipe && len(plan.Steps) == 1 {
 		// Routing confirmed chat — send route event, flush buffered chunks,
 		// then let the speculative stream complete.
-		writeSSEEvent(w, flusher, envelope.SSEEventRoute, map[string]any{"pipe": "chat", "layer": route.Layer})
+		writeSSEEvent(w, flusher, envelope.SSEEventRoute, map[string]any{"pipe": defaultSpecPipe, "layer": route.Layer})
 
 		ss.goLive()
 		result := <-specDone
