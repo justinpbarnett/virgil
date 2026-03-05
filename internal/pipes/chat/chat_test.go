@@ -60,7 +60,7 @@ func TestChatProviderError(t *testing.T) {
 	handler := NewHandler(provider, "test system prompt", nil, nil)
 
 	input := envelope.New("input", "test")
-	input.Content = "hello"
+	input.Content = "tell me about the weather"
 	input.ContentType = "text"
 
 	result := handler(input, nil)
@@ -77,7 +77,7 @@ func TestStreamResponse(t *testing.T) {
 	handler := NewStreamHandler(provider, "test system prompt", nil, nil)
 
 	input := envelope.New("input", "test")
-	input.Content = "hello"
+	input.Content = "tell me about the weather"
 	input.ContentType = "text"
 
 	var received []string
@@ -179,7 +179,7 @@ func TestStreamProviderError(t *testing.T) {
 	handler := NewStreamHandler(provider, "test system prompt", nil, nil)
 
 	input := envelope.New("input", "test")
-	input.Content = "hello"
+	input.Content = "tell me about the weather"
 	input.ContentType = "text"
 
 	var received []string

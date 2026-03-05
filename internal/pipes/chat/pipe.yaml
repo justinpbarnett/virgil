@@ -4,11 +4,17 @@ category: general
 streaming: true
 timeout: 3m
 provider: gemini
-model: gemini-3.1-pro
+model: gemini-3.1-pro-preview
 max_turns: 0
 
 triggers:
-  exact: []
+  exact:
+    - hey
+    - hi
+    - hello
+    - hey virgil
+    - hi virgil
+    - hello virgil
   keywords:
     - chat
     - talk

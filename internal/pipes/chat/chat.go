@@ -3,6 +3,7 @@ package chat
 import (
 	"context"
 	"fmt"
+	"hash/fnv"
 	"log/slog"
 	"maps"
 	"strings"
@@ -13,6 +14,78 @@ import (
 	"github.com/justinpbarnett/virgil/internal/envelope"
 	"github.com/justinpbarnett/virgil/internal/pipe"
 )
+
+// greetingSignals are short signals that get a canned response without AI.
+var greetingSignals = map[string]bool{
+	"hey": true, "hi": true, "hello": true,
+	"hey virgil": true, "hi virgil": true, "hello virgil": true,
+}
+
+// greetingResponses are cycled through deterministically per-signal.
+var greetingResponses = []string{
+	"I am here. Where to?",
+	"At your service.",
+	"What do you need?",
+	"Ready when you are.",
+}
+
+// greetingResponse returns a canned response if the signal is a greeting.
+func greetingResponse(signal string) (string, bool) {
+	if !greetingSignals[strings.ToLower(strings.TrimSpace(signal))] {
+		return "", false
+	}
+	h := fnv.New32a()
+	h.Write([]byte(time.Now().Format("2006-01-02T15")))
+	idx := int(h.Sum32()) % len(greetingResponses)
+	return greetingResponses[idx], true
+}
+
+// streamGreeting simulates streaming by pausing briefly, then sending the
+// response word by word with small delays to feel like live generation.
+func streamGreeting(ctx context.Context, resp string, sink func(string)) {
+	words := strings.Fields(resp)
+	if len(words) == 0 {
+		return
+	}
+
+	// Brief pause before first token.
+	select {
+	case <-ctx.Done():
+		return
+	case <-time.After(300 * time.Millisecond):
+	}
+
+	for i, w := range words {
+		if i > 0 {
+			w = " " + w
+		}
+		sink(w)
+		if i < len(words)-1 {
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(40 * time.Millisecond):
+			}
+		}
+	}
+}
+
+// handleGreeting checks the raw signal for a greeting and returns a canned
+// response envelope. Returns (envelope, true) if handled, (zero, false) otherwise.
+func handleGreeting(input envelope.Envelope, flags map[string]string, logger *slog.Logger) (envelope.Envelope, bool) {
+	raw := envelope.ContentToText(input.Content, input.ContentType)
+	resp, ok := greetingResponse(raw)
+	if !ok {
+		return envelope.Envelope{}, false
+	}
+	out := envelope.New("chat", "respond")
+	out.Args = flags
+	out.Content = resp
+	out.ContentType = envelope.ContentText
+	out.Duration = time.Since(out.Timestamp)
+	logger.Info("responded", "greeting", true)
+	return out, true
+}
 
 // CompileSystemPrompts extracts system prompt templates from the pipe config.
 // These are plain strings (not Go templates) since system prompts don't need
@@ -96,6 +169,12 @@ func NewStreamHandler(provider bridge.StreamingProvider, systemPrompt string, pr
 		logger = slog.Default()
 	}
 	return func(ctx context.Context, input envelope.Envelope, flags map[string]string, sink func(chunk string)) envelope.Envelope {
+		// Greetings: check raw signal before prepareChat transforms it.
+		if out, ok := handleGreeting(input, flags, logger); ok {
+			streamGreeting(ctx, out.Content.(string), sink)
+			return out
+		}
+
 		out, content, empty := prepareChat(input, flags)
 		if empty {
 			return out
@@ -127,6 +206,11 @@ func NewHandler(provider bridge.Provider, systemPrompt string, prompts map[strin
 		logger = slog.Default()
 	}
 	return func(input envelope.Envelope, flags map[string]string) envelope.Envelope {
+		// Greetings: check raw signal before prepareChat transforms it.
+		if out, ok := handleGreeting(input, flags, logger); ok {
+			return out
+		}
+
 		out, content, empty := prepareChat(input, flags)
 		if empty {
 			return out
