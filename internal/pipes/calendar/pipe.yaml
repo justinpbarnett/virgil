@@ -82,7 +82,7 @@ vocabulary:
     calendar: calendar
   modifiers:
     next: next
-    recent: recent
+    recent: latest
     today: today
     tomorrow: tomorrow
     "this week": this-week
