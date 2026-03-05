@@ -60,6 +60,9 @@ type model struct {
 	reconnecting   bool
 	inputQueue     []string
 
+	// Pipeline step tracking for panel display
+	pipelineSteps []string
+
 	// Session cost accumulator — reset on :clear and app start
 	sessionCost float64
 
@@ -98,6 +101,7 @@ type streamStepMsg struct {
 }
 
 type streamRouteMsg struct {
+	pipe     string
 	streamID int
 	reader   *sse.Reader
 }
@@ -119,7 +123,7 @@ func RunSession(serverAddr string) error {
 		connected:  true,
 	}
 
-	p := tea.NewProgram(m, tea.WithAltScreen())
+	p := tea.NewProgram(m, tea.WithAltScreen(), tea.WithMouseCellMotion())
 	_, err := p.Run()
 	return err
 }
@@ -226,12 +230,18 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, connectVoiceInput(m.serverAddr)
 
 	case streamRouteMsg:
+		if msg.streamID == m.activeStreamID {
+			m.pipelineSteps = []string{msg.pipe}
+			m.showPipelinePanel()
+		}
 		return m, readNextEvent(msg.reader, msg.streamID)
 
 	case streamStepMsg:
 		if msg.streamID != m.activeStreamID {
 			return m, readNextEvent(msg.reader, msg.streamID)
 		}
+		m.pipelineSteps = append(m.pipelineSteps, msg.pipe)
+		m.showPipelinePanel()
 		var cmds []tea.Cmd
 		if m.currentVoiceMode == config.VoiceModeSteps || m.currentVoiceMode == config.VoiceModeFull {
 			ann := voice.StepAnnouncement(msg.pipe)
@@ -378,6 +388,14 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	case tea.KeyDown:
 		m.input.HistoryDown()
+		return m, nil
+
+	case tea.KeyPgUp:
+		m.stream.ScrollUp(m.stream.PageSize() / 2)
+		return m, nil
+
+	case tea.KeyPgDown:
+		m.stream.ScrollDown(m.stream.PageSize() / 2)
 		return m, nil
 
 	case tea.KeyEnter:
@@ -539,6 +557,7 @@ func (m model) fetchStatus() tea.Cmd {
 
 func (m model) sendSignal(text string) (tea.Model, tea.Cmd) {
 	m.keysShown = false
+	m.pipelineSteps = nil
 	m.stream.Append(KindInput, SymPrompt+" "+text)
 	m.waiting = true
 	m.pending.Reset()
@@ -564,7 +583,28 @@ func (m model) handleStreamChunk(msg streamChunkMsg) (tea.Model, tea.Cmd) {
 	}
 	m.pending.WriteString(msg.text)
 	m.waiting = false
+	m.stream.SetPending(m.pending.String())
 	return m, readNextEvent(msg.reader, msg.streamID)
+}
+
+func (m *model) formatPipelineSteps() string {
+	var b strings.Builder
+	for i, step := range m.pipelineSteps {
+		prefix := SymCheck + " "
+		if i == len(m.pipelineSteps)-1 {
+			prefix = SymActive + " "
+		}
+		b.WriteString(prefix + step + "\n")
+	}
+	return b.String()
+}
+
+func (m *model) showPipelinePanel() {
+	m.panel.SetContent("pipeline", m.formatPipelineSteps())
+	if !m.panel.IsOpen() {
+		m.panel.Toggle()
+		m.updateLayout()
+	}
 }
 
 func (m model) handleStreamDone(msg streamDoneMsg) (tea.Model, tea.Cmd) {
@@ -575,6 +615,7 @@ func (m model) handleStreamDone(msg streamDoneMsg) (tea.Model, tea.Cmd) {
 	m.cancelFn = nil
 	m.lastEscTime = time.Time{}
 	m.keysShown = false
+	m.pipelineSteps = nil
 
 	if msg.err == nil && msg.env.Usage != nil {
 		m.sessionCost += msg.env.Usage.Cost
@@ -598,6 +639,7 @@ func (m model) handleStreamDone(msg streamDoneMsg) (tea.Model, tea.Cmd) {
 		m.voiceStreamID = 0
 	}
 
+	m.stream.ClearPending()
 	if msg.err != nil {
 		m.stream.Append(KindError, fmt.Sprintf("error: %v", msg.err))
 	} else if pendingText != "" {
@@ -799,7 +841,11 @@ func readNextEventSync(reader *sse.Reader, streamID int) tea.Msg {
 			return streamDoneMsg{env: env, streamID: streamID}
 
 		case envelope.SSEEventRoute:
-			return streamRouteMsg{streamID: streamID, reader: reader}
+			var route struct {
+				Pipe string `json:"pipe"`
+			}
+			_ = json.Unmarshal([]byte(event.Data), &route)
+			return streamRouteMsg{pipe: route.Pipe, streamID: streamID, reader: reader}
 
 		case envelope.SSEEventStep:
 			var step struct {

@@ -28,12 +28,14 @@ type StreamEntry struct {
 // Stream is a bubbletea sub-model that renders a scrollable viewport of
 // styled message entries.
 type Stream struct {
-	viewport  viewport.Model
-	entries   []StreamEntry
-	theme     *Theme
-	renderer  *glamour.TermRenderer
-	maxBuffer int
-	atBottom  bool
+	viewport    viewport.Model
+	entries     []StreamEntry
+	pending     string // live-updating text shown below entries while streaming
+	entriesHTML string // cached render of entries (invalidated on Append/Clear/SetSize)
+	theme       *Theme
+	renderer    *glamour.TermRenderer
+	maxBuffer   int
+	atBottom    bool
 }
 
 // NewStream returns an initialised Stream bound to the given theme.
@@ -56,7 +58,8 @@ func (s *Stream) Append(kind StreamEntryKind, text string) {
 		s.entries = s.entries[len(s.entries)-s.maxBuffer:]
 	}
 	wasAtBottom := s.atBottom
-	s.render()
+	s.renderEntries()
+	s.compose()
 	if wasAtBottom {
 		s.viewport.GotoBottom()
 	}
@@ -75,7 +78,8 @@ func (s *Stream) SetSize(width, height int) {
 			s.renderer = r
 		}
 	}
-	s.render()
+	s.renderEntries()
+	s.compose()
 }
 
 // Update delegates input handling to the embedded viewport and tracks whether
@@ -92,22 +96,58 @@ func (s Stream) View() string {
 	return s.viewport.View()
 }
 
+// PageSize returns the number of visible lines in the stream viewport.
+func (s *Stream) PageSize() int {
+	return s.viewport.Height
+}
+
+// ScrollUp scrolls the viewport up by n lines.
+func (s *Stream) ScrollUp(n int) {
+	s.viewport.ScrollUp(n)
+	s.atBottom = s.viewport.AtBottom()
+}
+
+// ScrollDown scrolls the viewport down by n lines.
+func (s *Stream) ScrollDown(n int) {
+	s.viewport.ScrollDown(n)
+	s.atBottom = s.viewport.AtBottom()
+}
+
+// SetPending sets the live-updating text shown at the bottom of the stream
+// while a response is being streamed. Only re-renders the pending suffix,
+// not the full entry list.
+func (s *Stream) SetPending(text string) {
+	s.pending = text
+	wasAtBottom := s.atBottom
+	s.compose()
+	if wasAtBottom {
+		s.viewport.GotoBottom()
+	}
+}
+
+// ClearPending removes the live-updating pending text.
+func (s *Stream) ClearPending() {
+	s.pending = ""
+}
+
 // Clear removes all entries and resets the viewport.
 func (s *Stream) Clear() {
 	s.entries = nil
-	s.render()
+	s.pending = ""
+	s.entriesHTML = ""
+	s.compose()
 }
 
-// render rebuilds the full viewport content from entries, styling each one
-// according to its kind.
-func (s *Stream) render() {
+// renderEntries rebuilds the cached entry content. Called only when entries
+// change (Append, Clear, SetSize), not on every pending text update.
+func (s *Stream) renderEntries() {
 	var b strings.Builder
+	w := s.viewport.Width
 	for i, e := range s.entries {
 		if i > 0 {
 			b.WriteByte('\n')
 		}
 		var styled string
-		w := s.viewport.Width
 		switch e.Kind {
 		case KindInput:
 			styled = s.theme.UserInput.Render(wordwrap.String(e.Text, w))
@@ -130,5 +170,22 @@ func (s *Stream) render() {
 		}
 		b.WriteString(styled)
 	}
+	s.entriesHTML = b.String()
+}
+
+// compose joins the cached entry content with the pending text and updates
+// the viewport. This is cheap — just string concatenation.
+func (s *Stream) compose() {
+	if s.pending == "" {
+		s.viewport.SetContent(s.entriesHTML)
+		return
+	}
+	var b strings.Builder
+	b.WriteString(s.entriesHTML)
+	if b.Len() > 0 {
+		b.WriteByte('\n')
+	}
+	w := s.viewport.Width
+	b.WriteString(s.theme.Response.Render(wordwrap.String(s.pending, w)))
 	s.viewport.SetContent(b.String())
 }
