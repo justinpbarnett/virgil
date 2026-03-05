@@ -175,7 +175,7 @@ func injectProviderUsage(result *envelope.Envelope, ur bridge.UsageReporter) {
 // Fatal writes a fatal error envelope to stdout and exits with code 1.
 // Used by pipe main.go for startup failures (e.g., can't open DB).
 func Fatal(pipeName, message string) {
-	json.NewEncoder(os.Stdout).Encode(envelope.NewFatalError(pipeName, message))
+	_ = json.NewEncoder(os.Stdout).Encode(envelope.NewFatalError(pipeName, message))
 	os.Exit(1)
 }
 

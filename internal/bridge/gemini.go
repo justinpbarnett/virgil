@@ -31,7 +31,7 @@ func GeminiProvider(cfg ProviderConfig) (*geminiProvider, error) {
 	if key == "" {
 		return nil, fmt.Errorf("GEMINI_API_KEY not set")
 	}
-	model, maxTokens, logger := resolveDefaults(cfg, "gemini-2.0-flash")
+	model, maxTokens, logger := resolveDefaults(cfg, "gemini-3-flash-preview")
 	return &geminiProvider{
 		apiKey:    key,
 		model:     model,

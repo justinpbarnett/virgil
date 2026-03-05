@@ -83,7 +83,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	srv.Shutdown(context.Background())
+	_ = srv.Shutdown(context.Background())
 
 	token, err := config.Exchange(context.Background(), code)
 	if err != nil {

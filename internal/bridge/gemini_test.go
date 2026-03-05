@@ -76,7 +76,7 @@ func TestGeminiProviderComplete(t *testing.T) {
 	defer srv.Close()
 
 	t.Setenv("GEMINI_API_KEY", "test-key")
-	p, _ := GeminiProvider(ProviderConfig{Name: "gemini", Model: "gemini-2.0-flash"})
+	p, _ := GeminiProvider(ProviderConfig{Name: "gemini", Model: "gemini-3-flash-preview"})
 	p.baseURL = srv.URL
 
 	result, err := p.Complete(context.Background(), "system", "user")
@@ -95,7 +95,7 @@ func TestGeminiProviderComplete(t *testing.T) {
 		t.Errorf("expected 60 output tokens, got %d", usage.OutputTokens)
 	}
 	if usage.Cost == 0 {
-		t.Error("expected non-zero cost for known model gemini-2.0-flash")
+		t.Error("expected non-zero cost for known model gemini-3-flash-preview")
 	}
 }
 
