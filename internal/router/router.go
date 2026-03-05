@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"strings"
 
+	"github.com/justinpbarnett/virgil/internal/nlp"
 	"github.com/justinpbarnett/virgil/internal/parser"
 	"github.com/justinpbarnett/virgil/internal/pipe"
 )
@@ -94,7 +95,7 @@ func (r *Router) Route(ctx context.Context, signal string, parsed parser.ParsedS
 	// are keywords for each pipe? This works better than pipe coverage
 	// (hits / pipe_keywords) for short signals like "hey" or "check calendar".
 	words := tokenize(lower)
-	scoringWords := filterStopWords(words)
+	scoringWords := nlp.Filter(words)
 	scores := make(map[string]int)
 	var keywordsFound []string
 
@@ -244,23 +245,6 @@ func (r *Router) scoreParsedMatch(def pipe.Definition, parsed parser.ParsedSigna
 	return score / checks
 }
 
-// routerStopWords are filtered from signals before keyword scoring.
-// Includes common function words and the application name so they don't
-// dilute keyword scores for short signals like "hey virgil".
-var routerStopWords = map[string]bool{
-	"a": true, "an": true, "the": true, "my": true,
-	"on": true, "in": true, "at": true, "to": true,
-	"for": true, "of": true, "is": true, "that": true,
-	"about": true, "do": true, "i": true, "it": true,
-	"me": true, "and": true, "or": true, "but": true,
-	"with": true, "from": true, "post": true,
-	"what": true, "what's": true, "how": true, "when": true, "where": true,
-	"can": true, "does": true, "did": true, "will": true,
-	"you": true, "could": true, "would": true, "should": true,
-	"are": true, "was": true, "were": true, "has": true, "have": true,
-	"virgil": true,
-}
-
 // tokenize splits s into cleaned tokens. Callers must pass a lowercased string.
 func tokenize(s string) []string {
 	fields := strings.Fields(s)
@@ -270,13 +254,3 @@ func tokenize(s string) []string {
 	return fields
 }
 
-// filterStopWords returns tokens that are not stop words.
-func filterStopWords(words []string) []string {
-	result := make([]string, 0, len(words))
-	for _, w := range words {
-		if !routerStopWords[w] {
-			result = append(result, w)
-		}
-	}
-	return result
-}
