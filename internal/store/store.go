@@ -98,13 +98,19 @@ func Open(path string) (*Store, error) {
 		return nil, fmt.Errorf("enabling foreign keys: %w", err)
 	}
 
-	db.Exec("PRAGMA journal_mode=WAL")
-	db.Exec("PRAGMA synchronous=NORMAL")
-	db.Exec("PRAGMA cache_size=-8000") // 8MB cache
-	db.Exec("PRAGMA busy_timeout=5000")
+	if _, err := db.Exec("PRAGMA journal_mode=WAL"); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("enabling WAL mode: %w", err)
+	}
+	if _, err := db.Exec("PRAGMA busy_timeout=5000"); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("setting busy timeout: %w", err)
+	}
+	db.Exec("PRAGMA synchronous=NORMAL")  //nolint:errcheck
+	db.Exec("PRAGMA cache_size=-8000")    //nolint:errcheck
 
 	db.SetMaxOpenConns(1)
-	db.SetMaxIdleConns(4)
+	db.SetMaxIdleConns(1)
 
 	if err := migrate(db); err != nil {
 		db.Close()
@@ -392,17 +398,8 @@ func (s *Store) Search(query string, limit int, sort string) ([]Entry, error) {
 			ORDER BY m.created_at DESC
 			LIMIT ?
 		`, query, limit)
-	} else if s.searchRankStmt != nil {
-		rows, err = s.searchRankStmt.Query(query, limit)
 	} else {
-		rows, err = s.db.Query(`
-			SELECT m.rowid, m.content, m.tags, m.created_at, m.updated_at
-			FROM memories_fts f
-			JOIN memories m ON m.rowid = f.rowid
-			WHERE memories_fts MATCH ? AND m.kind = 'explicit'
-			ORDER BY rank
-			LIMIT ?
-		`, query, limit)
+		rows, err = s.searchRankStmt.Query(query, limit)
 	}
 	if err != nil {
 		return nil, err
@@ -519,10 +516,10 @@ func (s *Store) SearchInvocations(query, pipeName string, limit int, since time.
 	var err error
 
 	// Use prepared statements for the common no-pipe-filter cases
-	if pipeName == "" && s.searchInvStmt != nil {
+	if pipeName == "" {
 		if since.IsZero() {
 			rows, err = s.searchInvStmt.Query(query, limit)
-		} else if s.searchInvSinceStmt != nil {
+		} else {
 			rows, err = s.searchInvSinceStmt.Query(query, since.UnixNano(), limit)
 		}
 	}
@@ -584,15 +581,7 @@ func parseStateID(id string) (namespace, key string) {
 
 // listAllState returns the most recent working state entries across all namespaces.
 func (s *Store) listAllState() ([]StateEntry, error) {
-	var rows *sql.Rows
-	var err error
-	if s.listAllStateStmt != nil {
-		rows, err = s.listAllStateStmt.Query()
-	} else {
-		rows, err = s.db.Query(
-			"SELECT id, content, updated_at FROM memories WHERE kind = 'working_state' ORDER BY updated_at DESC LIMIT 100",
-		)
-	}
+	rows, err := s.listAllStateStmt.Query()
 	if err != nil {
 		return nil, err
 	}
