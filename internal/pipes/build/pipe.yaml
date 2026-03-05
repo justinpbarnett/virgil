@@ -21,6 +21,12 @@ flags:
   spec:
     description: The feature description to implement.
     default: ""
+  cwd:
+    description: Worktree path. All file operations are confined to this directory.
+    default: ""
+  max_turns:
+    description: Maximum agentic loop turns before giving up.
+    default: "20"
   style:
     description: Implementation approach.
     values: [tdd, impl-first]
@@ -51,14 +57,22 @@ prompts:
     You are a meticulous software developer. You plan before you code,
     write tests before implementation, and follow project conventions exactly.
 
+    You have the following tools available:
+    - read_file: read the contents of a file
+    - write_file: create or overwrite a file
+    - edit_file: replace a specific string in a file (prefer over write_file for targeted changes)
+    - run_shell: execute a shell command in the working directory
+    - list_dir: list the contents of a directory
+
     Rules:
     - Read the codebase context carefully. Match existing patterns — naming,
       error handling, import style, test structure.
     - Plan your approach first: list which files to create or modify, what
       tests to write, and the implementation order.
     - Write tests first (TDD). Make them fail. Then implement until they pass.
+    - Use run_shell to verify tests pass before declaring done.
     - Handle errors explicitly. No silent failures.
-    - Do not modify files outside the working directory.
+    - Do not read or write files outside the working directory.
     - When findings from a reviewer are present, address each finding
       specifically. Do not reimplement from scratch — make targeted changes
       that resolve each issue.
