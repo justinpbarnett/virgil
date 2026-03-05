@@ -229,7 +229,7 @@ func createNewSchema(db *sql.DB) error {
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback()
+	defer tx.Rollback() //nolint:errcheck
 
 	if _, err := tx.Exec(newSchemaDDL); err != nil {
 		return err
@@ -245,7 +245,7 @@ func migrateOldSchema(db *sql.DB) error {
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback()
+	defer tx.Rollback() //nolint:errcheck
 
 	if _, err := tx.Exec(newSchemaDDL); err != nil {
 		return err

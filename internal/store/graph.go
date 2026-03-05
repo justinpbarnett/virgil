@@ -93,7 +93,7 @@ func (s *Store) CreateEdges(edges []Edge) error {
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback()
+	defer tx.Rollback() //nolint:errcheck
 
 	now := time.Now().Unix()
 	for _, edge := range edges {

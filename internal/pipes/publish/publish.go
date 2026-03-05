@@ -191,7 +191,7 @@ func NewHandler(executor Executor, logger *slog.Logger) pipe.Handler {
 		draft := flags["draft"] == "true"
 
 		// Check for existing PR
-		prListOut, _, exitCode, err := executor.Execute(ctx, fmt.Sprintf("gh pr list --head %s --json number,url", branch), cwd)
+		prListOut, _, _, err := executor.Execute(ctx, fmt.Sprintf("gh pr list --head %s --json number,url", branch), cwd)
 		if err != nil {
 			out.Duration = time.Since(out.Timestamp)
 			out.Error = &envelope.EnvelopeError{
@@ -396,7 +396,7 @@ func parsePRList(output string) []ghPR {
 func extractPRNumber(url string) int {
 	last := url[strings.LastIndex(url, "/")+1:]
 	var n int
-	fmt.Sscanf(last, "%d", &n)
+	_, _ = fmt.Sscanf(last, "%d", &n)
 	return n
 }
 

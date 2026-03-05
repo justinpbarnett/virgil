@@ -522,7 +522,7 @@ func (b *memoryBackend) Extract(_ context.Context, candidates []Candidate, _ str
 	for _, c := range candidates {
 		// Parse memory ID
 		var memID int64
-		fmt.Sscanf(c.Location.Path, "memory:%d", &memID)
+		_, _ = fmt.Sscanf(c.Location.Path, "memory:%d", &memID)
 
 		e, ok := entryMap[memID]
 		if !ok {
