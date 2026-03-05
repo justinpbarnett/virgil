@@ -103,10 +103,9 @@ func TestCalendarNoClient(t *testing.T) {
 func TestCalendarDefaultRange(t *testing.T) {
 	var receivedMin, receivedMax time.Time
 	client := &mockCalendarClient{}
-	handler := NewHandler(&mockCalendarClient{}, nil)
 
 	// Override to capture range
-	handler = func(input envelope.Envelope, flags map[string]string) envelope.Envelope {
+	handler := func(input envelope.Envelope, flags map[string]string) envelope.Envelope {
 		rangeFlag := flags["range"]
 		if rangeFlag == "" {
 			rangeFlag = "today"

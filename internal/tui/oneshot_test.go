@@ -27,13 +27,13 @@ func TestRunOneShotSuccess(t *testing.T) {
 
 		body, _ := io.ReadAll(r.Body)
 		var req map[string]string
-		json.Unmarshal(body, &req)
+		_ = json.Unmarshal(body, &req)
 		if req["text"] != "hello" {
 			t.Errorf("expected text=hello, got %s", req["text"])
 		}
 
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(env)
+		_ = json.NewEncoder(w).Encode(env)
 	}))
 	defer server.Close()
 
@@ -68,7 +68,7 @@ func TestRunOneShotError(t *testing.T) {
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(env)
+		_ = json.NewEncoder(w).Encode(env)
 	}))
 	defer server.Close()
 
@@ -97,7 +97,7 @@ func TestRunOneShotListContent(t *testing.T) {
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(env)
+		_ = json.NewEncoder(w).Encode(env)
 	}))
 	defer server.Close()
 

@@ -153,7 +153,7 @@ func mockJiraServer(t *testing.T) *httptest.Server {
 	// PUT update issue
 	mux.HandleFunc("PUT /rest/api/3/issue/PROJ-123", func(w http.ResponseWriter, r *http.Request) {
 		var body map[string]any
-		json.NewDecoder(r.Body).Decode(&body)
+		_ = json.NewDecoder(r.Body).Decode(&body)
 		fields, _ := body["fields"].(map[string]any)
 
 		// Simulate a non-editable field error
