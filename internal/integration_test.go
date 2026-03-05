@@ -39,6 +39,18 @@ func (m *mockCalendarClient) GetEvents(_ context.Context, _ string, _, _ time.Ti
 	}, nil
 }
 
+func (m *mockCalendarClient) CreateEvent(_ context.Context, _ string, title string, start, end time.Time, location, description string) (*calendarPipe.Event, error) {
+	return &calendarPipe.Event{ID: "new1", Title: title}, nil
+}
+
+func (m *mockCalendarClient) UpdateEvent(_ context.Context, _ string, eventID, title string, _, _ time.Time, _, _ string) (*calendarPipe.Event, error) {
+	return &calendarPipe.Event{ID: eventID, Title: title}, nil
+}
+
+func (m *mockCalendarClient) DeleteEvent(_ context.Context, _, _ string) error {
+	return nil
+}
+
 func setupIntegrationServer(t *testing.T) http.Handler {
 	t.Helper()
 
