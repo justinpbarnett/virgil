@@ -1,22 +1,19 @@
 package bridge
 
 import (
-	"bufio"
-	"bytes"
 	"context"
-	"encoding/json"
 	"fmt"
-	"io"
 	"log/slog"
-	"net/http"
 	"os"
 	"strings"
+
+	"github.com/anthropics/anthropic-sdk-go"
+	"github.com/anthropics/anthropic-sdk-go/option"
 )
 
 type anthropicProvider struct {
-	apiKey    string
+	client    anthropic.Client
 	model     string
-	baseURL   string
 	maxTokens int
 	logger    *slog.Logger
 	lastUsage Usage
@@ -33,68 +30,67 @@ func AnthropicProvider(cfg ProviderConfig) (*anthropicProvider, error) {
 	}
 	model, maxTokens, logger := resolveDefaults(cfg, "")
 	model = resolveAnthropicModel(model)
+
+	opts := []option.RequestOption{option.WithAPIKey(key)}
+	if cfg.BaseURL != "" {
+		opts = append(opts, option.WithBaseURL(cfg.BaseURL))
+	}
+	if cfg.NoRetry {
+		opts = append(opts, option.WithMaxRetries(0))
+	}
+
 	return &anthropicProvider{
-		apiKey:    key,
+		client:    anthropic.NewClient(opts...),
 		model:     model,
-		baseURL:   "https://api.anthropic.com",
 		maxTokens: maxTokens,
 		logger:    logger,
 	}, nil
+}
+
+func (p *anthropicProvider) buildParams(system, user string) anthropic.MessageNewParams {
+	params := anthropic.MessageNewParams{
+		Model:     anthropic.Model(p.model),
+		MaxTokens: int64(p.maxTokens),
+		Messages: []anthropic.MessageParam{
+			anthropic.NewUserMessage(anthropic.NewTextBlock(user)),
+		},
+	}
+	if system != "" {
+		params.System = []anthropic.TextBlockParam{{Text: system}}
+	}
+	return params
 }
 
 func (p *anthropicProvider) Complete(ctx context.Context, system, user string) (string, error) {
 	p.logger.Info("provider called", "provider", "anthropic", "model", p.model, "streaming", false)
 	p.logger.Debug("provider request", "system_len", len(system), "user_len", len(user))
 
-	body, err := p.buildRequest(system, user, false)
-	if err != nil {
-		return "", err
-	}
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, p.baseURL+"/v1/messages", bytes.NewReader(body))
-	if err != nil {
-		return "", fmt.Errorf("building request: %w", err)
-	}
-	p.setHeaders(req)
-
-	resp, err := httpClient.Do(req)
+	msg, err := p.client.Messages.New(ctx, p.buildParams(system, user))
 	if err != nil {
 		return "", fmt.Errorf("anthropic request: %w", err)
 	}
-	defer resp.Body.Close()
 
-	if err := checkStatus(resp); err != nil {
-		return "", err
-	}
-
-	var result struct {
-		Content []struct {
-			Type string `json:"type"`
-			Text string `json:"text"`
-		} `json:"content"`
-		Usage struct {
-			InputTokens  int `json:"input_tokens"`
-			OutputTokens int `json:"output_tokens"`
-		} `json:"usage"`
-		Model string `json:"model"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return "", fmt.Errorf("decoding anthropic response: %w", err)
-	}
-	if len(result.Content) == 0 {
-		return "", fmt.Errorf("empty response from anthropic")
-	}
-	model := result.Model
+	model := string(msg.Model)
 	if model == "" {
 		model = p.model
 	}
 	p.lastUsage = Usage{
-		InputTokens:  result.Usage.InputTokens,
-		OutputTokens: result.Usage.OutputTokens,
+		InputTokens:  int(msg.Usage.InputTokens),
+		OutputTokens: int(msg.Usage.OutputTokens),
 		Model:        model,
-		Cost:         CostFor(model, result.Usage.InputTokens, result.Usage.OutputTokens),
+		Cost:         CostFor(model, int(msg.Usage.InputTokens), int(msg.Usage.OutputTokens)),
 	}
-	text := result.Content[0].Text
+
+	var sb strings.Builder
+	for _, block := range msg.Content {
+		if block.Type == "text" {
+			sb.WriteString(block.Text)
+		}
+	}
+	text := sb.String()
+	if text == "" {
+		return "", fmt.Errorf("empty response from anthropic")
+	}
 	p.logger.Info("provider responded", "bytes", len(text))
 	return text, nil
 }
@@ -103,87 +99,37 @@ func (p *anthropicProvider) CompleteStream(ctx context.Context, system, user str
 	p.logger.Info("provider called", "provider", "anthropic", "model", p.model, "streaming", true)
 	p.logger.Debug("provider request", "system_len", len(system), "user_len", len(user))
 
-	body, err := p.buildRequest(system, user, true)
-	if err != nil {
-		return "", err
-	}
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, p.baseURL+"/v1/messages", bytes.NewReader(body))
-	if err != nil {
-		return "", fmt.Errorf("building request: %w", err)
-	}
-	p.setHeaders(req)
-
-	resp, err := httpClient.Do(req)
-	if err != nil {
-		return "", fmt.Errorf("anthropic request: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if err := checkStatus(resp); err != nil {
-		return "", err
-	}
+	stream := p.client.Messages.NewStreaming(ctx, p.buildParams(system, user))
+	defer stream.Close()
 
 	var full strings.Builder
 	var inputTokens, outputTokens int
 	streamModel := p.model
-	scanner := bufio.NewScanner(resp.Body)
-outer:
-	for scanner.Scan() {
-		line := scanner.Text()
-		if !strings.HasPrefix(line, "data:") {
-			continue
-		}
-		data := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
-		if data == "[DONE]" {
-			break
-		}
 
-		var event struct {
-			Type  string `json:"type"`
-			Delta struct {
-				Type string `json:"type"`
-				Text string `json:"text"`
-			} `json:"delta"`
-			// message_start carries input usage and model
-			Message struct {
-				Model string `json:"model"`
-				Usage struct {
-					InputTokens int `json:"input_tokens"`
-				} `json:"usage"`
-			} `json:"message"`
-			// message_delta carries final output token count
-			Usage struct {
-				OutputTokens int `json:"output_tokens"`
-			} `json:"usage"`
-		}
-		if err := json.Unmarshal([]byte(data), &event); err != nil {
-			continue
-		}
-		switch event.Type {
-		case "message_start":
-			inputTokens = event.Message.Usage.InputTokens
-			if event.Message.Model != "" {
-				streamModel = event.Message.Model
+	for stream.Next() {
+		event := stream.Current()
+		switch e := event.AsAny().(type) {
+		case anthropic.MessageStartEvent:
+			inputTokens = int(e.Message.Usage.InputTokens)
+			if string(e.Message.Model) != "" {
+				streamModel = string(e.Message.Model)
 			}
-		case "message_delta":
-			outputTokens = event.Usage.OutputTokens
-		case "message_stop":
+		case anthropic.ContentBlockDeltaEvent:
+			if delta, ok := e.Delta.AsAny().(anthropic.TextDelta); ok {
+				full.WriteString(delta.Text)
+				onChunk(delta.Text)
+			}
+		case anthropic.MessageDeltaEvent:
+			outputTokens = int(e.Usage.OutputTokens)
 			p.lastUsage = Usage{
 				InputTokens:  inputTokens,
 				OutputTokens: outputTokens,
 				Model:        streamModel,
 				Cost:         CostFor(streamModel, inputTokens, outputTokens),
 			}
-			break outer
-		case "content_block_delta":
-			if event.Delta.Type == "text_delta" {
-				full.WriteString(event.Delta.Text)
-				onChunk(event.Delta.Text)
-			}
 		}
 	}
-	if err := scanner.Err(); err != nil && err != io.EOF {
+	if err := stream.Err(); err != nil {
 		result := full.String()
 		return result, fmt.Errorf("reading stream: %w", err)
 	}
@@ -191,29 +137,6 @@ outer:
 	result := full.String()
 	p.logger.Info("provider responded", "bytes", len(result))
 	return result, nil
-}
-
-func (p *anthropicProvider) buildRequest(system, user string, stream bool) ([]byte, error) {
-	reqBody := map[string]any{
-		"model":      p.model,
-		"max_tokens": p.maxTokens,
-		"messages": []map[string]string{
-			{"role": "user", "content": user},
-		},
-	}
-	if system != "" {
-		reqBody["system"] = system
-	}
-	if stream {
-		reqBody["stream"] = true
-	}
-	return json.Marshal(reqBody)
-}
-
-func (p *anthropicProvider) setHeaders(req *http.Request) {
-	req.Header.Set("x-api-key", p.apiKey)
-	req.Header.Set("anthropic-version", "2023-06-01")
-	req.Header.Set("content-type", "application/json")
 }
 
 // resolveAnthropicModel maps CLI shorthands to full Anthropic model IDs.
@@ -229,4 +152,3 @@ func resolveAnthropicModel(model string) string {
 		return model
 	}
 }
-

@@ -35,6 +35,8 @@ type ProviderConfig struct {
 	MaxTokens int          `yaml:"-" json:"-"`
 	Verbose   bool         `yaml:"-" json:"-"`
 	Logger    *slog.Logger `yaml:"-" json:"-"`
+	BaseURL   string       `yaml:"-" json:"-"` // optional override, used in tests
+	NoRetry   bool         `yaml:"-" json:"-"` // disable SDK-level retries, used in tests
 }
 
 // httpClient is shared by all HTTP-based providers with a reasonable timeout.

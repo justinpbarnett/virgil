@@ -42,9 +42,6 @@ func TestAnthropicProviderComplete(t *testing.T) {
 		if r.Header.Get("x-api-key") != "test-key" {
 			t.Errorf("expected x-api-key header 'test-key', got %q", r.Header.Get("x-api-key"))
 		}
-		if r.Header.Get("anthropic-version") != "2023-06-01" {
-			t.Errorf("expected anthropic-version header, got %q", r.Header.Get("anthropic-version"))
-		}
 		if r.Header.Get("content-type") != "application/json" {
 			t.Errorf("expected content-type application/json")
 		}
@@ -73,11 +70,10 @@ func TestAnthropicProviderComplete(t *testing.T) {
 	defer srv.Close()
 
 	t.Setenv("ANTHROPIC_API_KEY", "test-key")
-	p, err := AnthropicProvider(ProviderConfig{Name: "anthropic", Model: "claude-test"})
+	p, err := AnthropicProvider(ProviderConfig{Name: "anthropic", Model: "claude-test", BaseURL: srv.URL})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	p.baseURL = srv.URL
 
 	result, err := p.Complete(context.Background(), "system prompt", "user input")
 	if err != nil {
@@ -114,13 +110,18 @@ func TestAnthropicProviderCompleteSystemPlacement(t *testing.T) {
 	defer srv.Close()
 
 	t.Setenv("ANTHROPIC_API_KEY", "test-key")
-	p, _ := AnthropicProvider(ProviderConfig{Name: "anthropic"})
-	p.baseURL = srv.URL
+	p, _ := AnthropicProvider(ProviderConfig{Name: "anthropic", BaseURL: srv.URL})
 
 	p.Complete(context.Background(), "my system", "my user")
 
-	if capturedBody["system"] != "my system" {
-		t.Errorf("expected system field 'my system', got %v", capturedBody["system"])
+	// The SDK sends system as an array of content blocks, not a plain string.
+	sysField, ok := capturedBody["system"].([]any)
+	if !ok || len(sysField) == 0 {
+		t.Fatalf("expected system field as array, got %v", capturedBody["system"])
+	}
+	block, _ := sysField[0].(map[string]any)
+	if block["text"] != "my system" {
+		t.Errorf("expected system text 'my system', got %v", block["text"])
 	}
 	msgs, _ := capturedBody["messages"].([]any)
 	if len(msgs) != 1 {
@@ -144,8 +145,7 @@ func TestAnthropicProviderCompleteNoSystem(t *testing.T) {
 	defer srv.Close()
 
 	t.Setenv("ANTHROPIC_API_KEY", "test-key")
-	p, _ := AnthropicProvider(ProviderConfig{Name: "anthropic"})
-	p.baseURL = srv.URL
+	p, _ := AnthropicProvider(ProviderConfig{Name: "anthropic", BaseURL: srv.URL})
 
 	p.Complete(context.Background(), "", "my user")
 
@@ -154,12 +154,14 @@ func TestAnthropicProviderCompleteNoSystem(t *testing.T) {
 	}
 }
 
-func TestAnthropicProviderStream(t *testing.T) {
-	events := []string{
-		`data: {"type":"content_block_delta","delta":{"type":"text_delta","text":"Hello"}}`,
-		`data: {"type":"content_block_delta","delta":{"type":"text_delta","text":" world"}}`,
-		`data: {"type":"message_stop"}`,
+func writeSSEEvent(w http.ResponseWriter, eventType, data string) {
+	fmt.Fprintf(w, "event: %s\ndata: %s\n\n", eventType, data)
+	if f, ok := w.(http.Flusher); ok {
+		f.Flush()
 	}
+}
+
+func TestAnthropicProviderStream(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var body map[string]any
 		json.NewDecoder(r.Body).Decode(&body)
@@ -167,15 +169,14 @@ func TestAnthropicProviderStream(t *testing.T) {
 			t.Error("expected stream:true in request body")
 		}
 		w.Header().Set("content-type", "text/event-stream")
-		for _, e := range events {
-			fmt.Fprintln(w, e)
-		}
+		writeSSEEvent(w, "content_block_delta", `{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Hello"}}`)
+		writeSSEEvent(w, "content_block_delta", `{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":" world"}}`)
+		writeSSEEvent(w, "message_stop", `{"type":"message_stop"}`)
 	}))
 	defer srv.Close()
 
 	t.Setenv("ANTHROPIC_API_KEY", "test-key")
-	p, _ := AnthropicProvider(ProviderConfig{Name: "anthropic"})
-	p.baseURL = srv.URL
+	p, _ := AnthropicProvider(ProviderConfig{Name: "anthropic", BaseURL: srv.URL})
 
 	var chunks []string
 	result, err := p.CompleteStream(context.Background(), "sys", "user", func(c string) {
@@ -193,24 +194,18 @@ func TestAnthropicProviderStream(t *testing.T) {
 }
 
 func TestAnthropicProviderStreamUsage(t *testing.T) {
-	events := []string{
-		`data: {"type":"message_start","message":{"model":"claude-sonnet-4-20250514","usage":{"input_tokens":200}}}`,
-		`data: {"type":"content_block_delta","delta":{"type":"text_delta","text":"Hello"}}`,
-		`data: {"type":"content_block_delta","delta":{"type":"text_delta","text":" world"}}`,
-		`data: {"type":"message_delta","usage":{"output_tokens":100}}`,
-		`data: {"type":"message_stop"}`,
-	}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("content-type", "text/event-stream")
-		for _, e := range events {
-			fmt.Fprintln(w, e)
-		}
+		writeSSEEvent(w, "message_start", `{"type":"message_start","message":{"model":"claude-sonnet-4-20250514","usage":{"input_tokens":200}}}`)
+		writeSSEEvent(w, "content_block_delta", `{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Hello"}}`)
+		writeSSEEvent(w, "content_block_delta", `{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":" world"}}`)
+		writeSSEEvent(w, "message_delta", `{"type":"message_delta","usage":{"output_tokens":100}}`)
+		writeSSEEvent(w, "message_stop", `{"type":"message_stop"}`)
 	}))
 	defer srv.Close()
 
 	t.Setenv("ANTHROPIC_API_KEY", "test-key")
-	p, _ := AnthropicProvider(ProviderConfig{Name: "anthropic"})
-	p.baseURL = srv.URL
+	p, _ := AnthropicProvider(ProviderConfig{Name: "anthropic", BaseURL: srv.URL})
 
 	_, err := p.CompleteStream(context.Background(), "sys", "user", func(c string) {})
 	if err != nil {
@@ -240,8 +235,7 @@ func TestAnthropicProviderError401(t *testing.T) {
 	defer srv.Close()
 
 	t.Setenv("ANTHROPIC_API_KEY", "bad-key")
-	p, _ := AnthropicProvider(ProviderConfig{Name: "anthropic"})
-	p.baseURL = srv.URL
+	p, _ := AnthropicProvider(ProviderConfig{Name: "anthropic", BaseURL: srv.URL})
 
 	_, err := p.Complete(context.Background(), "", "test")
 	if err == nil {
@@ -261,14 +255,14 @@ func TestAnthropicProviderError429(t *testing.T) {
 	defer srv.Close()
 
 	t.Setenv("ANTHROPIC_API_KEY", "test-key")
-	p, _ := AnthropicProvider(ProviderConfig{Name: "anthropic"})
-	p.baseURL = srv.URL
+	// NoRetry so the SDK doesn't sleep between retries in the test.
+	p, _ := AnthropicProvider(ProviderConfig{Name: "anthropic", BaseURL: srv.URL, NoRetry: true})
 
 	_, err := p.Complete(context.Background(), "", "test")
 	if err == nil {
 		t.Fatal("expected error for 429 response")
 	}
-	if !strings.Contains(err.Error(), "retry after 30") {
-		t.Errorf("expected retry-after in error, got: %v", err)
+	if !strings.Contains(err.Error(), "429") {
+		t.Errorf("expected 429 in error, got: %v", err)
 	}
 }

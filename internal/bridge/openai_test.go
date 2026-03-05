@@ -163,7 +163,10 @@ func TestOpenAIProviderStream(t *testing.T) {
 		}
 		w.Header().Set("content-type", "text/event-stream")
 		for _, e := range events {
-			fmt.Fprintln(w, e)
+			fmt.Fprintf(w, "%s\n\n", e)
+			if f, ok := w.(http.Flusher); ok {
+				f.Flush()
+			}
 		}
 	}))
 	defer srv.Close()
