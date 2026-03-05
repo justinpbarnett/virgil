@@ -773,11 +773,14 @@ func readNextEventSync(reader *sseReader, streamID int) tea.Msg {
 		}
 
 		switch event.Type {
-		case envelope.SSEEventChunk:
+		case envelope.SSEEventChunk, envelope.SSEEventAck:
 			var chunk struct {
 				Text string `json:"text"`
 			}
 			if err := json.Unmarshal([]byte(event.Data), &chunk); err != nil {
+				if event.Type == envelope.SSEEventAck {
+					continue // skip malformed ack chunks
+				}
 				reader.Close()
 				return streamDoneMsg{streamID: streamID, err: fmt.Errorf("invalid chunk: %w", err)}
 			}

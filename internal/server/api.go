@@ -1,12 +1,11 @@
 package server
 
 import (
-	"bytes"
-	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -15,9 +14,24 @@ import (
 	"github.com/justinpbarnett/virgil/internal/runtime"
 )
 
-// defaultSpecPipe is the pipe name used for speculative execution and memory
-// prefetch. Chat is the most common destination for user signals.
-const defaultSpecPipe = "chat"
+const ackSystemPrompt = `You are acknowledging a request. Write 1-2 sentences max.
+Be specific — reference what the user asked for. If context is provided,
+use relevant details to personalize. Use action phrases like "Sure, getting
+started on..." or "On it —". Do not perform the task, just acknowledge it.`
+
+func buildAckUserPrompt(signal string, memories []envelope.MemoryEntry) string {
+	var sb strings.Builder
+	sb.WriteString("Request: ")
+	sb.WriteString(signal)
+	if len(memories) > 0 {
+		sb.WriteString("\n\nContext:\n")
+		for _, m := range memories {
+			sb.WriteString(m.Content)
+			sb.WriteByte('\n')
+		}
+	}
+	return sb.String()
+}
 
 // writeSSEEvent marshals data as JSON and writes an SSE event to w.
 func writeSSEEvent(w io.Writer, flusher http.Flusher, eventType string, data any) {
@@ -26,49 +40,10 @@ func writeSSEEvent(w io.Writer, flusher http.Flusher, eventType string, data any
 	flusher.Flush()
 }
 
-// formatSSEChunk formats a text chunk as an SSE chunk line.
-func formatSSEChunk(data string) string {
+// formatSSEText formats a text payload as an SSE event line for the given event type.
+func formatSSEText(eventType, data string) string {
 	escaped, _ := json.Marshal(data)
-	return fmt.Sprintf("event: %s\ndata: {\"text\":%s}\n\n", envelope.SSEEventChunk, escaped)
-}
-
-// specSink buffers SSE chunk events until routing confirms chat, then switches
-// to writing directly to the response writer.
-type specSink struct {
-	mu      sync.Mutex
-	buf     bytes.Buffer
-	live    bool
-	w       io.Writer
-	flusher http.Flusher
-}
-
-func (ss *specSink) write(event runtime.StreamEvent) {
-	if event.Type != envelope.SSEEventChunk {
-		return
-	}
-	line := formatSSEChunk(event.Data)
-
-	ss.mu.Lock()
-	defer ss.mu.Unlock()
-	if ss.live {
-		ss.w.Write([]byte(line)) //nolint:errcheck
-		ss.flusher.Flush()
-	} else {
-		ss.buf.WriteString(line)
-	}
-}
-
-// goLive flushes the buffer to w and switches subsequent writes to go directly
-// to w. Must be called after routing confirms the speculative stream is correct.
-func (ss *specSink) goLive() {
-	ss.mu.Lock()
-	defer ss.mu.Unlock()
-	if ss.buf.Len() > 0 {
-		ss.w.Write(ss.buf.Bytes()) //nolint:errcheck
-		ss.flusher.Flush()
-		ss.buf.Reset()
-	}
-	ss.live = true
+	return fmt.Sprintf("event: %s\ndata: {\"text\":%s}\n\n", eventType, escaped)
 }
 
 type signalRequest struct {
@@ -120,23 +95,16 @@ func (s *Server) handleSignal(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Synchronous path
+	// Synchronous path — route first (deterministic, <1ms), then execute.
 	seed := buildSeed(req)
-
-	// Start memory prefetch concurrently with routing; chat is the most
-	// common destination so we prefetch for that pipe by default.
-	memCh := s.runtime.PrefetchMemory(seed, defaultSpecPipe)
-
 	route := s.router.Route(r.Context(), req.Text, parsed)
 	plan := s.planner.Plan(route, parsed)
 
-	var execSeed envelope.Envelope
-	if route.Pipe == defaultSpecPipe && len(plan.Steps) == 1 {
+	execSeed := seed
+	if len(plan.Steps) == 1 {
+		memCh := s.runtime.PrefetchMemory(seed, plan.Steps[0].Pipe)
 		execSeed = <-memCh
 		plan.SkipFirstMemoryInjection = true
-	} else {
-		go func() { <-memCh }() // drain to prevent goroutine leak
-		execSeed = seed
 	}
 
 	result := s.runtime.Execute(plan, execSeed)
@@ -144,7 +112,7 @@ func (s *Server) handleSignal(w http.ResponseWriter, r *http.Request) {
 	s.logger.Info("signal complete", "duration", time.Since(start).String())
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(result)
+	_ = json.NewEncoder(w).Encode(result)
 }
 
 func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request, req signalRequest, parsed parser.ParsedSignal) {
@@ -159,71 +127,48 @@ func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request, req signalReq
 	w.Header().Set("Connection", "keep-alive")
 	flusher.Flush()
 
-	// Build seed early so we can start memory prefetch and the speculative
-	// chat stream before routing completes.
+	// Route first — all layers are deterministic and complete in <1ms.
 	seed := buildSeed(req)
-
-	// Prefetch memory for the chat pipe concurrently with routing. The channel
-	// is buffered (capacity 1) so the background goroutine never blocks if its
-	// result is not consumed (e.g. routing resolves to a non-chat pipe).
-	memCh := s.runtime.PrefetchMemory(seed, defaultSpecPipe)
-
-	// Start speculative chat stream: begin the AI call immediately, buffer
-	// its output until routing confirms the route is chat.
-	specCtx, specCancel := context.WithCancel(r.Context())
-	ss := &specSink{w: w, flusher: flusher}
-	specDone := make(chan envelope.Envelope, 1)
-
-	go func() {
-		// Wait for memory to be ready or bail if routing cancelled us first.
-		var chatSeed envelope.Envelope
-		select {
-		case chatSeed = <-memCh:
-		case <-specCtx.Done():
-			specDone <- envelope.Envelope{}
-			return
-		}
-		chatPlan := runtime.Plan{
-			Steps:                    []runtime.Step{{Pipe: defaultSpecPipe}},
-			SkipFirstMemoryInjection: true,
-		}
-		result := s.runtime.ExecuteStream(specCtx, chatPlan, chatSeed, ss.write)
-		specDone <- result
-	}()
-
-	// Route and plan concurrently with the speculative stream.
 	route := s.router.Route(r.Context(), req.Text, parsed)
 	plan := s.planner.Plan(route, parsed)
-
-	if route.Pipe == defaultSpecPipe && len(plan.Steps) == 1 {
-		// Routing confirmed chat — send route event, flush buffered chunks,
-		// then let the speculative stream complete.
-		writeSSEEvent(w, flusher, envelope.SSEEventRoute, map[string]any{"pipe": defaultSpecPipe, "layer": route.Layer})
-
-		ss.goLive()
-		result := <-specDone
-		specCancel()
-
-		writeSSEEvent(w, flusher, envelope.SSEEventDone, result)
-		return
-	}
-
-	// Route resolved to a different pipe — cancel the speculative stream and
-	// drain its goroutine, then execute the correct pipe.
-	specCancel()
-	go func() { <-specDone }()
 
 	if len(plan.Steps) > 0 {
 		writeSSEEvent(w, flusher, envelope.SSEEventRoute, map[string]any{"pipe": plan.Steps[0].Pipe, "layer": route.Layer})
 	}
 
-	// Use pre-fetched memory if we still have it available from the speculative run.
-	// Since the spec stream was cancelled, rebuild with a fresh context.
+	// Prefetch memory for the correct pipe.
 	execSeed := seed
+	if len(plan.Steps) == 1 {
+		memCh := s.runtime.PrefetchMemory(seed, plan.Steps[0].Pipe)
+		execSeed = <-memCh
+		plan.SkipFirstMemoryInjection = true
+	}
+
+	var mu sync.Mutex
+	ackDone := make(chan struct{}, 1)
+
+	pipeIsAIBacked := len(plan.Steps) > 0 && s.config.Pipes[plan.Steps[0].Pipe].Prompts.System != ""
+	if pipeIsAIBacked && s.ackProvider != nil {
+		go func() {
+			user := buildAckUserPrompt(req.Text, execSeed.Memory)
+			_, _ = s.ackProvider.CompleteStream(r.Context(), ackSystemPrompt, user, func(chunk string) {
+				mu.Lock()
+				w.Write([]byte(formatSSEText(envelope.SSEEventAck, chunk))) //nolint:errcheck
+				flusher.Flush()
+				mu.Unlock()
+			})
+			ackDone <- struct{}{}
+		}()
+	} else {
+		ackDone <- struct{}{}
+	}
+
 	sink := func(event runtime.StreamEvent) {
+		mu.Lock()
+		defer mu.Unlock()
 		switch event.Type {
 		case envelope.SSEEventChunk:
-			w.Write([]byte(formatSSEChunk(event.Data))) //nolint:errcheck
+			w.Write([]byte(formatSSEText(envelope.SSEEventChunk, event.Data))) //nolint:errcheck
 		case envelope.SSEEventStep:
 			fmt.Fprintf(w, "event: %s\ndata: %s\n\n", envelope.SSEEventStep, event.Data)
 		}
@@ -231,18 +176,21 @@ func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request, req signalReq
 	}
 
 	result := s.runtime.ExecuteStream(r.Context(), plan, execSeed, sink)
+	<-ackDone
+	mu.Lock()
 	writeSSEEvent(w, flusher, envelope.SSEEventDone, result)
+	mu.Unlock()
 }
 
 func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
-	w.Write([]byte(`{"status":"ok"}`))
+	_, _ = w.Write([]byte(`{"status":"ok"}`))
 }
 
 func (s *Server) handlePipes(w http.ResponseWriter, _ *http.Request) {
 	defs := s.registry.Definitions()
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(defs)
+	_ = json.NewEncoder(w).Encode(defs)
 }
 
 func (s *Server) handleStatus(w http.ResponseWriter, _ *http.Request) {
@@ -253,7 +201,7 @@ func (s *Server) handleStatus(w http.ResponseWriter, _ *http.Request) {
 		"uptime":     time.Since(s.startedAt).String(),
 	}
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(status)
+	_ = json.NewEncoder(w).Encode(status)
 }
 
 func marshalJSON(v any) []byte {
