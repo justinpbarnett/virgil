@@ -21,9 +21,9 @@ var issueKeyRe = regexp.MustCompile(`^[A-Z][A-Z0-9]+-\d+$`)
 
 // JiraConfig holds credentials for connecting to a Jira instance.
 type JiraConfig struct {
-	BaseURL string `json:"base_url"`
-	Email   string `json:"email"`
-	Token   string `json:"token"`
+	BaseURL string `yaml:"base_url"`
+	Email   string `yaml:"email"`
+	Token   string `yaml:"token"`
 }
 
 // Issue represents a Jira issue with its core fields.
@@ -338,7 +338,7 @@ func checkResponse(resp *http.Response) error {
 	case http.StatusNotFound:
 		return &jiraError{statusCode: 404, message: "not found"}
 	case http.StatusUnauthorized, http.StatusForbidden:
-		return &jiraError{statusCode: resp.StatusCode, message: "authentication failed — check jira.json credentials"}
+		return &jiraError{statusCode: resp.StatusCode, message: "authentication failed — check jira.yaml credentials"}
 	case http.StatusTooManyRequests:
 		msg := "rate limited by Jira"
 		if retry := resp.Header.Get("Retry-After"); retry != "" {
@@ -743,7 +743,7 @@ func classifyJiraError(id string, err error) *envelope.EnvelopeError {
 	case 404:
 		return envelope.FatalError(fmt.Sprintf("issue not found: %s", id))
 	case 401, 403:
-		return envelope.FatalError("authentication failed — check jira.json credentials")
+		return envelope.FatalError("authentication failed — check jira.yaml credentials")
 	case 429:
 		return &envelope.EnvelopeError{
 			Message:   je.message,

@@ -1,12 +1,12 @@
 package main
 
 import (
-	"encoding/json"
 	"os"
 	"path/filepath"
 
 	"github.com/justinpbarnett/virgil/internal/pipehost"
 	"github.com/justinpbarnett/virgil/internal/pipes/jira"
+	"gopkg.in/yaml.v3"
 )
 
 func main() {
@@ -17,19 +17,19 @@ func main() {
 		pipehost.Fatal("jira", "VIRGIL_USER_DIR not set")
 	}
 
-	cfgData, err := os.ReadFile(filepath.Join(userDir, "jira.json"))
+	cfgData, err := os.ReadFile(filepath.Join(userDir, "jira.yaml"))
 	if err != nil {
-		pipehost.Fatal("jira", "cannot read jira.json from "+userDir+": "+err.Error()+
-			"\n\nCreate jira.json with: {\"base_url\": \"https://yourco.atlassian.net\", \"email\": \"you@example.com\", \"token\": \"your-pat\"}")
+		pipehost.Fatal("jira", "cannot read jira.yaml from "+userDir+": "+err.Error()+
+			"\n\nCreate jira.yaml with:\n  base_url: https://yourco.atlassian.net\n  email: you@example.com\n  token: your-pat")
 	}
 
 	var cfg jira.JiraConfig
-	if err := json.Unmarshal(cfgData, &cfg); err != nil {
-		pipehost.Fatal("jira", "invalid jira.json: "+err.Error())
+	if err := yaml.Unmarshal(cfgData, &cfg); err != nil {
+		pipehost.Fatal("jira", "invalid jira.yaml: "+err.Error())
 	}
 
 	if cfg.BaseURL == "" || cfg.Email == "" || cfg.Token == "" {
-		pipehost.Fatal("jira", "jira.json is incomplete — base_url, email, and token are all required")
+		pipehost.Fatal("jira", "jira.yaml is incomplete — base_url, email, and token are all required")
 	}
 
 	client := jira.NewClient(cfg)
