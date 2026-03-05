@@ -1,3 +1,11 @@
 bin/
 virgil
 internal/pipes/*/run
+.env
+
+# User config files (secrets — live in ~/.config/virgil/ but protect config/ too)
+config/credentials.yaml
+config/voice.yaml
+config/jira.yaml
+config/google-credentials.json
+config/google-token.json
