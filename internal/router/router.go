@@ -89,12 +89,16 @@ func (r *Router) Route(ctx context.Context, signal string, parsed parser.ParsedS
 		return result
 	}
 
-	// Layer 2: Keyword scoring with stemming and synonym expansion
+	// Layer 2: Keyword scoring with stemming and synonym expansion.
+	// Score by signal coverage: what fraction of the user's meaningful words
+	// are keywords for each pipe? This works better than pipe coverage
+	// (hits / pipe_keywords) for short signals like "hey" or "check calendar".
 	words := tokenize(lower)
+	scoringWords := filterStopWords(words)
 	scores := make(map[string]int)
 	var keywordsFound []string
 
-	for _, w := range words {
+	for _, w := range scoringWords {
 		for _, form := range StemAndExpand(w) {
 			if pipes, ok := r.keywordIndex[form]; ok {
 				keywordsFound = append(keywordsFound, w)
@@ -108,15 +112,13 @@ func (r *Router) Route(ctx context.Context, signal string, parsed parser.ParsedS
 
 	bestPipe := ""
 	bestScore := 0.0
-	for pipeName, hits := range scores {
-		total := len(r.pipeKeywords[pipeName])
-		if total == 0 {
-			continue
-		}
-		score := float64(hits) / float64(total)
-		if score > bestScore {
-			bestScore = score
-			bestPipe = pipeName
+	if len(scoringWords) > 0 {
+		for pipeName, hits := range scores {
+			score := float64(hits) / float64(len(scoringWords))
+			if score > bestScore {
+				bestScore = score
+				bestPipe = pipeName
+			}
 		}
 	}
 
@@ -128,9 +130,11 @@ func (r *Router) Route(ctx context.Context, signal string, parsed parser.ParsedS
 		return result
 	}
 
-	// Wh-questions skip Layer 3: the verb/source match is too aggressive
-	// for questions (e.g. "what would be cool to visualize?" matched
-	// visualize via verb). Questions still reach Layer 4 (fallback/AI).
+	// Wh-questions skip category narrowing and verb matching: the verb
+	// match is too aggressive for questions (e.g. "what would be cool to
+	// visualize?" matched visualize via verb). Source matching is still
+	// allowed since it reflects an explicit data source reference
+	// (e.g. "what's on my calendar?" → source=calendar).
 	if !parsed.IsQuestion {
 		// Layer 3: Category narrowing
 		if bestPipe != "" {
@@ -153,16 +157,23 @@ func (r *Router) Route(ctx context.Context, signal string, parsed parser.ParsedS
 			}
 		}
 
-		// Also try parsed verb/source directly if they match a pipe.
-		for _, candidate := range []string{parsed.Verb, parsed.Source} {
-			if candidate == "" {
-				continue
-			}
-			if _, ok := r.definitions[candidate]; ok {
-				result := RouteResult{Pipe: candidate, Confidence: 0.8, Layer: LayerCategory}
+		// Also try parsed verb directly if it matches a pipe.
+		if parsed.Verb != "" {
+			if _, ok := r.definitions[parsed.Verb]; ok {
+				result := RouteResult{Pipe: parsed.Verb, Confidence: 0.8, Layer: LayerCategory}
 				r.logger.Info("routed", "pipe", result.Pipe, "layer", result.Layer)
 				return result
 			}
+		}
+	}
+
+	// Source-based routing applies to all signals (including questions):
+	// "what's on my calendar?" should route to calendar, not fall through.
+	if parsed.Source != "" {
+		if _, ok := r.definitions[parsed.Source]; ok {
+			result := RouteResult{Pipe: parsed.Source, Confidence: 0.8, Layer: LayerCategory}
+			r.logger.Info("routed", "pipe", result.Pipe, "layer", result.Layer)
+			return result
 		}
 	}
 
@@ -178,7 +189,7 @@ func (r *Router) Route(ctx context.Context, signal string, parsed parser.ParsedS
 	}
 
 	if r.missLog != nil {
-		r.missLog.Log(MissEntry{
+		_ = r.missLog.Log(MissEntry{
 			Signal:           signal,
 			KeywordsFound:    keywordsFound,
 			KeywordsNotFound: keywordsNotFound,
@@ -233,6 +244,23 @@ func (r *Router) scoreParsedMatch(def pipe.Definition, parsed parser.ParsedSigna
 	return score / checks
 }
 
+// routerStopWords are filtered from signals before keyword scoring.
+// Includes common function words and the application name so they don't
+// dilute keyword scores for short signals like "hey virgil".
+var routerStopWords = map[string]bool{
+	"a": true, "an": true, "the": true, "my": true,
+	"on": true, "in": true, "at": true, "to": true,
+	"for": true, "of": true, "is": true, "that": true,
+	"about": true, "do": true, "i": true, "it": true,
+	"me": true, "and": true, "or": true, "but": true,
+	"with": true, "from": true, "post": true,
+	"what": true, "what's": true, "how": true, "when": true, "where": true,
+	"can": true, "does": true, "did": true, "will": true,
+	"you": true, "could": true, "would": true, "should": true,
+	"are": true, "was": true, "were": true, "has": true, "have": true,
+	"virgil": true,
+}
+
 // tokenize splits s into cleaned tokens. Callers must pass a lowercased string.
 func tokenize(s string) []string {
 	fields := strings.Fields(s)
@@ -240,4 +268,15 @@ func tokenize(s string) []string {
 		fields[i] = parser.CleanToken(f)
 	}
 	return fields
+}
+
+// filterStopWords returns tokens that are not stop words.
+func filterStopWords(words []string) []string {
+	result := make([]string, 0, len(words))
+	for _, w := range words {
+		if !routerStopWords[w] {
+			result = append(result, w)
+		}
+	}
+	return result
 }

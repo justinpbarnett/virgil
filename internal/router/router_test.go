@@ -41,7 +41,8 @@ func testDefs() []pipe.Definition {
 			Name:     "chat",
 			Category: "general",
 			Triggers: pipe.Triggers{
-				Keywords: []string{"chat", "talk", "hello"},
+				Exact:    []string{"hey", "hi", "hello", "hey virgil", "hi virgil", "hello virgil"},
+				Keywords: []string{"chat", "talk", "hello", "hi", "hey"},
 			},
 		},
 	}
@@ -169,6 +170,67 @@ func TestWhQuestionFallsToChat(t *testing.T) {
 	}
 	if result.Layer != LayerFallback {
 		t.Errorf("expected layer %d, got %d", LayerFallback, result.Layer)
+	}
+}
+
+// TestWhQuestionWithSourceRoutesToPipe verifies that a wh-question whose
+// parsed source matches a pipe name routes to that pipe instead of falling
+// through to chat. Regression test: "what's on my calendar today?" was
+// falling to chat → study(source=calendar) → "unsupported source: calendar".
+func TestWhQuestionWithSourceRoutesToPipe(t *testing.T) {
+	r := NewRouter(testDefs(), nil, nil)
+
+	parsed := parser.ParsedSignal{
+		Source:     "calendar",
+		Modifier:   "today",
+		IsQuestion: true,
+	}
+	result := r.Route(context.Background(), "what's on my calendar today?", parsed)
+
+	if result.Pipe != "calendar" {
+		t.Errorf("expected calendar for question with source=calendar, got %s", result.Pipe)
+	}
+	if result.Layer != LayerCategory {
+		t.Errorf("expected layer %d, got %d", LayerCategory, result.Layer)
+	}
+}
+
+func TestGreetingExactMatch(t *testing.T) {
+	r := NewRouter(testDefs(), nil, nil)
+
+	tests := []struct {
+		signal string
+	}{
+		{"hey"},
+		{"hi"},
+		{"hello"},
+		{"hey virgil"},
+		{"Hi Virgil"},
+	}
+
+	for _, tt := range tests {
+		result := r.Route(context.Background(), tt.signal, parser.ParsedSignal{})
+		if result.Pipe != "chat" {
+			t.Errorf("signal %q: expected chat, got %s", tt.signal, result.Pipe)
+		}
+		if result.Layer != LayerExact {
+			t.Errorf("signal %q: expected layer %d, got %d", tt.signal, LayerExact, result.Layer)
+		}
+	}
+}
+
+func TestShortKeywordSignalMatchesLayer2(t *testing.T) {
+	r := NewRouter(testDefs(), nil, nil)
+
+	// Single keyword should match even though the pipe has multiple keywords.
+	// Signal coverage: 1/1 = 100% ≥ 60% threshold.
+	result := r.Route(context.Background(), "meeting", parser.ParsedSignal{})
+
+	if result.Pipe != "calendar" {
+		t.Errorf("expected calendar, got %s", result.Pipe)
+	}
+	if result.Layer != LayerKeyword {
+		t.Errorf("expected layer %d, got %d", LayerKeyword, result.Layer)
 	}
 }
 
