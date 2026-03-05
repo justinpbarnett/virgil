@@ -4,7 +4,7 @@ category: comms
 streaming: false
 timeout: 120s
 provider: gemini
-model: gemini-3.1-pro
+model: gemini-3.1-pro-preview
 
 triggers:
   exact:
