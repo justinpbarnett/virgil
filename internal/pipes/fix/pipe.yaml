@@ -3,6 +3,8 @@ description: Reads verification failures and applies targeted fixes to code and 
 category: dev
 streaming: true
 timeout: 120s
+provider: claude
+model: opus
 
 triggers:
   exact:

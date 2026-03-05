@@ -3,6 +3,8 @@ description: Generates source code from specifications and examples.
 category: dev
 streaming: true
 timeout: 120s
+provider: gemini
+model: gemini-3.1-pro
 
 triggers:
   exact:

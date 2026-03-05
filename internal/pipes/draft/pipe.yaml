@@ -3,6 +3,8 @@ description: Produces written content from input context and instructions.
 category: comms
 streaming: true
 timeout: 3m
+provider: claude
+model: opus
 
 triggers:
   exact:

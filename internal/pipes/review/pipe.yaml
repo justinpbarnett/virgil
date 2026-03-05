@@ -3,6 +3,8 @@ description: Reviews content against criteria and produces structured pass/fail 
 category: dev
 streaming: false
 timeout: 90s
+provider: claude
+model: opus
 
 triggers:
   exact:

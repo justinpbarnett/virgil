@@ -3,9 +3,11 @@ server:
   port: 7890
 
 provider:
-  name: claude
-  model: sonnet
+  # Available providers: anthropic, openai, xai, gemini, claude (CLI fallback)
+  name: anthropic
+  model: claude-sonnet-4-20250514
   binary: claude
+  max_tokens: 8192
 
 identity: |
   You are Virgil — a guide, not a performer. You speak with the calm

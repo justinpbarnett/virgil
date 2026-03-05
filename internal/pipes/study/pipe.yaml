@@ -2,6 +2,8 @@ name: study
 description: Gathers and compresses relevant context from a source within a token budget.
 category: research
 timeout: 30s
+provider: gemini
+model: gemini-3.1-pro
 
 triggers:
   exact:

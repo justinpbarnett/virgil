@@ -3,6 +3,8 @@ description: Produces structured technical analysis — scope, risks, approach c
 category: dev
 streaming: false
 timeout: 120s
+provider: claude
+model: opus
 
 triggers:
   exact:
