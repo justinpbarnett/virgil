@@ -21,6 +21,10 @@ type Step struct {
 
 type Plan struct {
 	Steps []Step
+	// SkipFirstMemoryInjection instructs Execute/ExecuteStream to skip memory
+	// injection for the first step. Used when the caller has already injected
+	// memory into the seed envelope (e.g. via PrefetchMemory).
+	SkipFirstMemoryInjection bool
 }
 
 // StreamEvent is sent by ExecuteStream to report chunks and step transitions.
@@ -83,6 +87,26 @@ func (r *Runtime) injectMemory(step Step, env envelope.Envelope) envelope.Envelo
 		return env
 	}
 	return r.injector.InjectContext(env, r.memoryConfigs[step.Pipe])
+}
+
+// injectMemoryAsync starts memory injection in a goroutine and returns a
+// channel. If no injector is configured the channel immediately yields env.
+func (r *Runtime) injectMemoryAsync(step Step, env envelope.Envelope) <-chan envelope.Envelope {
+	ch := make(chan envelope.Envelope, 1)
+	if r.injector == nil {
+		ch <- env
+		return ch
+	}
+	go func() { ch <- r.injector.InjectContext(env, r.memoryConfigs[step.Pipe]) }()
+	return ch
+}
+
+// PrefetchMemory starts memory injection for the given pipe asynchronously and
+// returns a channel that receives the injected envelope. Returns immediately;
+// the caller can await the result just before executing the pipe. If no
+// injector is configured the channel immediately contains the original env.
+func (r *Runtime) PrefetchMemory(seed envelope.Envelope, pipeName string) <-chan envelope.Envelope {
+	return r.injectMemoryAsync(Step{Pipe: pipeName}, seed)
 }
 
 func (r *Runtime) autoSave(pipe, signal string, result envelope.Envelope, contextIDs []string) {
@@ -171,11 +195,28 @@ func (r *Runtime) Execute(plan Plan, seed envelope.Envelope) envelope.Envelope {
 	r.logger.Info("plan started", "steps", len(plan.Steps))
 	r.logEnvelope("seed envelope", seed)
 
+	// For single-step plans, prefetch memory asynchronously so it runs
+	// concurrently with any serial overhead instead of blocking the step.
+	var firstMemCh <-chan envelope.Envelope
+	if len(plan.Steps) == 1 && !plan.SkipFirstMemoryInjection {
+		firstMemCh = r.injectMemoryAsync(plan.Steps[0], current)
+	}
+
 	var lastPipe string
 	var lastContextIDs []string
 	for i, step := range plan.Steps {
 		lastPipe = step.Pipe
-		injected := r.injectMemory(step, current)
+
+		var injected envelope.Envelope
+		switch {
+		case i == 0 && plan.SkipFirstMemoryInjection:
+			injected = current
+		case i == 0 && firstMemCh != nil:
+			injected = <-firstMemCh
+		default:
+			injected = r.injectMemory(step, current)
+		}
+
 		if i == len(plan.Steps)-1 {
 			lastContextIDs = extractContextIDs(injected.Memory)
 		}
@@ -214,10 +255,25 @@ func (r *Runtime) ExecuteStream(ctx context.Context, plan Plan, seed envelope.En
 		sink(StreamEvent{Type: envelope.SSEEventChunk, Data: chunk})
 	}
 
+	// Prefetch memory for the terminal step asynchronously. For single-step
+	// plans (the common case) this overlaps the memory I/O with any setup work.
+	var terminalMemCh <-chan envelope.Envelope
+	if !plan.SkipFirstMemoryInjection {
+		terminalMemCh = r.injectMemoryAsync(plan.Steps[lastIdx], current)
+	}
+
 	for i, step := range plan.Steps {
 		// For the last step, try the stream handler
 		if i == lastIdx {
-			injected := r.injectMemory(step, current)
+			var injected envelope.Envelope
+			switch {
+			case plan.SkipFirstMemoryInjection && i == 0:
+				injected = current
+			case terminalMemCh != nil:
+				injected = <-terminalMemCh
+			default:
+				injected = r.injectMemory(step, current)
+			}
 			contextIDs := extractContextIDs(injected.Memory)
 
 			if sh, ok := r.registry.GetStream(step.Pipe); ok {

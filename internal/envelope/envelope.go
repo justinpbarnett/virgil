@@ -56,6 +56,15 @@ type MemoryEntry struct {
 	Content string `json:"content"`
 }
 
+// EnvelopeUsage carries token counts and computed cost for a provider API call.
+// It is nil when no usage data is available (e.g., Claude CLI, unknown model).
+type EnvelopeUsage struct {
+	InputTokens  int     `json:"input_tokens"`
+	OutputTokens int     `json:"output_tokens"`
+	Model        string  `json:"model"`
+	Cost         float64 `json:"cost"`
+}
+
 type Envelope struct {
 	Pipe        string            `json:"pipe"`
 	Action      string            `json:"action"`
@@ -66,6 +75,7 @@ type Envelope struct {
 	ContentType string            `json:"content_type"`
 	Error       *EnvelopeError    `json:"error"`
 	Memory      []MemoryEntry     `json:"memory,omitempty"`
+	Usage       *EnvelopeUsage    `json:"usage,omitempty"`
 }
 
 type EnvelopeError struct {

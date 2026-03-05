@@ -11,16 +11,21 @@ import (
 	"strings"
 )
 
-type ClaudeProvider struct {
+type claudeProvider struct {
 	model        string
 	binary       string
 	resolvedPath string
 	maxTurns     int
 	logger       *slog.Logger
 	verbose      bool
+	lastUsage    Usage
 }
 
-func NewClaudeProvider(cfg ProviderConfig) *ClaudeProvider {
+func (c *claudeProvider) LastUsage() Usage {
+	return c.lastUsage
+}
+
+func ClaudeProvider(cfg ProviderConfig) *claudeProvider {
 	model := cfg.Model
 	if model == "" {
 		model = "sonnet"
@@ -34,15 +39,15 @@ func NewClaudeProvider(cfg ProviderConfig) *ClaudeProvider {
 		logger = slog.Default()
 	}
 	resolved, _ := exec.LookPath(binary)
-	return &ClaudeProvider{model: model, binary: binary, resolvedPath: resolved, maxTurns: cfg.MaxTurns, logger: logger, verbose: cfg.Verbose}
+	return &claudeProvider{model: model, binary: binary, resolvedPath: resolved, maxTurns: cfg.MaxTurns, logger: logger, verbose: cfg.Verbose}
 }
 
-func (c *ClaudeProvider) Available() bool {
+func (c *claudeProvider) Available() bool {
 	return c.resolvedPath != ""
 }
 
 // checkAvailable returns an error if the Claude CLI is not found.
-func (c *ClaudeProvider) checkAvailable() error {
+func (c *claudeProvider) checkAvailable() error {
 	if !c.Available() {
 		return fmt.Errorf("claude CLI not found on PATH — install it or run: npm install -g @anthropic-ai/claude-code")
 	}
@@ -50,7 +55,7 @@ func (c *ClaudeProvider) checkAvailable() error {
 }
 
 // buildArgs constructs the common argument list for the Claude CLI.
-func (c *ClaudeProvider) buildArgs(system string, extra ...string) []string {
+func (c *claudeProvider) buildArgs(system string, extra ...string) []string {
 	args := []string{
 		"-p",
 		"--model", c.model,
@@ -64,7 +69,7 @@ func (c *ClaudeProvider) buildArgs(system string, extra ...string) []string {
 	return args
 }
 
-func (c *ClaudeProvider) logRequest(streaming bool, system, user string) {
+func (c *claudeProvider) logRequest(streaming bool, system, user string) {
 	c.logger.Info("provider called", "model", c.model, "streaming", streaming)
 	c.logger.Debug("provider request", "system_len", len(system), "user_len", len(user))
 	if c.verbose {
@@ -72,11 +77,11 @@ func (c *ClaudeProvider) logRequest(streaming bool, system, user string) {
 	}
 }
 
-func (c *ClaudeProvider) logResponse(result string) {
+func (c *claudeProvider) logResponse(result string) {
 	c.logger.Info("provider responded", "bytes", len(result))
 }
 
-func (c *ClaudeProvider) logError(err error, stderr string) {
+func (c *claudeProvider) logError(err error, stderr string) {
 	c.logger.Error("provider failed", "error", err, "stderr", stderr)
 }
 
@@ -91,7 +96,7 @@ func classifyCLIError(ctx context.Context, runErr error, stderr string) error {
 	return fmt.Errorf("claude CLI error: %s (stderr: %s)", runErr, stderr)
 }
 
-func (c *ClaudeProvider) Complete(ctx context.Context, system, user string) (string, error) {
+func (c *claudeProvider) Complete(ctx context.Context, system, user string) (string, error) {
 	if err := c.checkAvailable(); err != nil {
 		return "", err
 	}
@@ -111,15 +116,16 @@ func (c *ClaudeProvider) Complete(ctx context.Context, system, user string) (str
 		return "", classifyCLIError(ctx, err, stderr.String())
 	}
 
-	result, err := parseClaudeResponse(stdout.Bytes())
-	if err != nil {
-		return "", err
+	result, usage := parseClaudeResponseWithUsage(stdout.Bytes(), c.model)
+	if result == "" {
+		return "", fmt.Errorf("empty response from claude CLI")
 	}
+	c.lastUsage = usage
 	c.logResponse(result)
 	return result, nil
 }
 
-func (c *ClaudeProvider) CompleteStream(ctx context.Context, system, user string, onChunk func(chunk string)) (string, error) {
+func (c *claudeProvider) CompleteStream(ctx context.Context, system, user string, onChunk func(chunk string)) (string, error) {
 	if err := c.checkAvailable(); err != nil {
 		return "", err
 	}
@@ -167,12 +173,30 @@ func (c *ClaudeProvider) CompleteStream(ctx context.Context, system, user string
 }
 
 func parseClaudeResponse(data []byte) (string, error) {
-	// Try parsing as JSON with result field
+	text, _ := parseClaudeResponseWithUsage(data, "")
+	if text == "" {
+		return "", fmt.Errorf("empty response from claude CLI")
+	}
+	return text, nil
+}
+
+func parseClaudeResponseWithUsage(data []byte, model string) (string, Usage) {
+	// Try parsing as JSON with result field (may include usage)
 	var response struct {
 		Result string `json:"result"`
+		Usage  struct {
+			InputTokens  int `json:"input_tokens"`
+			OutputTokens int `json:"output_tokens"`
+		} `json:"usage"`
 	}
 	if err := json.Unmarshal(data, &response); err == nil && response.Result != "" {
-		return response.Result, nil
+		usage := Usage{
+			InputTokens:  response.Usage.InputTokens,
+			OutputTokens: response.Usage.OutputTokens,
+			Model:        model,
+			Cost:         CostFor(model, response.Usage.InputTokens, response.Usage.OutputTokens),
+		}
+		return response.Result, usage
 	}
 
 	// Try parsing as JSON array of content blocks
@@ -188,14 +212,11 @@ func parseClaudeResponse(data []byte) (string, error) {
 			}
 		}
 		if len(texts) > 0 {
-			return strings.Join(texts, "\n"), nil
+			return strings.Join(texts, "\n"), Usage{}
 		}
 	}
 
 	// Fall back to raw string
 	s := strings.TrimSpace(string(data))
-	if s == "" {
-		return "", fmt.Errorf("empty response from claude CLI")
-	}
-	return s, nil
+	return s, Usage{}
 }

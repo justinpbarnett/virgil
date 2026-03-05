@@ -59,6 +59,9 @@ type model struct {
 	reconnecting   bool
 	inputQueue     []string
 
+	// Session cost accumulator — reset on :clear and app start
+	sessionCost float64
+
 	// Voice status
 	voiceRecording    bool
 	voiceMode         config.VoiceOutputMode // transient — cleared after 3s (display only)
@@ -475,8 +478,9 @@ func (m model) handleCommand(input string) (tea.Model, tea.Cmd) {
 		m.panel.Toggle()
 		m.updateLayout()
 	case "":
-		// :clear — reset stream
+		// :clear — reset stream and session cost
 		m.stream.Clear()
+		m.sessionCost = 0
 		if m.voiceStreamID != 0 {
 			return m, postVoiceStop(m.serverAddr)
 		}
@@ -570,6 +574,10 @@ func (m model) handleStreamDone(msg streamDoneMsg) (tea.Model, tea.Cmd) {
 	m.cancelFn = nil
 	m.lastEscTime = time.Time{}
 	m.keysShown = false
+
+	if msg.err == nil && msg.env.Usage != nil {
+		m.sessionCost += msg.env.Usage.Cost
+	}
 
 	pendingText := m.pending.String()
 	var contentText string
@@ -684,6 +692,9 @@ func (m model) View() string {
 	}
 
 	titleStr := m.theme.Dim.Render("virgil")
+	if m.sessionCost > 0 {
+		titleStr += "  " + m.theme.Dim.Render(formatCost(m.sessionCost))
+	}
 	titleWidth := lipgloss.Width(titleStr)
 
 	var sep string
@@ -720,6 +731,15 @@ func (m model) View() string {
 	}
 
 	return mainColumn
+}
+
+// formatCost formats a dollar amount for the separator line.
+// Sub-cent amounts show as "<$0.01" to distinguish from free.
+func formatCost(cost float64) string {
+	if cost < 0.01 {
+		return "<$0.01"
+	}
+	return fmt.Sprintf("$%.2f", cost)
 }
 
 func tickCmd() tea.Cmd {

@@ -456,3 +456,74 @@ func TestStoreMemorySaverCreatesEdges(t *testing.T) {
 		t.Error("expected new invocation to be reachable via produced_by from context")
 	}
 }
+
+// TestSkipFirstMemoryInjectionEquivalentToSequential verifies that pre-injecting
+// the seed before Execute (parallel prefetch path) produces identical memory
+// entries to the sequential path where the runtime injects memory internally.
+func TestSkipFirstMemoryInjectionEquivalentToSequential(t *testing.T) {
+	entries := []envelope.MemoryEntry{
+		{Type: "topic_history", Content: "previous session"},
+	}
+
+	var seqMemory []envelope.MemoryEntry
+	var preMemory []envelope.MemoryEntry
+
+	reg := pipe.NewRegistry()
+	reg.Register(pipe.Definition{Name: "capture"}, func(input envelope.Envelope, flags map[string]string) envelope.Envelope {
+		out := envelope.New("capture", "run")
+		out.Content = input.Content
+		out.ContentType = envelope.ContentText
+		out.Memory = input.Memory
+		return out
+	})
+
+	seed := envelope.New("input", "test")
+	seed.Content = "hello"
+	seed.ContentType = envelope.ContentText
+
+	// Sequential path: runtime injects memory internally.
+	inj1 := &stubInjector{entries: entries}
+	rt1 := New(reg, nil, nil)
+	rt1.WithMemory(inj1, nil, map[string]config.MemoryConfig{})
+	r1 := rt1.Execute(Plan{Steps: []Step{{Pipe: "capture"}}}, seed)
+	seqMemory = r1.Memory
+
+	// Parallel path: caller pre-injects the seed and sets SkipFirstMemoryInjection.
+	inj2 := &stubInjector{entries: entries}
+	preSeed := inj2.InjectContext(seed, config.MemoryConfig{})
+	rt2 := New(reg, nil, nil)
+	rt2.WithMemory(inj2, nil, map[string]config.MemoryConfig{})
+	r2 := rt2.Execute(Plan{Steps: []Step{{Pipe: "capture"}}, SkipFirstMemoryInjection: true}, preSeed)
+	preMemory = r2.Memory
+
+	if len(seqMemory) != len(preMemory) {
+		t.Fatalf("sequential got %d memory entries, parallel got %d", len(seqMemory), len(preMemory))
+	}
+	for i := range seqMemory {
+		if seqMemory[i].Type != preMemory[i].Type || seqMemory[i].Content != preMemory[i].Content {
+			t.Errorf("memory[%d] mismatch: seq=%+v, parallel=%+v", i, seqMemory[i], preMemory[i])
+		}
+	}
+}
+
+// TestSkipFirstMemoryInjectionSkipsInjector verifies that when
+// SkipFirstMemoryInjection is set, the runtime does not call the injector for
+// step 0 (preventing double-injection).
+func TestSkipFirstMemoryInjectionSkipsInjector(t *testing.T) {
+	reg := pipe.NewRegistry()
+	reg.Register(pipe.Definition{Name: "noop"}, echoHandler("noop"))
+
+	inj := &stubInjector{}
+	rt := New(reg, nil, nil)
+	rt.WithMemory(inj, nil, map[string]config.MemoryConfig{})
+
+	seed := envelope.New("input", "test")
+	seed.Content = "hello"
+	seed.ContentType = envelope.ContentText
+
+	rt.Execute(Plan{Steps: []Step{{Pipe: "noop"}}, SkipFirstMemoryInjection: true}, seed)
+
+	if inj.called != 0 {
+		t.Errorf("expected injector not called when SkipFirstMemoryInjection=true, got %d calls", inj.called)
+	}
+}
