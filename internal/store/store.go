@@ -63,6 +63,12 @@ type ContextRequest struct {
 // Store wraps a SQLite database.
 type Store struct {
 	db *sql.DB
+
+	// prepared statements for hot-path queries
+	listAllStateStmt       *sql.Stmt
+	searchRankStmt         *sql.Stmt
+	searchInvStmt          *sql.Stmt     // no pipe, no since
+	searchInvSinceStmt     *sql.Stmt     // no pipe, with since
 }
 
 // newID generates a UUID v4.
@@ -92,12 +98,75 @@ func Open(path string) (*Store, error) {
 		return nil, fmt.Errorf("enabling foreign keys: %w", err)
 	}
 
+	db.Exec("PRAGMA journal_mode=WAL")
+	db.Exec("PRAGMA synchronous=NORMAL")
+	db.Exec("PRAGMA cache_size=-8000") // 8MB cache
+	db.Exec("PRAGMA busy_timeout=5000")
+
+	db.SetMaxOpenConns(1)
+	db.SetMaxIdleConns(4)
+
 	if err := migrate(db); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("running migrations: %w", err)
 	}
 
-	return &Store{db: db}, nil
+	st := &Store{db: db}
+	if err := st.prepareStatements(); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("preparing statements: %w", err)
+	}
+
+	return st, nil
+}
+
+func (s *Store) prepareStatements() error {
+	var err error
+
+	s.listAllStateStmt, err = s.db.Prepare(
+		"SELECT id, content, updated_at FROM memories WHERE kind = 'working_state' ORDER BY updated_at DESC LIMIT 100",
+	)
+	if err != nil {
+		return fmt.Errorf("listAllState: %w", err)
+	}
+
+	s.searchRankStmt, err = s.db.Prepare(`
+		SELECT m.rowid, m.content, m.tags, m.created_at, m.updated_at
+		FROM memories_fts f
+		JOIN memories m ON m.rowid = f.rowid
+		WHERE memories_fts MATCH ? AND m.kind = 'explicit'
+		ORDER BY rank
+		LIMIT ?
+	`)
+	if err != nil {
+		return fmt.Errorf("searchRank: %w", err)
+	}
+
+	s.searchInvStmt, err = s.db.Prepare(`
+		SELECT m.id, m.source_pipe, m.signal, m.content, m.created_at
+		FROM memories_fts f
+		JOIN memories m ON m.rowid = f.rowid
+		WHERE memories_fts MATCH ? AND m.kind = 'invocation'
+		ORDER BY rank
+		LIMIT ?
+	`)
+	if err != nil {
+		return fmt.Errorf("searchInv: %w", err)
+	}
+
+	s.searchInvSinceStmt, err = s.db.Prepare(`
+		SELECT m.id, m.source_pipe, m.signal, m.content, m.created_at
+		FROM memories_fts f
+		JOIN memories m ON m.rowid = f.rowid
+		WHERE memories_fts MATCH ? AND m.kind = 'invocation' AND m.created_at >= ?
+		ORDER BY rank
+		LIMIT ?
+	`)
+	if err != nil {
+		return fmt.Errorf("searchInvSince: %w", err)
+	}
+
+	return nil
 }
 
 const newSchemaDDL = `
@@ -114,6 +183,7 @@ CREATE TABLE IF NOT EXISTS memories (
 );
 
 CREATE INDEX IF NOT EXISTS idx_memories_kind ON memories(kind);
+CREATE INDEX IF NOT EXISTS idx_memories_kind_id ON memories(kind, id);
 CREATE INDEX IF NOT EXISTS idx_memories_source_pipe ON memories(source_pipe);
 CREATE INDEX IF NOT EXISTS idx_memories_created_at ON memories(created_at);
 
@@ -279,6 +349,18 @@ func migrateOldSchema(db *sql.DB) error {
 }
 
 func (s *Store) Close() error {
+	if s.listAllStateStmt != nil {
+		s.listAllStateStmt.Close()
+	}
+	if s.searchRankStmt != nil {
+		s.searchRankStmt.Close()
+	}
+	if s.searchInvStmt != nil {
+		s.searchInvStmt.Close()
+	}
+	if s.searchInvSinceStmt != nil {
+		s.searchInvSinceStmt.Close()
+	}
 	return s.db.Close()
 }
 
@@ -299,19 +381,29 @@ func (s *Store) Search(query string, limit int, sort string) ([]Entry, error) {
 		limit = 10
 	}
 
-	orderClause := "ORDER BY rank"
+	var rows *sql.Rows
+	var err error
 	if sort == "recent" {
-		orderClause = "ORDER BY m.created_at DESC"
+		rows, err = s.db.Query(`
+			SELECT m.rowid, m.content, m.tags, m.created_at, m.updated_at
+			FROM memories_fts f
+			JOIN memories m ON m.rowid = f.rowid
+			WHERE memories_fts MATCH ? AND m.kind = 'explicit'
+			ORDER BY m.created_at DESC
+			LIMIT ?
+		`, query, limit)
+	} else if s.searchRankStmt != nil {
+		rows, err = s.searchRankStmt.Query(query, limit)
+	} else {
+		rows, err = s.db.Query(`
+			SELECT m.rowid, m.content, m.tags, m.created_at, m.updated_at
+			FROM memories_fts f
+			JOIN memories m ON m.rowid = f.rowid
+			WHERE memories_fts MATCH ? AND m.kind = 'explicit'
+			ORDER BY rank
+			LIMIT ?
+		`, query, limit)
 	}
-
-	rows, err := s.db.Query(fmt.Sprintf(`
-		SELECT m.rowid, m.content, m.tags, m.created_at, m.updated_at
-		FROM memories_fts f
-		JOIN memories m ON m.rowid = f.rowid
-		WHERE memories_fts MATCH ? AND m.kind = 'explicit'
-		%s
-		LIMIT ?
-	`, orderClause), query, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -418,31 +510,47 @@ func (s *Store) SaveInvocation(pipe, signal, output string) (string, error) {
 }
 
 // SearchInvocations performs an FTS search on invocation entries.
-func (s *Store) SearchInvocations(query, pipe string, limit int, since time.Time) ([]InvocationEntry, error) {
+func (s *Store) SearchInvocations(query, pipeName string, limit int, since time.Time) ([]InvocationEntry, error) {
 	if limit <= 0 {
 		limit = 10
 	}
 
-	conds := []string{"memories_fts MATCH ?", "m.kind = 'invocation'"}
-	args := []any{query}
-	if pipe != "" {
-		conds = append(conds, "m.source_pipe = ?")
-		args = append(args, pipe)
-	}
-	if !since.IsZero() {
-		conds = append(conds, "m.created_at >= ?")
-		args = append(args, since.UnixNano())
-	}
-	args = append(args, limit)
+	var rows *sql.Rows
+	var err error
 
-	rows, err := s.db.Query(fmt.Sprintf(`
-		SELECT m.id, m.source_pipe, m.signal, m.content, m.created_at
-		FROM memories_fts f
-		JOIN memories m ON m.rowid = f.rowid
-		WHERE %s
-		ORDER BY rank
-		LIMIT ?
-	`, strings.Join(conds, " AND ")), args...)
+	// Use prepared statements for the common no-pipe-filter cases
+	if pipeName == "" && s.searchInvStmt != nil {
+		if since.IsZero() {
+			rows, err = s.searchInvStmt.Query(query, limit)
+		} else if s.searchInvSinceStmt != nil {
+			rows, err = s.searchInvSinceStmt.Query(query, since.UnixNano(), limit)
+		}
+	}
+
+	if rows == nil && err == nil {
+		// Fall back to dynamic query for filtered cases
+		conds := []string{"memories_fts MATCH ?", "m.kind = 'invocation'"}
+		args := []any{query}
+		if pipeName != "" {
+			conds = append(conds, "m.source_pipe = ?")
+			args = append(args, pipeName)
+		}
+		if !since.IsZero() {
+			conds = append(conds, "m.created_at >= ?")
+			args = append(args, since.UnixNano())
+		}
+		args = append(args, limit)
+
+		rows, err = s.db.Query(fmt.Sprintf(`
+			SELECT m.id, m.source_pipe, m.signal, m.content, m.created_at
+			FROM memories_fts f
+			JOIN memories m ON m.rowid = f.rowid
+			WHERE %s
+			ORDER BY rank
+			LIMIT ?
+		`, strings.Join(conds, " AND ")), args...)
+	}
+
 	if err != nil {
 		return nil, err
 	}
@@ -476,9 +584,15 @@ func parseStateID(id string) (namespace, key string) {
 
 // listAllState returns the most recent working state entries across all namespaces.
 func (s *Store) listAllState() ([]StateEntry, error) {
-	rows, err := s.db.Query(
-		"SELECT id, content, updated_at FROM memories WHERE kind = 'working_state' ORDER BY updated_at DESC LIMIT 100",
-	)
+	var rows *sql.Rows
+	var err error
+	if s.listAllStateStmt != nil {
+		rows, err = s.listAllStateStmt.Query()
+	} else {
+		rows, err = s.db.Query(
+			"SELECT id, content, updated_at FROM memories WHERE kind = 'working_state' ORDER BY updated_at DESC LIMIT 100",
+		)
+	}
 	if err != nil {
 		return nil, err
 	}
