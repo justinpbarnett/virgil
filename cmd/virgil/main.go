@@ -214,7 +214,7 @@ func runServer(cfgDir string) error {
 	}
 
 	// Build router from registered definitions
-	missLogPath := filepath.Join(config.DataDir(), "misses.jsonl")
+	missLogPath := config.DailyPath(config.LogDir(), "misses", ".jsonl")
 	missLog, err := router.NewMissLog(missLogPath)
 	if err != nil {
 		logger.Warn("miss log not available", "error", err)
@@ -224,6 +224,7 @@ func runServer(cfgDir string) error {
 	}
 
 	rt := router.NewRouter(reg.Definitions(), logger)
+	defer rt.Close()
 
 	// Build AI planner for Layer 4 routing
 	var aiPlanner *planner.AIPlanner

@@ -42,6 +42,9 @@ func EnsureServer(binary string, serverAddr string) error {
 	}
 
 	// Start server — send output to log file, not the terminal
+	if err := os.MkdirAll(config.LogDir(), 0o755); err != nil {
+		return fmt.Errorf("creating log dir: %w", err)
+	}
 	logPath := ServerLogPath()
 	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
 	if err != nil {
@@ -75,9 +78,9 @@ func EnsureServer(binary string, serverAddr string) error {
 	return fmt.Errorf("server failed to start within 5 seconds")
 }
 
-// ServerLogPath returns the path to the server log file.
+// ServerLogPath returns today's dated server log path.
 func ServerLogPath() string {
-	return filepath.Join(config.DataDir(), "virgil.log")
+	return config.DailyPath(config.LogDir(), "server", ".log")
 }
 
 func isServerRunning(pidPath, serverAddr string) bool {

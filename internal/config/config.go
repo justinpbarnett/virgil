@@ -517,6 +517,12 @@ func (pc PipeConfig) ToDefinition() pipe.Definition {
 		Category:    pc.Category,
 		Triggers:    pc.Triggers,
 		Flags:       pc.Flags,
+		Vocabulary: pipe.DefinitionVocabulary{
+			Verbs:     pc.Vocabulary.Verbs,
+			Sources:   pc.Vocabulary.Sources,
+			Types:     pc.Vocabulary.Types,
+			Modifiers: pc.Vocabulary.Modifiers,
+		},
 	}
 }
 
@@ -573,6 +579,16 @@ func UserDir() string {
 // DataDir returns the path to the shared virgil data directory (~/.local/share/virgil).
 func DataDir() string {
 	return homeRelDir(".local", "share", "virgil")
+}
+
+// LogDir returns the path to the virgil logs directory (~/.local/share/virgil/logs).
+func LogDir() string {
+	return filepath.Join(DataDir(), "logs")
+}
+
+// DailyPath returns a dated file path of the form dir/prefix-YYYY-MM-DD.ext.
+func DailyPath(dir, prefix, ext string) string {
+	return filepath.Join(dir, prefix+"-"+time.Now().Format("2006-01-02")+ext)
 }
 
 func homeRelDir(parts ...string) string {

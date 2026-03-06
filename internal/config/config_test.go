@@ -4,6 +4,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"time"
 	"strings"
 	"testing"
 
@@ -935,6 +936,16 @@ ack:
 	}
 	if cfg.Ack.MaxTokens != 128 {
 		t.Errorf("expected ack max_tokens 128, got %d", cfg.Ack.MaxTokens)
+	}
+}
+
+func TestDailyPath(t *testing.T) {
+	dir := t.TempDir()
+	got := DailyPath(dir, "server", ".log")
+	date := time.Now().Format("2006-01-02")
+	want := filepath.Join(dir, "server-"+date+".log")
+	if got != want {
+		t.Errorf("DailyPath = %q, want %q", got, want)
 	}
 }
 

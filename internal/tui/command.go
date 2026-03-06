@@ -3,9 +3,12 @@ package tui
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
+
+	"github.com/justinpbarnett/virgil/internal/config"
 )
 
 // CommandResult holds the outcome of a colon command.
@@ -53,6 +56,14 @@ func NewCommandRegistry() *CommandRegistry {
 		}
 		path := ServerLogPath()
 		lines, err := tailFile(path, n)
+		if err != nil {
+			// Today's log doesn't exist yet — fall back to most recent server log.
+			if matches, _ := filepath.Glob(filepath.Join(config.LogDir(), "server-*.log")); len(matches) > 0 {
+				sort.Strings(matches)
+				path = matches[len(matches)-1]
+				lines, err = tailFile(path, n)
+			}
+		}
 		if err != nil {
 			return CommandResult{Output: fmt.Sprintf("no log file: %v", err)}
 		}

@@ -34,7 +34,8 @@ start: build-if-changed
         rm -f "$pid_file"
     fi
     if [ -f "$HOME/.config/virgil/voice.json" ]; then
-        ./bin/virgil --voice >>"$HOME/.local/share/virgil/virgil.log" 2>&1 &
+        mkdir -p "$HOME/.local/share/virgil/logs"
+        ./bin/virgil --voice >>"$HOME/.local/share/virgil/logs/voice-$(date +%Y-%m-%d).log" 2>&1 &
         voice_pid=$!
         trap "kill $voice_pid 2>/dev/null" EXIT
     fi
