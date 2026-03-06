@@ -1,0 +1,106 @@
+name: decompose
+description: Breaks a feature spec into sub-tasks with a dependency graph for parallel execution.
+category: dev
+streaming: false
+timeout: 60s
+provider: anthropic
+model: sonnet
+
+triggers:
+  exact: []
+  keywords: []
+  patterns: []
+
+flags:
+  cwd:
+    description: Working directory (worktree path).
+    default: ""
+  spec:
+    description: The feature spec to decompose.
+    default: ""
+  findings:
+    description: Reviewer findings from a previous cycle (JSON string). When present, decompose for rework.
+    default: ""
+  max_tasks:
+    description: Maximum number of sub-tasks to produce.
+    default: "8"
+
+vocabulary:
+  verbs: {}
+  types: {}
+  sources: {}
+  modifiers: {}
+
+prompts:
+  system: |
+    You are a software architect who decomposes feature specs into discrete,
+    implementable sub-tasks. Each task must be self-contained and buildable
+    independently by a developer who has NOT read the full feature spec.
+
+    Rules:
+    - Analyze the spec and codebase context to identify natural task boundaries.
+    - Each task gets its own mini-spec with enough detail for an implementer.
+    - List ALL files each task will create or modify.
+    - CRITICAL CONSTRAINT: No two tasks at the same dependency level may share
+      files. This is a hard requirement for safe parallel execution. If two
+      pieces of work touch the same file, they must be in a dependency
+      relationship (one depends on the other), not siblings.
+    - Order tasks by dependency: foundational types/interfaces first, then
+      implementations that depend on them, then integration/wiring last.
+    - Keep tasks focused. One task = one logical concern. A task that touches
+      5+ files is probably too broad — consider splitting.
+    - When findings are present, create targeted tasks that address each
+      finding. Do not re-decompose the entire feature.
+    - Task IDs must be short, unique strings (e.g. "t1", "t2", "t3").
+    - depends_on must only reference IDs of other tasks in the same graph.
+    - The graph must be a DAG — no circular dependencies.
+
+    Respond with ONLY a JSON object. No explanation, no markdown fences,
+    no text before or after. The JSON must have this exact shape:
+
+    {
+      "tasks": [
+        {
+          "id": "t1",
+          "name": "short-kebab-name",
+          "spec": "Detailed mini-spec...",
+          "files": ["path/to/file.go", "path/to/file_test.go"],
+          "depends_on": []
+        }
+      ]
+    }
+
+  templates:
+    initial: |
+      Decompose the following feature into sub-tasks.
+
+      ## Feature Spec
+      {{.Spec}}
+
+      ## Codebase Context
+      {{.Context}}
+
+      Produce a JSON task graph. Each task needs: id, name, spec (mini-spec),
+      files (list of files to create/modify), depends_on (list of task IDs).
+
+      Maximum {{.MaxTasks}} tasks.
+
+    rework: |
+      The following reviewer findings need to be addressed.
+
+      ## Original Feature Spec
+      {{.Spec}}
+
+      ## Codebase Context
+      {{.Context}}
+
+      ## Reviewer Findings
+      {{range .Findings}}
+      - [{{.Category}}/{{.Severity}}] {{.File}}:{{.Line}} — {{.Issue}}
+        Action: {{.Action}}
+      {{end}}
+
+      Create targeted sub-tasks that address each finding. Do not re-implement
+      the entire feature — only fix what the reviewer flagged.
+
+      Produce a JSON task graph. Maximum {{.MaxTasks}} tasks.
