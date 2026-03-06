@@ -8,7 +8,7 @@ import (
 )
 
 func BenchmarkRouteExactMatch(b *testing.B) {
-	r := NewRouter(testDefs(), nil, nil)
+	r := NewRouter(testDefs(), nil)
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		r.Route(context.Background(), "check my calendar", parser.ParsedSignal{})
@@ -16,7 +16,7 @@ func BenchmarkRouteExactMatch(b *testing.B) {
 }
 
 func BenchmarkRouteKeyword(b *testing.B) {
-	r := NewRouter(testDefs(), nil, nil)
+	r := NewRouter(testDefs(), nil)
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		r.Route(context.Background(), "show my scheduling events for the next meeting", parser.ParsedSignal{})
@@ -24,7 +24,7 @@ func BenchmarkRouteKeyword(b *testing.B) {
 }
 
 func BenchmarkRouteCategory(b *testing.B) {
-	r := NewRouter(testDefs(), nil, nil)
+	r := NewRouter(testDefs(), nil)
 	parsed := parser.ParsedSignal{
 		Verb:   "memory",
 		Action: "retrieve",
@@ -36,7 +36,7 @@ func BenchmarkRouteCategory(b *testing.B) {
 }
 
 func BenchmarkRouteMiss(b *testing.B) {
-	r := NewRouter(testDefs(), nil, nil)
+	r := NewRouter(testDefs(), nil)
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		r.Route(context.Background(), "xyzzy completely unrecognized signal", parser.ParsedSignal{})

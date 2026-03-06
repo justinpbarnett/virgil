@@ -77,7 +77,7 @@ func TestStemAndExpandNoSynonym(t *testing.T) {
 func TestRoutingWithStemming(t *testing.T) {
 	// "scheduling" → "schedul" matches calendar keyword "schedule" → "schedul"
 	// Signal includes 3 of 4 calendar keywords to exceed 0.6 threshold
-	r := NewRouter(testDefs(), nil, nil)
+	r := NewRouter(testDefs(), nil)
 	result := r.Route(context.Background(), "show my scheduling events for the next meeting", parser.ParsedSignal{})
 	if result.Pipe != "calendar" {
 		t.Errorf("expected calendar for 'scheduling', got %s", result.Pipe)
@@ -99,7 +99,7 @@ func TestRoutingWithSynonym(t *testing.T) {
 			Triggers: pipe.Triggers{Keywords: []string{"chat"}},
 		},
 	}
-	r := NewRouter(defs, nil, nil)
+	r := NewRouter(defs, nil)
 
 	// "agenda" expands to "calendar" via synonym; "schedule" adds a second hit (2/3 ≥ 0.6)
 	result := r.Route(context.Background(), "what's on my agenda and schedule", parser.ParsedSignal{})
@@ -110,7 +110,7 @@ func TestRoutingWithSynonym(t *testing.T) {
 
 func TestLayer4DefaultsToChat(t *testing.T) {
 	// Without a classifier, Layer 4 must default to chat immediately
-	r := NewRouter(testDefs(), nil, nil)
+	r := NewRouter(testDefs(), nil)
 	result := r.Route(context.Background(), "xyzzy absolutely unmatched signal", parser.ParsedSignal{})
 	if result.Pipe != "chat" {
 		t.Errorf("expected chat fallback, got %s", result.Pipe)

@@ -23,18 +23,23 @@ func NewCompleter(cmdNames []string) *Completer {
 	return &Completer{commands: cmdNames}
 }
 
-// LoadPipes fetches pipe definitions from the server.
-func (c *Completer) LoadPipes(serverAddr string) {
+// SetPipes sets the pipe definitions used for completion.
+func (c *Completer) SetPipes(defs []pipe.Definition) {
+	c.pipes = defs
+}
+
+// FetchPipes fetches pipe definitions from the server.
+func FetchPipes(serverAddr string) []pipe.Definition {
 	resp, err := signalClient.Get(fmt.Sprintf("http://%s/pipes", serverAddr))
 	if err != nil {
-		return
+		return nil
 	}
 	defer resp.Body.Close()
 	var defs []pipe.Definition
 	if err := json.NewDecoder(resp.Body).Decode(&defs); err != nil {
-		return
+		return nil
 	}
-	c.pipes = defs
+	return defs
 }
 
 // Complete returns the next completion for the given input text.

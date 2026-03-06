@@ -19,6 +19,8 @@ func RunOneShot(signal string, serverAddr string) error {
 	}
 	defer reader.Close()
 
+	chunked := false
+	hadAck := false
 	for {
 		event, err := reader.Next()
 		if err != nil {
@@ -29,14 +31,25 @@ func RunOneShot(signal string, serverAddr string) error {
 		}
 
 		switch event.Type {
-		case envelope.SSEEventChunk:
+		case envelope.SSEEventChunk, envelope.SSEEventAck:
 			var chunk struct {
 				Text string `json:"text"`
 			}
 			if err := json.Unmarshal([]byte(event.Data), &chunk); err != nil {
+				if event.Type == envelope.SSEEventAck {
+					continue
+				}
 				return fmt.Errorf("invalid chunk: %w", err)
 			}
+			if hadAck && event.Type != envelope.SSEEventAck {
+				fmt.Print("\n\n")
+				hadAck = false
+			}
+			if event.Type == envelope.SSEEventAck {
+				hadAck = true
+			}
 			fmt.Print(chunk.Text)
+			chunked = true
 
 		case envelope.SSEEventDone:
 			var env envelope.Envelope
@@ -46,12 +59,13 @@ func RunOneShot(signal string, serverAddr string) error {
 			if env.Error != nil {
 				return fmt.Errorf("error (%s): %s", env.Error.Severity, env.Error.Message)
 			}
-			// If no chunks were streamed, print the final content
-			content := envelope.ContentToText(env.Content, env.ContentType)
-			if content != "" {
-				fmt.Println(content)
-			} else {
+			if chunked {
 				fmt.Println() // newline after streamed chunks
+			} else {
+				content := envelope.ContentToText(env.Content, env.ContentType)
+				if content != "" {
+					fmt.Println(content)
+				}
 			}
 			return nil
 		}

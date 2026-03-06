@@ -900,8 +900,8 @@ server:
 	if cfg.Ack.Provider != "gemini" {
 		t.Errorf("expected ack provider gemini, got %s", cfg.Ack.Provider)
 	}
-	if cfg.Ack.Model != "gemini-3.1-flash-preview" {
-		t.Errorf("expected ack model gemini-3.1-flash-preview, got %s", cfg.Ack.Model)
+	if cfg.Ack.Model != "gemini-3-flash-preview" {
+		t.Errorf("expected ack model gemini-3-flash-preview, got %s", cfg.Ack.Model)
 	}
 	if cfg.Ack.MaxTokens != 256 {
 		t.Errorf("expected ack max_tokens 256, got %d", cfg.Ack.MaxTokens)

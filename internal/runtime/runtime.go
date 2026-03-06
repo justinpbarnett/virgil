@@ -6,9 +6,11 @@ import (
 	"fmt"
 	"log/slog"
 	"maps"
+	"strings"
 	"text/template"
 	"time"
 
+	"github.com/justinpbarnett/virgil/internal/bridge"
 	"github.com/justinpbarnett/virgil/internal/config"
 	"github.com/justinpbarnett/virgil/internal/envelope"
 	"github.com/justinpbarnett/virgil/internal/pipe"
@@ -258,6 +260,13 @@ func (r *Runtime) ExecuteStream(ctx context.Context, plan Plan, seed envelope.En
 	r.logEnvelope("seed envelope", seed)
 
 	chunkSink := func(chunk string) {
+		if strings.HasPrefix(chunk, bridge.ToolChunkPrefix) {
+			payload := strings.TrimPrefix(chunk, bridge.ToolChunkPrefix)
+			name, summary, _ := strings.Cut(payload, "\t")
+			data, _ := json.Marshal(map[string]string{"name": name, "summary": summary})
+			sink(StreamEvent{Type: envelope.SSEEventTool, Data: string(data)})
+			return
+		}
 		sink(StreamEvent{Type: envelope.SSEEventChunk, Data: chunk})
 	}
 

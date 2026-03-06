@@ -51,7 +51,11 @@ func (o *LogObserver) OnTransition(pipe string, env envelope.Envelope, duration 
 
 	// Info: short log
 	if hasError {
-		o.logger.Error("pipe error", "pipe", pipe, "duration", duration.String(), "error", env.Error.Message)
+		if env.Error.Severity == envelope.SeverityWarn {
+			o.logger.Warn("pipe cancelled", "pipe", pipe, "duration", duration.String())
+		} else {
+			o.logger.Error("pipe error", "pipe", pipe, "duration", duration.String(), "error", env.Error.Message)
+		}
 	} else {
 		o.logger.Info("pipe ok", "pipe", pipe, "duration", duration.String())
 	}

@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"os"
@@ -10,6 +11,8 @@ import (
 
 	"github.com/justinpbarnett/virgil/internal/envelope"
 	"github.com/justinpbarnett/virgil/internal/parser"
+	"github.com/justinpbarnett/virgil/internal/planner"
+	"github.com/justinpbarnett/virgil/internal/router"
 	"github.com/justinpbarnett/virgil/internal/runtime"
 	"github.com/justinpbarnett/virgil/internal/sse"
 )
@@ -59,6 +62,104 @@ func buildSeed(req signalRequest) envelope.Envelope {
 	return seed
 }
 
+// startAck launches the ack stream in a goroutine and returns a channel that
+// closes when the ack completes. Returns a pre-closed channel if no ack provider
+// is configured, so callers can always <-ackDone without nil-checking.
+func (s *Server) startAck(ctx context.Context, signal string, mu *sync.Mutex, w http.ResponseWriter, flusher http.Flusher) <-chan struct{} {
+	done := make(chan struct{}, 1)
+	if s.ackProvider == nil {
+		done <- struct{}{}
+		return done
+	}
+	go func() {
+		user := buildAckUserPrompt(signal, nil)
+		_, err := s.ackProvider.CompleteStream(ctx, ackSystemPrompt, user, func(chunk string) {
+			mu.Lock()
+			w.Write([]byte(sse.FormatText(envelope.SSEEventAck, chunk))) //nolint:errcheck
+			flusher.Flush()
+			mu.Unlock()
+		})
+		if err != nil {
+			s.logger.Warn("ack failed", "error", err)
+		}
+		done <- struct{}{}
+	}()
+	return done
+}
+
+// buildPlannerMemory fetches lightweight memory context for the AI planner.
+func (s *Server) buildPlannerMemory() planner.PlannerMemory {
+	var mem planner.PlannerMemory
+	if s.store == nil {
+		return mem
+	}
+	invocations, err := s.store.RecentInvocations(3)
+	if err == nil {
+		for _, inv := range invocations {
+			mem.RecentSignals = append(mem.RecentSignals, planner.RecentSignal{
+				Signal: inv.Signal,
+				Pipe:   inv.Pipe,
+			})
+		}
+	}
+	states, err := s.store.ListState("planner")
+	if err == nil {
+		for _, st := range states {
+			mem.WorkingState = append(mem.WorkingState, st.Key+": "+st.Content)
+		}
+	}
+	return mem
+}
+
+// buildPlanForRoute produces an execution plan. For Layer 4 (fallback), it tries
+// the AI planner first, falls back to the deterministic planner, and logs a miss.
+// For Layers 1-3 it uses the deterministic planner directly.
+// It mutates route.Pipe and route.Confidence when the AI planner succeeds.
+func (s *Server) buildPlanForRoute(route *router.RouteResult, signal string, parsed parser.ParsedSignal) runtime.Plan {
+	if route.Layer != router.LayerFallback {
+		return s.planner.Plan(*route, parsed)
+	}
+
+	var aiPlan *runtime.Plan
+	var aiConf float64
+	if s.aiPlanner != nil {
+		plannerMem := s.buildPlannerMemory()
+		aiPlan, aiConf = s.aiPlanner.Plan(signal, plannerMem)
+	}
+
+	var plan runtime.Plan
+	if aiPlan != nil {
+		plan = *aiPlan
+		route.Pipe = plan.Steps[0].Pipe
+		route.Confidence = aiConf
+	} else {
+		plan = s.planner.Plan(*route, parsed)
+	}
+	s.logMiss(*route, signal, aiPlan, aiConf)
+	return plan
+}
+
+// logMiss writes a miss log entry with AI plan data.
+func (s *Server) logMiss(route router.RouteResult, signal string, aiPlan *runtime.Plan, aiConf float64) {
+	if s.missLog == nil {
+		return
+	}
+	var planJSON string
+	if aiPlan != nil {
+		if data, err := json.Marshal(aiPlan.Steps); err == nil {
+			planJSON = string(data)
+		}
+	}
+	_ = s.missLog.Log(router.MissEntry{
+		Signal:           signal,
+		KeywordsFound:    route.KeywordsFound,
+		KeywordsNotFound: route.KeywordsNotFound,
+		FallbackPipe:     route.Pipe,
+		AIPlan:           planJSON,
+		AIConfidence:     aiConf,
+	})
+}
+
 func (s *Server) handleSignal(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
 
@@ -89,7 +190,7 @@ func (s *Server) handleSignal(w http.ResponseWriter, r *http.Request) {
 	// Synchronous path — route first (deterministic, <1ms), then execute.
 	seed := buildSeed(req)
 	route := s.router.Route(r.Context(), req.Text, parsed)
-	plan := s.planner.Plan(route, parsed)
+	plan := s.buildPlanForRoute(&route, req.Text, parsed)
 
 	execSeed := seed
 	if len(plan.Steps) == 1 {
@@ -113,40 +214,41 @@ func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request, req signalReq
 		return
 	}
 
-	// Route first — all layers are deterministic and complete in <1ms.
 	seed := buildSeed(req)
 	route := s.router.Route(r.Context(), req.Text, parsed)
-	plan := s.planner.Plan(route, parsed)
 
+	var mu sync.Mutex
+	isLayer4 := route.Layer == router.LayerFallback
+
+	// Layer 4: start ack IMMEDIATELY — before AI planning.
+	// The user sees feedback within milliseconds even though planning takes seconds.
+	var ackDone <-chan struct{}
+	if isLayer4 && s.aiPlanner != nil {
+		ackDone = s.startAck(r.Context(), req.Text, &mu, w, flusher)
+	}
+
+	// Build the plan — AI planning for Layer 4, deterministic for Layers 1-3.
+	plan := s.buildPlanForRoute(&route, req.Text, parsed)
+
+	// Send route event now that we know the actual pipe.
 	if len(plan.Steps) > 0 {
 		sse.WriteJSON(w, flusher, envelope.SSEEventRoute, map[string]any{"pipe": plan.Steps[0].Pipe, "layer": route.Layer})
 	}
 
-	// Prefetch memory for the correct pipe.
+	// Layers 1-3: start ack after planning (planning was instant).
+	if ackDone == nil {
+		pipeIsAIBacked := len(plan.Steps) > 0 && s.config.Pipes[plan.Steps[0].Pipe].Prompts.System != ""
+		if pipeIsAIBacked {
+			ackDone = s.startAck(r.Context(), req.Text, &mu, w, flusher)
+		}
+	}
+
+	// Prefetch memory for the correct pipe (runs in parallel with ack).
 	execSeed := seed
 	if len(plan.Steps) == 1 {
 		memCh := s.runtime.PrefetchMemory(seed, plan.Steps[0].Pipe)
 		execSeed = <-memCh
 		plan.SkipFirstMemoryInjection = true
-	}
-
-	var mu sync.Mutex
-	ackDone := make(chan struct{}, 1)
-
-	pipeIsAIBacked := len(plan.Steps) > 0 && s.config.Pipes[plan.Steps[0].Pipe].Prompts.System != ""
-	if pipeIsAIBacked && s.ackProvider != nil {
-		go func() {
-			user := buildAckUserPrompt(req.Text, execSeed.Memory)
-			_, _ = s.ackProvider.CompleteStream(r.Context(), ackSystemPrompt, user, func(chunk string) {
-				mu.Lock()
-				w.Write([]byte(sse.FormatText(envelope.SSEEventAck, chunk))) //nolint:errcheck
-				flusher.Flush()
-				mu.Unlock()
-			})
-			ackDone <- struct{}{}
-		}()
-	} else {
-		ackDone <- struct{}{}
 	}
 
 	sink := func(event runtime.StreamEvent) {
@@ -157,12 +259,16 @@ func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request, req signalReq
 			w.Write([]byte(sse.FormatText(envelope.SSEEventChunk, event.Data))) //nolint:errcheck
 		case envelope.SSEEventStep:
 			sse.WriteEvent(w, flusher, envelope.SSEEventStep, []byte(event.Data))
+		case envelope.SSEEventTool:
+			sse.WriteEvent(w, flusher, envelope.SSEEventTool, []byte(event.Data))
 		}
 		flusher.Flush()
 	}
 
 	result := s.runtime.ExecuteStream(r.Context(), plan, execSeed, sink)
-	<-ackDone
+	if ackDone != nil {
+		<-ackDone
+	}
 	mu.Lock()
 	sse.WriteJSON(w, flusher, envelope.SSEEventDone, result)
 	mu.Unlock()

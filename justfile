@@ -3,6 +3,12 @@ default: build
 build: build-pipes
     go build -o bin/virgil ./cmd/virgil
 
+build-if-changed:
+    #!/usr/bin/env sh
+    if [ ! -f bin/virgil ] || [ -n "$(find . -name '*.go' -newer bin/virgil -not -path './vendor/*' -print -quit)" ] || [ go.mod -nt bin/virgil ] || [ go.sum -nt bin/virgil ]; then
+        just build
+    fi
+
 build-pipes:
     #!/usr/bin/env sh
     for cmd in internal/pipes/*/cmd; do
@@ -16,7 +22,7 @@ check: lint test
 test:
     go test ./... -v -count=1
 
-start: build
+start: build-if-changed
     #!/usr/bin/env sh
     pid_file="$HOME/.local/share/virgil/virgil.pid"
     if [ -f "$pid_file" ]; then

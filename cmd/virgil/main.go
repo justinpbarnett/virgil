@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/justinpbarnett/virgil/internal/bridge"
 	"github.com/justinpbarnett/virgil/internal/config"
 	"github.com/justinpbarnett/virgil/internal/envelope"
 	"github.com/justinpbarnett/virgil/internal/parser"
@@ -222,7 +223,21 @@ func runServer(cfgDir string) error {
 		defer missLog.Close()
 	}
 
-	rt := router.NewRouter(reg.Definitions(), missLog, logger)
+	rt := router.NewRouter(reg.Definitions(), logger)
+
+	// Build AI planner for Layer 4 routing
+	var aiPlanner *planner.AIPlanner
+	plannerProvider, plannerErr := bridge.CreateProvider(bridge.ProviderConfig{
+		Name:      cfg.Planner.Provider,
+		Model:     cfg.Planner.Model,
+		MaxTokens: cfg.Planner.MaxTokens,
+		Logger:    logger,
+	})
+	if plannerErr != nil {
+		logger.Warn("AI planner unavailable", "provider", cfg.Planner.Provider, "error", plannerErr)
+	} else {
+		aiPlanner = planner.NewAIPlanner(plannerProvider, reg.Definitions(), logger)
+	}
 
 	// Build planner
 	pl := planner.New(cfg.Templates, cfg.Vocabulary.Sources, logger)
@@ -235,10 +250,12 @@ func runServer(cfgDir string) error {
 	}
 
 	// Wire memory infrastructure if database is configured
+	var st *store.Store
 	if cfg.DatabasePath != "" {
-		st, err := store.Open(cfg.DatabasePath)
-		if err != nil {
-			logger.Warn("memory infrastructure unavailable", "error", err)
+		var stErr error
+		st, stErr = store.Open(cfg.DatabasePath)
+		if stErr != nil {
+			logger.Warn("memory infrastructure unavailable", "error", stErr)
 		} else {
 			defer st.Close()
 			injector := runtime.NewStoreMemoryInjector(st)
@@ -263,13 +280,16 @@ func runServer(cfgDir string) error {
 
 	// 4. Start HTTP server
 	srv := server.New(server.Deps{
-		Config:   cfg,
-		Router:   rt,
-		Parser:   p,
-		Planner:  pl,
-		Runtime:  run,
-		Registry: reg,
-		Logger:   logger,
+		Config:    cfg,
+		Router:    rt,
+		Parser:    p,
+		Planner:   pl,
+		Runtime:   run,
+		Registry:  reg,
+		AIPlanner: aiPlanner,
+		MissLog:   missLog,
+		Store:     st,
+		Logger:    logger,
 	})
 	return srv.Start()
 }

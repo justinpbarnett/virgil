@@ -348,8 +348,8 @@ func TestDetectTestCommand_None(t *testing.T) {
 	}
 }
 
-func TestDetectTestCommand_JustfilePriority(t *testing.T) {
-	// justfile should take priority over go.mod
+func TestDetectTestCommand_GoModPriority(t *testing.T) {
+	// go.mod takes priority over justfile because verify needs JSON output
 	fc := &mockFileChecker{
 		files: map[string]string{
 			"/project/justfile": "test:\n    custom test command\n",
@@ -361,8 +361,8 @@ func TestDetectTestCommand_JustfilePriority(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if cmd != "just test" {
-		t.Errorf("expected 'just test' (justfile priority), got %q", cmd)
+	if cmd != "go test ./... -json -count=1" {
+		t.Errorf("expected 'go test -json' (go.mod priority), got %q", cmd)
 	}
 }
 

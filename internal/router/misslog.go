@@ -14,6 +14,7 @@ type MissEntry struct {
 	KeywordsFound    []string `json:"keywords_found"`
 	KeywordsNotFound []string `json:"keywords_not_found"`
 	FallbackPipe     string   `json:"fallback_pipe"`
+	AIPlan           string   `json:"ai_plan,omitempty"`
 	AIConfidence     float64  `json:"ai_confidence,omitempty"`
 	Timestamp        string   `json:"timestamp"`
 }

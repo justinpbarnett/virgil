@@ -65,8 +65,12 @@ func (s *Stream) Append(kind StreamEntryKind, text string) {
 	}
 }
 
-// SetSize updates the viewport dimensions.
+// SetSize updates the viewport dimensions. Skips expensive re-rendering if
+// the dimensions haven't changed.
 func (s *Stream) SetSize(width, height int) {
+	if s.viewport.Width == width && s.viewport.Height == height {
+		return
+	}
 	s.viewport.Width = width
 	s.viewport.Height = height
 	if width > 0 {
@@ -176,16 +180,27 @@ func (s *Stream) renderEntries() {
 // compose joins the cached entry content with the pending text and updates
 // the viewport. This is cheap — just string concatenation.
 func (s *Stream) compose() {
-	if s.pending == "" {
-		s.viewport.SetContent(s.entriesHTML)
-		return
-	}
 	var b strings.Builder
 	b.WriteString(s.entriesHTML)
-	if b.Len() > 0 {
-		b.WriteByte('\n')
+	if s.pending != "" {
+		if b.Len() > 0 {
+			b.WriteByte('\n')
+		}
+		w := s.viewport.Width
+		b.WriteString(s.theme.Response.Render(wordwrap.String(s.pending, w)))
 	}
-	w := s.viewport.Width
-	b.WriteString(s.theme.Response.Render(wordwrap.String(s.pending, w)))
-	s.viewport.SetContent(b.String())
+	content := b.String()
+
+	// Pad with leading newlines so content fills the viewport height.
+	// This bottom-aligns messages and prevents terminal text selection
+	// from escaping into the primary scrollback buffer.
+	contentLines := strings.Count(content, "\n") + 1
+	if content == "" {
+		contentLines = 0
+	}
+	if pad := s.viewport.Height - contentLines; pad > 0 {
+		content = strings.Repeat("\n", pad) + content
+	}
+
+	s.viewport.SetContent(content)
 }

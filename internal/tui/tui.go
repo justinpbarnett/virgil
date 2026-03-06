@@ -3,6 +3,7 @@ package tui
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -11,6 +12,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/justinpbarnett/virgil/internal/config"
 	"github.com/justinpbarnett/virgil/internal/envelope"
+	"github.com/justinpbarnett/virgil/internal/pipe"
 	"github.com/justinpbarnett/virgil/internal/sse"
 	"github.com/justinpbarnett/virgil/internal/voice"
 )
@@ -50,6 +52,7 @@ type model struct {
 	// Streaming state
 	pending        strings.Builder
 	waiting        bool
+	hadAck         bool // true after ack chunks have been received
 	dotPhase       int
 	activeStreamID int
 	cancelFn       context.CancelFunc
@@ -62,6 +65,8 @@ type model struct {
 
 	// Pipeline step tracking for panel display
 	pipelineSteps []string
+	pipelineTools []string // tool calls within the current (last) step
+	pipelineDone  bool
 
 	// Session cost accumulator — reset on :clear and app start
 	sessionCost float64
@@ -79,6 +84,7 @@ type tickMsg struct{}
 
 type streamChunkMsg struct {
 	text     string
+	isAck    bool
 	streamID int
 	reader   *sse.Reader
 }
@@ -100,13 +106,22 @@ type streamStepMsg struct {
 	reader   *sse.Reader
 }
 
+type streamToolMsg struct {
+	name     string
+	summary  string
+	streamID int
+	reader   *sse.Reader
+}
+
 type streamRouteMsg struct {
 	pipe     string
 	streamID int
 	reader   *sse.Reader
 }
 
-type pipesLoadedMsg struct{}
+type pipesLoadedMsg struct {
+	defs []pipe.Definition
+}
 
 func RunSession(serverAddr string) error {
 	theme := NewTheme("dark")
@@ -123,7 +138,7 @@ func RunSession(serverAddr string) error {
 		connected:  true,
 	}
 
-	p := tea.NewProgram(m, tea.WithAltScreen(), tea.WithMouseCellMotion())
+	p := tea.NewProgram(m, tea.WithAltScreen())
 	_, err := p.Run()
 	return err
 }
@@ -139,8 +154,7 @@ func (m model) Init() tea.Cmd {
 
 func (m model) loadPipes() tea.Cmd {
 	return func() tea.Msg {
-		m.completer.LoadPipes(m.serverAddr)
-		return pipesLoadedMsg{}
+		return pipesLoadedMsg{defs: FetchPipes(m.serverAddr)}
 	}
 }
 
@@ -214,6 +228,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.stream.Append(KindInput, SymPrompt+" "+msg.Text)
 		m.waiting = true
 		m.pending.Reset()
+		m.hadAck = false
 		m.dotPhase = 0
 		m.activeStreamID++
 		m.voiceStreamID = m.activeStreamID
@@ -232,6 +247,16 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case streamRouteMsg:
 		if msg.streamID == m.activeStreamID {
 			m.pipelineSteps = []string{msg.pipe}
+			m.pipelineTools = nil
+			m.pipelineDone = false
+			m.showPipelinePanel()
+		}
+		return m, readNextEvent(msg.reader, msg.streamID)
+
+	case streamToolMsg:
+		if msg.streamID == m.activeStreamID {
+			label := toolLabel(msg.name, msg.summary)
+			m.pipelineTools = append(m.pipelineTools, label)
 			m.showPipelinePanel()
 		}
 		return m, readNextEvent(msg.reader, msg.streamID)
@@ -241,6 +266,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, readNextEvent(msg.reader, msg.streamID)
 		}
 		m.pipelineSteps = append(m.pipelineSteps, msg.pipe)
+		m.pipelineTools = nil
 		m.showPipelinePanel()
 		var cmds []tea.Cmd
 		if m.currentVoiceMode == config.VoiceModeSteps || m.currentVoiceMode == config.VoiceModeFull {
@@ -251,6 +277,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tea.Batch(cmds...)
 
 	case pipesLoadedMsg:
+		m.completer.SetPipes(msg.defs)
 		return m, nil
 
 	case serverCmdMsg:
@@ -301,29 +328,45 @@ func (m model) handleResize(msg tea.WindowSizeMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-func (m *model) updateLayout() {
-	inputHeight := 3 // textarea height + some padding
-	streamHeight := m.height - inputHeight
-	if streamHeight < 1 {
-		streamHeight = 1
-	}
-
+// mainColumnWidth returns the width available for the stream and input areas,
+// accounting for an open side-by-side panel.
+func (m *model) mainColumnWidth() int {
 	if m.panel.IsOpen() && m.layout != layoutNarrow {
 		panelWidth := m.width / panelFraction
 		if panelWidth < minPanelWidth {
 			panelWidth = minPanelWidth
 		}
-		streamWidth := m.width - panelWidth - 1 // -1 for border
-		if streamWidth < 20 {
-			streamWidth = 20
+		w := m.width - panelWidth - 1 // -1 for border
+		if w < 20 {
+			w = 20
 		}
-		m.stream.SetSize(streamWidth, streamHeight)
+		return w
+	}
+	return m.width
+}
+
+func (m *model) updateLayout() {
+	streamWidth := m.mainColumnWidth()
+
+	// Set input width before measuring its rendered height.
+	m.input.SetWidth(streamWidth)
+
+	// Compute stream height: total minus separator (1 line) minus rendered input.
+	inputViewHeight := lipgloss.Height(m.input.View())
+	if inputViewHeight < 1 {
+		inputViewHeight = 1
+	}
+	streamHeight := m.height - 1 - inputViewHeight // 1 for separator
+	if streamHeight < 1 {
+		streamHeight = 1
+	}
+
+	m.stream.SetSize(streamWidth, streamHeight)
+	if m.panel.IsOpen() && m.layout != layoutNarrow {
+		panelWidth := m.width - streamWidth - 1
 		m.panel.SetSize(panelWidth, streamHeight)
-		m.input.SetWidth(streamWidth)
 	} else {
-		m.stream.SetSize(m.width, streamHeight)
 		m.panel.SetSize(m.width, streamHeight)
-		m.input.SetWidth(m.width)
 	}
 }
 
@@ -346,7 +389,12 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, tea.Quit
 
 	case tea.KeyCtrlD:
-		return m, tea.Quit
+		m.stream.ScrollDown(m.stream.PageSize() / 2)
+		return m, nil
+
+	case tea.KeyCtrlU:
+		m.stream.ScrollUp(m.stream.PageSize() / 2)
+		return m, nil
 
 	case tea.KeyEsc:
 		if m.cancelFn != nil {
@@ -362,7 +410,9 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.cancelFn = nil
 			m.lastEscTime = time.Time{}
 			m.stream.Append(KindNotification, SymPrompt+" [cancelled]")
-			if m.voiceStreamID != 0 {
+			wasVoice := m.voiceStreamID != 0
+			m.voiceStreamID = 0
+			if wasVoice {
 				return m, postVoiceStop(m.serverAddr)
 			}
 			return m, nil
@@ -402,6 +452,7 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if msg.Alt {
 			// Alt+Enter (or Shift+Enter in kitty-protocol terminals) → newline
 			m.input.textarea.InsertRune('\n')
+			m.updateLayout()
 			return m, nil
 		}
 		return m.handleSubmit()
@@ -435,6 +486,7 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	// Forward to textarea for typing
 	var cmd tea.Cmd
 	m.input, cmd = m.input.Update(msg)
+	m.updateLayout() // recalculate if textarea height changed (no-op if dimensions unchanged)
 	return m, cmd
 }
 
@@ -513,18 +565,9 @@ func (m model) handleCommand(input string) (tea.Model, tea.Cmd) {
 
 func (m model) fetchPipes() tea.Cmd {
 	return func() tea.Msg {
-		resp, err := signalClient.Get(fmt.Sprintf("http://%s/pipes", m.serverAddr))
-		if err != nil {
-			return serverCmdMsg{err: err}
-		}
-		defer resp.Body.Close()
-		var defs []struct {
-			Name        string `json:"name"`
-			Description string `json:"description"`
-			Category    string `json:"category"`
-		}
-		if err := json.NewDecoder(resp.Body).Decode(&defs); err != nil {
-			return serverCmdMsg{err: err}
+		defs := FetchPipes(m.serverAddr)
+		if defs == nil {
+			return serverCmdMsg{err: fmt.Errorf("failed to fetch pipes")}
 		}
 		var b strings.Builder
 		b.WriteString("available pipes:\n")
@@ -558,9 +601,12 @@ func (m model) fetchStatus() tea.Cmd {
 func (m model) sendSignal(text string) (tea.Model, tea.Cmd) {
 	m.keysShown = false
 	m.pipelineSteps = nil
+	m.pipelineTools = nil
+	m.pipelineDone = false
 	m.stream.Append(KindInput, SymPrompt+" "+text)
 	m.waiting = true
 	m.pending.Reset()
+	m.hadAck = false
 	m.dotPhase = 0
 	m.activeStreamID++
 	streamID := m.activeStreamID
@@ -581,8 +627,18 @@ func (m model) handleStreamChunk(msg streamChunkMsg) (tea.Model, tea.Cmd) {
 		msg.reader.Close()
 		return m, nil
 	}
+	// Insert a blank line when transitioning from ack to response.
+	if m.hadAck && !msg.isAck {
+		m.pending.WriteString("\n\n")
+		m.hadAck = false
+	}
+	if msg.isAck {
+		m.hadAck = true
+	}
 	m.pending.WriteString(msg.text)
-	m.waiting = false
+	if !msg.isAck {
+		m.waiting = false
+	}
 	m.stream.SetPending(m.pending.String())
 	return m, readNextEvent(msg.reader, msg.streamID)
 }
@@ -590,18 +646,52 @@ func (m model) handleStreamChunk(msg streamChunkMsg) (tea.Model, tea.Cmd) {
 func (m *model) formatPipelineSteps() string {
 	var b strings.Builder
 	for i, step := range m.pipelineSteps {
-		prefix := SymCheck + " "
-		if i == len(m.pipelineSteps)-1 {
-			prefix = SymActive + " "
+		isLast := i == len(m.pipelineSteps)-1
+		if isLast && !m.pipelineDone {
+			b.WriteString(SymActive + " " + step + "\n")
+			for j, tool := range m.pipelineTools {
+				if j == len(m.pipelineTools)-1 {
+					b.WriteString("  " + SymActive + " " + tool + "\n")
+				} else {
+					b.WriteString("  " + SymCheck + " " + tool + "\n")
+				}
+			}
+		} else {
+			b.WriteString(SymCheck + " " + step + "\n")
+			if isLast {
+				for _, tool := range m.pipelineTools {
+					b.WriteString("  " + SymCheck + " " + tool + "\n")
+				}
+			}
 		}
-		b.WriteString(prefix + step + "\n")
 	}
 	return b.String()
 }
 
+// toolLabel builds a human-readable display string for a tool call.
+func toolLabel(name, summary string) string {
+	label := name
+	switch name {
+	case "read_file":
+		label = "read"
+	case "write_file":
+		label = "write"
+	case "edit_file":
+		label = "edit"
+	case "run_shell":
+		label = "run"
+	case "list_dir":
+		label = "list"
+	}
+	if summary != "" {
+		label += " " + summary
+	}
+	return label
+}
+
 func (m *model) showPipelinePanel() {
 	m.panel.SetContent("pipeline", m.formatPipelineSteps())
-	if !m.panel.IsOpen() {
+	if !m.panel.IsOpen() && (len(m.pipelineSteps) > 1 || len(m.pipelineTools) > 0) {
 		m.panel.Toggle()
 		m.updateLayout()
 	}
@@ -615,7 +705,12 @@ func (m model) handleStreamDone(msg streamDoneMsg) (tea.Model, tea.Cmd) {
 	m.cancelFn = nil
 	m.lastEscTime = time.Time{}
 	m.keysShown = false
-	m.pipelineSteps = nil
+
+	// Mark pipeline complete so the panel shows all checkmarks.
+	if len(m.pipelineSteps) > 0 {
+		m.pipelineDone = true
+		m.showPipelinePanel()
+	}
 
 	if msg.err == nil && msg.env.Usage != nil {
 		m.sessionCost += msg.env.Usage.Cost
@@ -623,16 +718,22 @@ func (m model) handleStreamDone(msg streamDoneMsg) (tea.Model, tea.Cmd) {
 
 	pendingText := m.pending.String()
 	var contentText string
-	if pendingText == "" && msg.err == nil {
+	if msg.err == nil {
 		contentText = envelope.ContentToText(msg.env.Content, msg.env.ContentType)
+	}
+
+	// Determine the actual response text. If we only received ack chunks
+	// (no response streaming) and the envelope carries content, the envelope
+	// content is the real response — the ack was just a placeholder.
+	responseText := pendingText
+	if m.hadAck && contentText != "" {
+		responseText = contentText
+	} else if responseText == "" {
+		responseText = contentText
 	}
 
 	var speakCmd tea.Cmd
 	if msg.err == nil {
-		responseText := pendingText
-		if responseText == "" {
-			responseText = contentText
-		}
 		speakCmd = m.speakResponse(responseText)
 	}
 	if msg.streamID == m.voiceStreamID {
@@ -642,6 +743,10 @@ func (m model) handleStreamDone(msg streamDoneMsg) (tea.Model, tea.Cmd) {
 	m.stream.ClearPending()
 	if msg.err != nil {
 		m.stream.Append(KindError, fmt.Sprintf("error: %v", msg.err))
+	} else if m.hadAck && contentText != "" {
+		// Ack was shown as pending; finalize with the actual pipe response.
+		m.stream.Append(KindNotification, pendingText)
+		m.stream.Append(KindResponse, contentText)
 	} else if pendingText != "" {
 		m.stream.Append(KindResponse, pendingText)
 	} else if contentText != "" {
@@ -717,6 +822,8 @@ func (m model) View() string {
 	// Build stream view with waiting indicator
 	streamView := m.stream.View()
 
+	sepWidth := m.mainColumnWidth()
+
 	// Build separator — status indicators are embedded inline so height never changes.
 	var statusParts []string
 	if m.voiceRecording {
@@ -743,13 +850,13 @@ func (m model) View() string {
 	var sep string
 	if len(statusParts) > 0 {
 		statusText := strings.Join(statusParts, "  ")
-		remaining := m.width - lipgloss.Width(statusText) - titleWidth - 2
+		remaining := sepWidth - lipgloss.Width(statusText) - titleWidth - 2
 		if remaining < 0 {
 			remaining = 0
 		}
 		sep = statusText + " " + m.theme.Separator.Render(strings.Repeat(SymSeparator, remaining)) + " " + titleStr
 	} else {
-		remaining := m.width - titleWidth - 1
+		remaining := sepWidth - titleWidth - 1
 		if remaining < 0 {
 			remaining = 0
 		}
@@ -827,7 +934,7 @@ func readNextEventSync(reader *sse.Reader, streamID int) tea.Msg {
 				reader.Close()
 				return streamDoneMsg{streamID: streamID, err: fmt.Errorf("invalid chunk: %w", err)}
 			}
-			return streamChunkMsg{text: chunk.Text, streamID: streamID, reader: reader}
+			return streamChunkMsg{text: chunk.Text, isAck: event.Type == envelope.SSEEventAck, streamID: streamID, reader: reader}
 
 		case envelope.SSEEventDone:
 			reader.Close()
@@ -836,7 +943,7 @@ func readNextEventSync(reader *sse.Reader, streamID int) tea.Msg {
 				return streamDoneMsg{streamID: streamID, err: fmt.Errorf("invalid done event: %w", err)}
 			}
 			if env.Error != nil {
-				return streamDoneMsg{streamID: streamID, err: fmt.Errorf("%s: %s", env.Error.Severity, env.Error.Message)}
+				return streamDoneMsg{streamID: streamID, err: errors.New(env.Error.Message)}
 			}
 			return streamDoneMsg{env: env, streamID: streamID}
 
@@ -856,6 +963,16 @@ func readNextEventSync(reader *sse.Reader, streamID int) tea.Msg {
 			}
 			continue
 
+		case envelope.SSEEventTool:
+			var tool struct {
+				Name    string `json:"name"`
+				Summary string `json:"summary"`
+			}
+			if err := json.Unmarshal([]byte(event.Data), &tool); err == nil {
+				return streamToolMsg{name: tool.Name, summary: tool.Summary, streamID: streamID, reader: reader}
+			}
+			continue
+
 		default:
 			continue
 		}
@@ -865,7 +982,8 @@ func readNextEventSync(reader *sse.Reader, streamID int) tea.Msg {
 func keybindingSummary() string {
 	return "" +
 		"enter send   alt+enter newline   esc clear   ctrl+c clear/exit\n" +
-		"↑/↓ history   tab complete   ctrl+p panel   ctrl+d exit\n" +
+		"↑/↓ history   tab complete   ctrl+p panel\n" +
+		"ctrl+u half-page up   ctrl+d half-page down   pgup/pgdn scroll\n" +
 		":help commands   :clear stream   :log server log   :quit exit\n" +
 		"voice: right-option push-to-talk   ctrl+v cycle mode"
 }

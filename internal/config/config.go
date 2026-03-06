@@ -179,16 +179,30 @@ func (l LogLevel) String() string {
 	}
 }
 
-type AckConfig struct {
+type ModelEndpoint struct {
 	Provider  string `yaml:"provider"`
 	Model     string `yaml:"model"`
 	MaxTokens int    `yaml:"max_tokens"`
 }
 
+// SetDefaults fills in zero-value fields with the provided defaults.
+func (m *ModelEndpoint) SetDefaults(provider, model string, maxTokens int) {
+	if m.Provider == "" {
+		m.Provider = provider
+	}
+	if m.Model == "" {
+		m.Model = model
+	}
+	if m.MaxTokens == 0 {
+		m.MaxTokens = maxTokens
+	}
+}
+
 type Config struct {
 	Server       ServerConfig          `yaml:"server"`
 	Provider     ProviderConfig        `yaml:"provider"`
-	Ack          AckConfig             `yaml:"ack"`
+	Ack          ModelEndpoint         `yaml:"ack"`
+	Planner      ModelEndpoint         `yaml:"planner"`
 	Identity     string                `yaml:"identity"`
 	LogLevel     LogLevel              `yaml:"log_level"`
 	DatabasePath string                `yaml:"database_path"`
@@ -348,16 +362,8 @@ func Load(configDir string, pipesDir string) (*Config, error) {
 		return nil, fmt.Errorf("loading virgil.yaml: %w", err)
 	}
 
-	// Ack defaults
-	if cfg.Ack.Provider == "" {
-		cfg.Ack.Provider = "gemini"
-	}
-	if cfg.Ack.Model == "" {
-		cfg.Ack.Model = "gemini-3.1-flash-preview"
-	}
-	if cfg.Ack.MaxTokens == 0 {
-		cfg.Ack.MaxTokens = 256
-	}
+	cfg.Ack.SetDefaults("gemini", "gemini-3-flash-preview", 256)
+	cfg.Planner.SetDefaults("xai", "grok-4-fast", 1024)
 
 	// Expand ~ in database path
 	if cfg.DatabasePath != "" {

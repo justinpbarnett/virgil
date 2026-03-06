@@ -33,6 +33,7 @@ const (
 	SSEEventStep   = "step"
 	SSEEventRoute  = "route"
 	SSEEventAck    = "ack"
+	SSEEventTool   = "tool"
 	SSEContentType = "text/event-stream"
 
 	SSEEventVoiceStatus = "voice_status"
@@ -115,6 +116,13 @@ func WarnError(message string) *EnvelopeError {
 		Message:  message,
 		Severity: SeverityWarn,
 	}
+}
+
+// NewWarnError creates an envelope representing a warning-level error from a named pipe.
+func NewWarnError(pipe, message string) Envelope {
+	out := New(pipe, "error")
+	out.Error = WarnError(message)
+	return out
 }
 
 // NewRetryableError creates an envelope representing a retryable error from a named pipe.

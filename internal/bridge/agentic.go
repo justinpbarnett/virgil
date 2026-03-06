@@ -2,8 +2,15 @@ package bridge
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"path/filepath"
 )
+
+// ToolChunkPrefix is the sentinel prefix used to signal tool call events
+// through the text chunk stream. Consumers (e.g. runtime) check for this
+// prefix to distinguish tool events from regular text chunks.
+const ToolChunkPrefix = "\x00tool:"
 
 // RunAgenticLoop drives the tool use loop until the model returns a final
 // text response or maxTurns is exhausted.
@@ -47,7 +54,7 @@ func RunAgenticLoop(ctx context.Context, p AgenticProvider, system, user string,
 		results := make([]ToolResult, 0, len(resp.ToolCalls))
 		for _, tc := range resp.ToolCalls {
 			if onChunk != nil {
-				onChunk("[" + tc.Name + "]\n")
+				onChunk(ToolChunkPrefix + tc.Name + "\t" + toolSummary(tc.Name, tc.Input))
 			}
 			output, execErr := executeToolCall(ctx, tc, tools)
 			if execErr != nil {
@@ -65,6 +72,33 @@ func RunAgenticLoop(ctx context.Context, p AgenticProvider, system, user string,
 	}
 
 	return "", fmt.Errorf("agentic loop exhausted %d turns without a final response", maxTurns)
+}
+
+// toolSummary extracts a human-readable detail string from tool call input.
+func toolSummary(name string, input json.RawMessage) string {
+	var args struct {
+		Path    string `json:"path"`
+		Command string `json:"command"`
+	}
+	_ = json.Unmarshal(input, &args)
+
+	switch name {
+	case "read_file", "write_file", "edit_file":
+		return filepath.Base(args.Path)
+	case "list_dir":
+		if args.Path == "" || args.Path == "." {
+			return "."
+		}
+		return args.Path
+	case "run_shell":
+		cmd := args.Command
+		if len(cmd) > 40 {
+			cmd = cmd[:40] + "…"
+		}
+		return cmd
+	default:
+		return ""
+	}
 }
 
 func executeToolCall(ctx context.Context, tc ToolCall, tools []Tool) (string, error) {

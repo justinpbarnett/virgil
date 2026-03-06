@@ -49,7 +49,7 @@ func testDefs() []pipe.Definition {
 }
 
 func TestLayer1ExactMatch(t *testing.T) {
-	r := NewRouter(testDefs(), nil, nil)
+	r := NewRouter(testDefs(), nil)
 	result := r.Route(context.Background(), "check my calendar", parser.ParsedSignal{})
 
 	if result.Pipe != "calendar" {
@@ -64,7 +64,7 @@ func TestLayer1ExactMatch(t *testing.T) {
 }
 
 func TestLayer2KeywordScoring(t *testing.T) {
-	r := NewRouter(testDefs(), nil, nil)
+	r := NewRouter(testDefs(), nil)
 	// Signal hits 3 of 4 calendar keywords: calendar, schedule, meeting → 75% > 60% threshold
 	result := r.Route(context.Background(), "show my calendar schedule for the meeting", parser.ParsedSignal{})
 
@@ -77,7 +77,7 @@ func TestLayer2KeywordScoring(t *testing.T) {
 }
 
 func TestLayer3CategoryNarrowing(t *testing.T) {
-	r := NewRouter(testDefs(), nil, nil)
+	r := NewRouter(testDefs(), nil)
 	parsed := parser.ParsedSignal{
 		Verb:   "memory",
 		Action: "retrieve",
@@ -92,11 +92,7 @@ func TestLayer3CategoryNarrowing(t *testing.T) {
 }
 
 func TestLayer4StubFallback(t *testing.T) {
-	dir := t.TempDir()
-	missLog, _ := NewMissLog(filepath.Join(dir, "misses.jsonl"))
-	defer missLog.Close()
-
-	r := NewRouter(testDefs(), missLog, nil)
+	r := NewRouter(testDefs(), nil)
 	result := r.Route(context.Background(), "xyzzy foobar", parser.ParsedSignal{})
 
 	if result.Pipe != "chat" {
@@ -108,14 +104,22 @@ func TestLayer4StubFallback(t *testing.T) {
 	if result.Layer != LayerFallback {
 		t.Errorf("expected layer %d, got %d", LayerFallback, result.Layer)
 	}
+}
 
-	// Verify miss was logged
-	data, err := os.ReadFile(filepath.Join(dir, "misses.jsonl"))
-	if err != nil {
-		t.Fatalf("failed to read miss log: %v", err)
+func TestLayer4MissMetadataPopulated(t *testing.T) {
+	r := NewRouter(testDefs(), nil)
+	// "calendar" is a keyword match; "xyzzy" and "foobar" are not
+	result := r.Route(context.Background(), "xyzzy calendar foobar", parser.ParsedSignal{})
+
+	// Should be a keyword match for calendar, not a fallback
+	// Try with completely unknown words to get Layer 4
+	result = r.Route(context.Background(), "xyzzy foobar", parser.ParsedSignal{})
+	if result.Layer != LayerFallback {
+		t.Fatalf("expected layer 4 fallback, got layer %d", result.Layer)
 	}
-	if !strings.Contains(string(data), "xyzzy foobar") {
-		t.Error("expected miss log to contain the signal")
+	// KeywordsNotFound should contain the unknown words
+	if len(result.KeywordsNotFound) == 0 {
+		t.Error("expected KeywordsNotFound to be populated at Layer 4")
 	}
 }
 
@@ -128,8 +132,13 @@ func TestMissLogStructure(t *testing.T) {
 	}
 	defer missLog.Close()
 
-	r := NewRouter(testDefs(), missLog, nil)
-	r.Route(context.Background(), "completely unknown input", parser.ParsedSignal{})
+	// Miss log is now written by the server; test the MissLog.Log API directly
+	_ = missLog.Log(MissEntry{
+		Signal:           "completely unknown input",
+		KeywordsFound:    []string{},
+		KeywordsNotFound: []string{"completely", "unknown", "input"},
+		FallbackPipe:     "chat",
+	})
 
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -159,7 +168,7 @@ func TestWhQuestionFallsToChat(t *testing.T) {
 			Keywords: []string{"visualize", "animate", "animation", "illustrate", "diagram", "visualization", "manim"},
 		},
 	})
-	r := NewRouter(defs, nil, nil)
+	r := NewRouter(defs, nil)
 
 	// "visualize" appears in the signal as a topic of a question, not as a command
 	parsed := parser.ParsedSignal{Verb: "visualize", IsQuestion: true}
@@ -178,7 +187,7 @@ func TestWhQuestionFallsToChat(t *testing.T) {
 // through to chat. Regression test: "what's on my calendar today?" was
 // falling to chat → study(source=calendar) → "unsupported source: calendar".
 func TestWhQuestionWithSourceRoutesToPipe(t *testing.T) {
-	r := NewRouter(testDefs(), nil, nil)
+	r := NewRouter(testDefs(), nil)
 
 	parsed := parser.ParsedSignal{
 		Source:     "calendar",
@@ -196,7 +205,7 @@ func TestWhQuestionWithSourceRoutesToPipe(t *testing.T) {
 }
 
 func TestGreetingExactMatch(t *testing.T) {
-	r := NewRouter(testDefs(), nil, nil)
+	r := NewRouter(testDefs(), nil)
 
 	tests := []struct {
 		signal string
@@ -220,7 +229,7 @@ func TestGreetingExactMatch(t *testing.T) {
 }
 
 func TestShortKeywordSignalMatchesLayer2(t *testing.T) {
-	r := NewRouter(testDefs(), nil, nil)
+	r := NewRouter(testDefs(), nil)
 
 	// Single keyword should match even though the pipe has multiple keywords.
 	// Signal coverage: 1/1 = 100% ≥ 60% threshold.
@@ -235,7 +244,7 @@ func TestShortKeywordSignalMatchesLayer2(t *testing.T) {
 }
 
 func TestExactMatchCaseInsensitive(t *testing.T) {
-	r := NewRouter(testDefs(), nil, nil)
+	r := NewRouter(testDefs(), nil)
 	result := r.Route(context.Background(), "Check My Calendar", parser.ParsedSignal{})
 
 	if result.Pipe != "calendar" {
@@ -248,7 +257,7 @@ func TestExactMatchCaseInsensitive(t *testing.T) {
 
 // TestLayer4FallbackToChat verifies that unrecognized signals default to chat.
 func TestLayer4FallbackToChat(t *testing.T) {
-	r := NewRouter(testDefs(), nil, nil)
+	r := NewRouter(testDefs(), nil)
 
 	result := r.Route(context.Background(), "xyzzy foobar totally unmatched", parser.ParsedSignal{})
 

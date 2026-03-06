@@ -38,8 +38,13 @@ identity: |
 
 ack:
   provider: gemini
-  model: gemini-3.1-flash-preview
+  model: gemini-3-flash-preview
   max_tokens: 256
+
+planner:
+  provider: xai
+  model: grok-4-fast
+  max_tokens: 1024
 
 log_level: info
 

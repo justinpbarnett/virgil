@@ -56,8 +56,3 @@ templates:
       plan:
         - pipe: "{verb}"
           flags: { cmd: "{type}" }
-
-    - requires: [verb]
-      plan:
-        - pipe: "{verb}"
-          flags: {}

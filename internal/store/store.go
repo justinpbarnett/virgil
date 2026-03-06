@@ -184,9 +184,10 @@ func runMigrations(db *sql.DB) error {
 	}
 
 	// One-time data migration from the old entries/working_state/invocations schema.
-	var count int
-	_ = db.QueryRow("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='entries'").Scan(&count)
-	if count > 0 {
+	// All three old tables must exist for the migration to run.
+	var oldTableCount int
+	_ = db.QueryRow("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN ('entries','working_state','invocations')").Scan(&oldTableCount)
+	if oldTableCount == 3 {
 		if err := migrateOldSchema(db); err != nil {
 			return fmt.Errorf("legacy migration: %w", err)
 		}
@@ -419,7 +420,7 @@ func (s *Store) DeleteState(namespace, key string) error {
 func (s *Store) ListState(namespace string) ([]StateEntry, error) {
 	prefix := namespace + "/"
 	rows, err := s.db.Query(
-		"SELECT id, content, updated_at FROM memories WHERE kind = 'working_state' AND id LIKE ? ORDER BY updated_at DESC",
+		"SELECT id, content, updated_at FROM memories WHERE kind = 'working_state' AND id LIKE ? ORDER BY updated_at DESC LIMIT 100",
 		prefix+"%",
 	)
 	if err != nil {

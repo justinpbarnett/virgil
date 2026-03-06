@@ -19,9 +19,11 @@ const (
 )
 
 type RouteResult struct {
-	Pipe       string
-	Confidence float64
-	Layer      int
+	Pipe             string
+	Confidence       float64
+	Layer            int
+	KeywordsFound    []string // populated at Layer 4 for miss logging
+	KeywordsNotFound []string // populated at Layer 4 for miss logging
 }
 
 type Router struct {
@@ -30,12 +32,11 @@ type Router struct {
 	pipeKeywords map[string][]string          // pipe name → []stemmed keywords
 	categories   map[string][]pipe.Definition // category → []definitions
 	definitions  map[string]pipe.Definition
-	missLog      *MissLog
 	threshold    float64
 	logger       *slog.Logger
 }
 
-func NewRouter(defs []pipe.Definition, missLog *MissLog, logger *slog.Logger) *Router {
+func NewRouter(defs []pipe.Definition, logger *slog.Logger) *Router {
 	if logger == nil {
 		logger = slog.Default()
 	}
@@ -45,7 +46,6 @@ func NewRouter(defs []pipe.Definition, missLog *MissLog, logger *slog.Logger) *R
 		pipeKeywords: make(map[string][]string),
 		categories:   make(map[string][]pipe.Definition),
 		definitions:  make(map[string]pipe.Definition),
-		missLog:      missLog,
 		threshold:    0.6,
 		logger:       logger,
 	}
@@ -125,6 +125,22 @@ func (r *Router) Route(ctx context.Context, signal string, parsed parser.ParsedS
 
 	r.logger.Debug("keyword scoring", "scores", scores, "keywords_found", keywordsFound, "best", bestPipe, "best_score", bestScore)
 
+	// Wh-questions need stronger keyword evidence — a single keyword hit
+	// (e.g. "run" in "how do I run it?") produces a misleadingly high score
+	// because all other words are stop words. Require at least 2 keyword
+	// hits to route a question via keywords.
+	if parsed.IsQuestion && bestScore >= r.threshold {
+		totalHits := 0
+		for _, h := range scores {
+			totalHits += h
+		}
+		if totalHits < 2 {
+			r.logger.Debug("question dampened", "best", bestPipe, "hits", totalHits)
+			bestScore = 0
+			bestPipe = ""
+		}
+	}
+
 	if bestScore >= r.threshold {
 		result := RouteResult{Pipe: bestPipe, Confidence: bestScore, Layer: LayerKeyword}
 		r.logger.Info("routed", "pipe", result.Pipe, "layer", result.Layer)
@@ -178,9 +194,7 @@ func (r *Router) Route(ctx context.Context, signal string, parsed parser.ParsedS
 		}
 	}
 
-	// Layer 4: Deterministic fallback — default to chat and log the miss.
-	// The classifier has been removed; signals that reach here are either
-	// genuinely conversational or have no matching keyword/category.
+	// Layer 4: Deterministic fallback — return chat and let the server handle AI planning.
 	var keywordsNotFound []string
 	for _, w := range words {
 		stemmed := Stem(w)
@@ -189,18 +203,14 @@ func (r *Router) Route(ctx context.Context, signal string, parsed parser.ParsedS
 		}
 	}
 
-	if r.missLog != nil {
-		_ = r.missLog.Log(MissEntry{
-			Signal:           signal,
-			KeywordsFound:    keywordsFound,
-			KeywordsNotFound: keywordsNotFound,
-			FallbackPipe:     "chat",
-			AIConfidence:     0.0,
-		})
-	}
-
 	r.logger.Warn("miss", "signal", signal)
-	result := RouteResult{Pipe: "chat", Confidence: 0.0, Layer: LayerFallback}
+	result := RouteResult{
+		Pipe:             "chat",
+		Confidence:       0.0,
+		Layer:            LayerFallback,
+		KeywordsFound:    keywordsFound,
+		KeywordsNotFound: keywordsNotFound,
+	}
 	r.logger.Info("routed", "pipe", result.Pipe, "layer", result.Layer)
 	return result
 }

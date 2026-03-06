@@ -42,10 +42,14 @@ func (p *Panel) SetContent(title, content string) {
 	p.viewport.SetContent(p.renderContent())
 }
 
-// SetSize updates the viewport dimensions.
+// SetSize updates the viewport dimensions. Height is reduced by 2 to account
+// for the title line and separator rendered above the viewport body in View().
 func (p *Panel) SetSize(width, height int) {
 	p.viewport.Width = width
-	p.viewport.Height = height
+	p.viewport.Height = height - 2
+	if p.viewport.Height < 1 {
+		p.viewport.Height = 1
+	}
 	// Re-render content so it wraps to the new width.
 	p.viewport.SetContent(p.renderContent())
 }
@@ -97,5 +101,5 @@ func (p Panel) renderContent() string {
 	if p.content == "" {
 		return p.theme.Dim.Render("ctrl+p to close")
 	}
-	return p.content
+	return p.theme.Response.Render(p.content)
 }

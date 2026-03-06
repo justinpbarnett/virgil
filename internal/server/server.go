@@ -22,6 +22,7 @@ import (
 	"github.com/justinpbarnett/virgil/internal/router"
 	"github.com/justinpbarnett/virgil/internal/runtime"
 	"github.com/justinpbarnett/virgil/internal/sse"
+	"github.com/justinpbarnett/virgil/internal/store"
 )
 
 // broker is a generic pub/sub hub. Subscribers receive values broadcast by publishers.
@@ -80,13 +81,16 @@ func serveSSE[T any](w http.ResponseWriter, r *http.Request, b *broker[T], buf i
 }
 
 type Deps struct {
-	Config   *config.Config
-	Router   *router.Router
-	Parser   *parser.Parser
-	Planner  *planner.Planner
-	Runtime  *runtime.Runtime
-	Registry *pipe.Registry
-	Logger   *slog.Logger
+	Config    *config.Config
+	Router    *router.Router
+	Parser    *parser.Parser
+	Planner   *planner.Planner
+	Runtime   *runtime.Runtime
+	Registry  *pipe.Registry
+	AIPlanner *planner.AIPlanner
+	MissLog   *router.MissLog
+	Store     *store.Store
+	Logger    *slog.Logger
 }
 
 type Server struct {
@@ -97,6 +101,9 @@ type Server struct {
 	runtime     *runtime.Runtime
 	registry    *pipe.Registry
 	ackProvider bridge.StreamingProvider
+	aiPlanner   *planner.AIPlanner
+	missLog     *router.MissLog
+	store       *store.Store
 	server      *http.Server
 	pidPath     string
 	logger      *slog.Logger
@@ -128,6 +135,9 @@ func New(d Deps) *Server {
 		planner:     d.Planner,
 		runtime:     d.Runtime,
 		registry:    d.Registry,
+		aiPlanner:   d.AIPlanner,
+		missLog:     d.MissLog,
+		store:       d.Store,
 		pidPath:     pidPath,
 		logger:      d.Logger,
 		startedAt:   time.Now(),

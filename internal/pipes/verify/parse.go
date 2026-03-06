@@ -238,6 +238,14 @@ func (f *OSFileChecker) ReadFile(path string) ([]byte, error) {
 // Checks justfile (test recipe), Makefile (test target), go.mod (go test),
 // package.json (npm test), in that order.
 func detectTestCommand(cwd string, fc FileChecker) (string, error) {
+	// Go projects: always use `go test -json` since verify needs
+	// machine-readable output. Task runners (justfile, Makefile) produce
+	// human-readable output that the JSON parser can't handle.
+	goModPath := filepath.Join(cwd, "go.mod")
+	if fc.Exists(goModPath) {
+		return "go test ./... -json -count=1", nil
+	}
+
 	// Check for justfile with test recipe
 	justfilePath := filepath.Join(cwd, "justfile")
 	if fc.Exists(justfilePath) {
@@ -252,12 +260,6 @@ func detectTestCommand(cwd string, fc FileChecker) (string, error) {
 	// Check for Makefile with test target
 	if detectMakefileTarget(cwd, fc, "test") {
 		return "make test", nil
-	}
-
-	// Check for go.mod
-	goModPath := filepath.Join(cwd, "go.mod")
-	if fc.Exists(goModPath) {
-		return "go test ./... -json -count=1", nil
 	}
 
 	// Check for package.json

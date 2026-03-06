@@ -201,7 +201,7 @@ func (p *PersistentProcess) StreamHandler() StreamHandler {
 						break
 					}
 				}
-				return envelope.NewRetryableError(p.cfg.Name, "context cancelled")
+				return envelope.NewWarnError(p.cfg.Name, "context cancelled")
 			default:
 			}
 
@@ -241,7 +241,7 @@ func (p *PersistentProcess) StreamHandler() StreamHandler {
 						break
 					}
 				}
-				return envelope.NewRetryableError(p.cfg.Name, "context cancelled")
+				return envelope.NewWarnError(p.cfg.Name, "context cancelled")
 			default:
 			}
 
