@@ -58,6 +58,7 @@ type SubprocessConfig struct {
 	Timeout    time.Duration
 	Env        []string
 	Logger     *slog.Logger
+	StatusSink StatusSink // optional — receives status events parsed from stderr
 }
 
 // buildCmd creates a configured exec.Cmd for a subprocess invocation.
@@ -103,50 +104,20 @@ func (sc SubprocessConfig) marshalRequest(input envelope.Envelope, flags map[str
 	return reqBytes, nil
 }
 
-// forwardLogs parses stderr lines for structured log messages and forwards them
-// to the logger. Non-JSON lines are collected and returned as plain stderr text.
+// forwardLogs parses stderr bytes for structured log messages and status
+// events, forwarding each to the appropriate sink. It returns the remaining
+// plain (non-structured) text. This is a synchronous wrapper around the
+// streaming readStderr used in tests and legacy callers.
 func forwardLogs(logger *slog.Logger, stderr []byte, pipeName string) string {
-	if logger == nil || len(stderr) == 0 {
+	if len(stderr) == 0 {
+		return ""
+	}
+	if logger == nil {
 		return string(stderr)
 	}
-
-	var plainLines []byte
-	scanner := bufio.NewScanner(bytes.NewReader(stderr))
-	for scanner.Scan() {
-		line := scanner.Bytes()
-		if len(line) == 0 || line[0] != '{' {
-			plainLines = append(plainLines, line...)
-			plainLines = append(plainLines, '\n')
-			continue
-		}
-		var raw map[string]any
-		if err := json.Unmarshal(line, &raw); err == nil {
-			msg, _ := raw["msg"].(string)
-			if msg == "" {
-				plainLines = append(plainLines, line...)
-				plainLines = append(plainLines, '\n')
-				continue
-			}
-			var lvl slog.Level
-			if levelStr, _ := raw["level"].(string); levelStr != "" {
-				if err := lvl.UnmarshalText([]byte(levelStr)); err != nil {
-					lvl = slog.LevelInfo
-				}
-			}
-			attrs := []any{"pipe", pipeName}
-			for k, v := range raw {
-				if k == "time" || k == "level" || k == "msg" {
-					continue
-				}
-				attrs = append(attrs, k, v)
-			}
-			logger.Log(context.Background(), lvl, msg, attrs...)
-		} else {
-			plainLines = append(plainLines, line...)
-			plainLines = append(plainLines, '\n')
-		}
-	}
-	return string(plainLines)
+	done := make(chan stderrResult, 1)
+	readStderr(bytes.NewReader(stderr), logger, pipeName, nil, done)
+	return (<-done).plain
 }
 
 // SubprocessHandler returns a Handler that invokes the given executable as a
@@ -165,14 +136,22 @@ func SubprocessHandler(cfg SubprocessConfig) Handler {
 		cmd := cfg.buildCmd(ctx, reqBytes, flags[envelope.FlagModelOverride])
 
 		stdout := &limitedBuffer{max: maxOutputBytes}
-		stderr := &limitedBuffer{max: maxOutputBytes}
 		cmd.Stdout = stdout
-		cmd.Stderr = stderr
 
-		runErr := cmd.Run()
+		stderrPipe, err := cmd.StderrPipe()
+		if err != nil {
+			return envelope.NewFatalError(cfg.Name, fmt.Sprintf("creating stderr pipe: %v", err))
+		}
 
-		// Forward structured log messages from stderr
-		plainStderr := forwardLogs(cfg.Logger, stderr.Bytes(), cfg.Name)
+		if err := cmd.Start(); err != nil {
+			return envelope.NewFatalError(cfg.Name, fmt.Sprintf("starting subprocess: %v", err))
+		}
+
+		stderrDone := make(chan stderrResult, 1)
+		go readStderr(stderrPipe, cfg.Logger, cfg.Name, cfg.StatusSink, stderrDone)
+
+		runErr := cmd.Wait()
+		res := <-stderrDone
 
 		// Timeout → retryable error
 		if ctx.Err() == context.DeadlineExceeded {
@@ -189,7 +168,7 @@ func SubprocessHandler(cfg SubprocessConfig) Handler {
 				return out
 			}
 			// Non-zero exit, no valid JSON → fatal from stderr
-			msg := plainStderr
+			msg := res.plain
 			if msg == "" {
 				msg = runErr.Error()
 			}
@@ -225,12 +204,17 @@ func SubprocessStreamHandler(cfg SubprocessConfig) StreamHandler {
 			return envelope.NewFatalError(cfg.Name, fmt.Sprintf("creating stdout pipe: %v", err))
 		}
 
-		stderr := &limitedBuffer{max: maxOutputBytes}
-		cmd.Stderr = stderr
+		stderrPipe, err := cmd.StderrPipe()
+		if err != nil {
+			return envelope.NewFatalError(cfg.Name, fmt.Sprintf("creating stderr pipe: %v", err))
+		}
 
 		if err := cmd.Start(); err != nil {
 			return envelope.NewFatalError(cfg.Name, fmt.Sprintf("starting subprocess: %v", err))
 		}
+
+		stderrDone := make(chan stderrResult, 1)
+		go readStderr(stderrPipe, cfg.Logger, cfg.Name, cfg.StatusSink, stderrDone)
 
 		var result *envelope.Envelope
 		scanner := bufio.NewScanner(stdoutPipe)
@@ -249,9 +233,7 @@ func SubprocessStreamHandler(cfg SubprocessConfig) StreamHandler {
 		}
 
 		waitErr := cmd.Wait()
-
-		// Forward structured log messages from stderr
-		plainStderr := forwardLogs(cfg.Logger, stderr.Bytes(), cfg.Name)
+		res := <-stderrDone
 
 		if ctx.Err() == context.DeadlineExceeded {
 			return envelope.NewRetryableError(cfg.Name, fmt.Sprintf("timeout after %s", cfg.Timeout))
@@ -262,7 +244,7 @@ func SubprocessStreamHandler(cfg SubprocessConfig) StreamHandler {
 		}
 
 		if waitErr != nil {
-			msg := plainStderr
+			msg := res.plain
 			if msg == "" {
 				msg = waitErr.Error()
 			}

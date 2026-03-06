@@ -14,6 +14,7 @@ import (
 	"github.com/justinpbarnett/virgil/internal/config"
 	"github.com/justinpbarnett/virgil/internal/envelope"
 	"github.com/justinpbarnett/virgil/internal/pipe"
+	"github.com/justinpbarnett/virgil/internal/pipehost"
 	"github.com/justinpbarnett/virgil/internal/pipeutil"
 )
 
@@ -143,6 +144,8 @@ func runBuild(ctx context.Context, provider bridge.AgenticProvider, compiled map
 	out := envelope.New("build", "build")
 	out.Args = flags
 
+	reporter := pipehost.NewStatusReporter("build")
+
 	systemPrompt, userPrompt, errEnv := preparePrompt(compiled, pipeConfig, input, flags)
 	if errEnv != nil {
 		out.Error = errEnv
@@ -175,10 +178,12 @@ func runBuild(ctx context.Context, provider bridge.AgenticProvider, compiled map
 
 	tools := BuildTools(cwd)
 	logger.Debug("building", "style", style, "max_turns", maxTurns, "prompt_len", len(userPrompt))
+	reporter.Progress(fmt.Sprintf("starting build (style=%s, max_turns=%d)", style, maxTurns))
 
 	result, err := bridge.RunAgenticLoop(ctx, provider, systemPrompt, userPrompt, tools, maxTurns, sink)
 	if err != nil {
 		logger.Error("build failed", "error", err)
+		reporter.Error(fmt.Sprintf("build failed: %v", err))
 		out.Error = buildError(err)
 		out.Duration = time.Since(out.Timestamp)
 		return out
@@ -190,6 +195,7 @@ func runBuild(ctx context.Context, provider bridge.AgenticProvider, compiled map
 		return out
 	}
 
+	reporter.Progress("collecting worktree changes")
 	created, modified := worktreeChanges(cwd)
 	output := BuildOutput{
 		Summary:       result,
@@ -199,6 +205,11 @@ func runBuild(ctx context.Context, provider bridge.AgenticProvider, compiled map
 		CycleNumber:   cycleNumber,
 	}
 	logger.Info("build complete", "style", style, "cycle", cycleNumber)
+	reporter.ProgressDetail("build complete", map[string]any{
+		"files_created":  len(orEmpty(created)),
+		"files_modified": len(orEmpty(modified)),
+		"cycle":          cycleNumber,
+	})
 	out.Content = output
 	out.ContentType = envelope.ContentStructured
 	out.Duration = time.Since(out.Timestamp)

@@ -213,6 +213,150 @@ echo "{\"pipe\":\"echo\",\"action\":\"respond\",\"args\":{},\"timestamp\":\"2024
 	}
 }
 
+// TestSubprocessHandlerStatusEvents spawns a subprocess that writes status
+// events to stderr and a valid envelope to stdout, then verifies that the
+// status sink receives the events and the handler returns the correct envelope.
+func TestSubprocessHandlerStatusEvents(t *testing.T) {
+	dir := t.TempDir()
+	exe := writeScript(t, dir, "run", `#!/bin/sh
+# Emit a progress event and a waiting event on stderr
+printf '{"status":"progress","pipe":"test","message":"starting","ts":1700000000}\n' >&2
+printf '{"status":"waiting","pipe":"test","message":"waiting for api","ts":1700000001,"detail":{"resource":"api"}}\n' >&2
+# Emit a valid envelope on stdout
+cat <<'EOF'
+{"pipe":"test","action":"done","args":{},"timestamp":"2024-01-01T00:00:00Z","content":"ok","content_type":"text","error":null}
+EOF
+`)
+
+	var received []StatusEvent
+	cfg := testConfig("test", exe, dir, 5*time.Second)
+	cfg.StatusSink = func(e StatusEvent) { received = append(received, e) }
+
+	h := SubprocessHandler(cfg)
+	result := h(testInput(), nil)
+
+	if result.Error != nil {
+		t.Fatalf("unexpected error: %v", result.Error)
+	}
+	if len(received) != 2 {
+		t.Fatalf("expected 2 status events, got %d: %+v", len(received), received)
+	}
+	if received[0].Status != StatusProgress {
+		t.Errorf("expected first event status=%q, got %q", StatusProgress, received[0].Status)
+	}
+	if received[1].Status != StatusWaiting {
+		t.Errorf("expected second event status=%q, got %q", StatusWaiting, received[1].Status)
+	}
+}
+
+// TestSubprocessStreamHandlerStatusEvents verifies that a streaming subprocess
+// forwards status events to the sink during execution.
+func TestSubprocessStreamHandlerStatusEvents(t *testing.T) {
+	dir := t.TempDir()
+	exe := writeScript(t, dir, "run", `#!/bin/sh
+# Emit a status event on stderr before any chunks
+printf '{"status":"progress","pipe":"stream","message":"starting stream","ts":1700000000}\n' >&2
+# Emit chunks then final envelope on stdout
+printf '{"chunk":"hello "}\n'
+printf '{"status":"progress","pipe":"stream","message":"midway","ts":1700000001}\n' >&2
+printf '{"chunk":"world"}\n'
+printf '{"envelope":{"pipe":"stream","action":"done","args":{},"timestamp":"2024-01-01T00:00:00Z","content":"hello world","content_type":"text","error":null}}\n'
+`)
+
+	var received []StatusEvent
+	cfg := testConfig("stream", exe, dir, 5*time.Second)
+	cfg.StatusSink = func(e StatusEvent) { received = append(received, e) }
+
+	h := SubprocessStreamHandler(cfg)
+	var chunks []string
+	result := h(context.Background(), testInput(), nil, func(c string) { chunks = append(chunks, c) })
+
+	if result.Error != nil {
+		t.Fatalf("unexpected error: %v", result.Error)
+	}
+	if len(chunks) != 2 {
+		t.Errorf("expected 2 chunks, got %d: %v", len(chunks), chunks)
+	}
+	if len(received) < 1 {
+		t.Fatalf("expected at least 1 status event, got %d", len(received))
+	}
+	if received[0].Status != StatusProgress {
+		t.Errorf("expected first event status=%q, got %q", StatusProgress, received[0].Status)
+	}
+}
+
+// TestSubprocessHandlerNoStatus verifies that a pipe that writes nothing to
+// stderr works exactly as before (backward compatibility).
+func TestSubprocessHandlerNoStatus(t *testing.T) {
+	dir := t.TempDir()
+	exe := writeScript(t, dir, "run", `#!/bin/sh
+cat <<'EOF'
+{"pipe":"echo","action":"respond","args":{},"timestamp":"2024-01-01T00:00:00Z","content":"no status","content_type":"text","error":null}
+EOF
+`)
+
+	var received []StatusEvent
+	cfg := testConfig("echo", exe, dir, 5*time.Second)
+	cfg.StatusSink = func(e StatusEvent) { received = append(received, e) }
+
+	h := SubprocessHandler(cfg)
+	result := h(testInput(), nil)
+
+	if result.Error != nil {
+		t.Fatalf("unexpected error: %v", result.Error)
+	}
+	if len(received) != 0 {
+		t.Errorf("expected no status events, got %d", len(received))
+	}
+	s, _ := result.Content.(string)
+	if s != "no status" {
+		t.Errorf("expected content='no status', got %v", result.Content)
+	}
+}
+
+// TestSubprocessHandlerStatusAndLogs verifies that a pipe emitting both status
+// events and slog messages correctly handles both, with no cross-contamination.
+func TestSubprocessHandlerStatusAndLogs(t *testing.T) {
+	dir := t.TempDir()
+	exe := writeScript(t, dir, "run", `#!/bin/sh
+printf '{"status":"progress","pipe":"test","message":"milestone","ts":1700000000}\n' >&2
+printf '{"time":"2025-01-01T00:00:00Z","level":"INFO","msg":"logged message","pipe":"test"}\n' >&2
+cat <<'EOF'
+{"pipe":"test","action":"done","args":{},"timestamp":"2024-01-01T00:00:00Z","content":"ok","content_type":"text","error":null}
+EOF
+`)
+
+	var logBuf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+
+	var received []StatusEvent
+	cfg := SubprocessConfig{
+		Name:       "test",
+		Executable: exe,
+		WorkDir:    dir,
+		Timeout:    5 * time.Second,
+		Env:        os.Environ(),
+		Logger:     logger,
+		StatusSink: func(e StatusEvent) { received = append(received, e) },
+	}
+
+	h := SubprocessHandler(cfg)
+	result := h(testInput(), nil)
+
+	if result.Error != nil {
+		t.Fatalf("unexpected error: %v", result.Error)
+	}
+	if len(received) != 1 {
+		t.Fatalf("expected 1 status event, got %d: %+v", len(received), received)
+	}
+	if received[0].Status != StatusProgress {
+		t.Errorf("expected status=%q, got %q", StatusProgress, received[0].Status)
+	}
+	if !strings.Contains(logBuf.String(), "logged message") {
+		t.Errorf("expected 'logged message' in log output, got: %s", logBuf.String())
+	}
+}
+
 func TestForwardLogs_ParsesSlogJSON(t *testing.T) {
 	var buf bytes.Buffer
 	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))

@@ -94,7 +94,17 @@ func runLoop(handler pipe.Handler, streamHandler pipe.StreamHandler) {
 
 func runSync(handler pipe.Handler, req pipe.SubprocessRequest) {
 	result := handler(req.Envelope, req.Flags)
-	if err := json.NewEncoder(os.Stdout).Encode(result); err != nil {
+
+	enc := json.NewEncoder(os.Stdout)
+	var err error
+
+	if req.Stream {
+		err = enc.Encode(pipe.SubprocessChunk{Envelope: &result})
+	} else {
+		err = enc.Encode(result)
+	}
+
+	if err != nil {
 		fmt.Fprintf(os.Stderr, "failed to encode response: %v\n", err)
 		os.Exit(1)
 	}
