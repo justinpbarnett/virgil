@@ -1,0 +1,80 @@
+name: todo
+description: Manages a personal todo list — add, complete, edit, remove, reorder, and list tasks.
+category: general
+
+triggers:
+  exact:
+    - "show my todos"
+    - "what's on my todo list"
+    - "what do I need to do"
+  keywords:
+    - todo
+    - task
+    - todos
+    - tasks
+    - checklist
+    - backlog
+  patterns:
+    - "add {topic} to my todo list"
+    - "add {topic} to my todos"
+    - "mark {topic} as done"
+    - "check off {topic}"
+    - "remove {topic} from my todos"
+    - "prioritize {topic}"
+    - "reorder {topic}"
+
+flags:
+  action:
+    description: Which todo operation to perform.
+    values: [add, list, done, remove, edit, reorder]
+    default: list
+  title:
+    description: The todo item title (for add action).
+    default: ""
+  id:
+    description: Todo item ID (for done, remove, edit, reorder actions).
+    default: ""
+  priority:
+    description: Priority level 1 (highest) to 5 (lowest).
+    values: ["1", "2", "3", "4", "5"]
+    default: "3"
+  due:
+    description: Due date (ISO 8601 date or natural language like "friday").
+    default: ""
+  tags:
+    description: Comma-separated tags.
+    default: ""
+  status:
+    description: Filter by status (for list action).
+    values: [pending, done, all]
+    default: pending
+  limit:
+    description: Maximum items to return (for list action).
+    default: "25"
+
+format:
+  list: |-
+    {{if eq .Count 0}}No todos.{{else}}{{range .Items}}
+    {{if eq .status "done"}}[x]{{else}}[ ]{{end}} {{.title}}{{if .due_date}} (due {{.due_date}}){{end}} [p{{.priority}}] {{.id}}{{end}}{{end}}
+  structured: |-
+    {{if .status}}{{if eq .status "done"}}Completed{{else}}Added{{end}}: {{.title}}{{end}}{{if .priority}} [p{{.priority}}]{{end}}
+
+memory:
+  disabled: true
+
+vocabulary:
+  verbs:
+    todo: todo
+    task: todo
+  types: {}
+  sources:
+    todos: todo
+    tasks: todo
+  modifiers: {}
+
+templates:
+  priority: 50
+  entries:
+    - requires: [verb]
+      plan:
+        - pipe: todo
