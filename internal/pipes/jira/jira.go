@@ -2,6 +2,7 @@ package jira
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -9,7 +10,9 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"regexp"
+	"slices"
 	"strings"
 	"time"
 
@@ -24,6 +27,7 @@ type JiraConfig struct {
 	BaseURL string `yaml:"base_url"`
 	Email   string `yaml:"email"`
 	Token   string `yaml:"token"`
+	Project string `yaml:"project"`
 }
 
 // Issue represents a Jira issue with its core fields.
@@ -69,6 +73,7 @@ type JiraClient struct {
 	BaseURL    string
 	Email      string
 	Token      string
+	Project    string
 	HTTPClient *http.Client
 }
 
@@ -78,6 +83,7 @@ func NewClient(cfg JiraConfig) *JiraClient {
 		BaseURL:    strings.TrimRight(cfg.BaseURL, "/"),
 		Email:      cfg.Email,
 		Token:      cfg.Token,
+		Project:    cfg.Project,
 		HTTPClient: &http.Client{Timeout: 30 * time.Second},
 	}
 }
@@ -575,6 +581,19 @@ func strSlice(m map[string]any, key string) []string {
 	return result
 }
 
+// requireIssueKey extracts and validates the issue key from flags.
+// Returns the validated key or an error if missing/invalid.
+func requireIssueKey(flags map[string]string) (string, error) {
+	id := flags["id"]
+	if id == "" {
+		return "", fmt.Errorf("--id is required: provide a Jira issue key (e.g., PROJ-123)")
+	}
+	if !issueKeyRe.MatchString(id) {
+		return "", fmt.Errorf("invalid issue key: %s (expected format: PROJ-123)", id)
+	}
+	return id, nil
+}
+
 // NewHandler returns a pipe.Handler for the jira pipe.
 func NewHandler(client *JiraClient, logger *slog.Logger) pipe.Handler {
 	if logger == nil {
@@ -587,33 +606,48 @@ func NewHandler(client *JiraClient, logger *slog.Logger) pipe.Handler {
 			action = "get"
 		}
 
+		// Promote topic to id when it looks like an issue key
+		if flags["id"] == "" {
+			if topic := flags["topic"]; issueKeyRe.MatchString(strings.ToUpper(topic)) {
+				flags["id"] = strings.ToUpper(topic)
+			}
+		} else {
+			flags["id"] = strings.ToUpper(flags["id"])
+		}
+
 		out := envelope.New("jira", action)
 		out.Args = flags
-
-		id := flags["id"]
-		if id == "" {
-			out.Duration = time.Since(out.Timestamp)
-			out.Error = envelope.FatalError("--id is required: provide a Jira issue key (e.g., PROJ-123)")
-			return out
-		}
-
-		if !issueKeyRe.MatchString(id) {
-			out.Duration = time.Since(out.Timestamp)
-			out.Error = envelope.FatalError(fmt.Sprintf("invalid issue key: %s (expected format: PROJ-123)", id))
-			return out
-		}
 
 		ctx := context.Background()
 
 		switch action {
-		case "get":
-			out = handleGet(ctx, client, logger, id, flags, out)
-		case "comment":
-			out = handleComment(ctx, client, logger, id, flags, input, out)
-		case "update":
-			out = handleUpdate(ctx, client, logger, id, flags, input, out)
+		case "search":
+			out = handleSearch(ctx, client, logger, flags, out)
 		default:
-			out.Error = envelope.FatalError(fmt.Sprintf("unknown action: %s (expected: get, comment, update)", action))
+			if action == "get" && flags["id"] == "" {
+				// No ID provided for get — fall back to search
+				out = handleSearch(ctx, client, logger, flags, out)
+				out.Duration = time.Since(out.Timestamp)
+				return out
+			}
+			id, err := requireIssueKey(flags)
+			if err != nil {
+				out.Duration = time.Since(out.Timestamp)
+				out.Error = envelope.FatalError(err.Error())
+				return out
+			}
+			switch action {
+			case "get":
+				out = handleGet(ctx, client, logger, id, flags, out)
+			case "comment":
+				out = handleComment(ctx, client, logger, id, flags, input, out)
+			case "update":
+				out = handleUpdate(ctx, client, logger, id, flags, input, out)
+			case "transition":
+				out = handleTransition(ctx, client, logger, id, flags, out)
+			default:
+				out.Error = envelope.FatalError(fmt.Sprintf("unknown action: %s (expected: get, comment, update, search, transition)", action))
+			}
 		}
 
 		out.Duration = time.Since(out.Timestamp)
@@ -731,6 +765,309 @@ func handleUpdate(ctx context.Context, client *JiraClient, logger *slog.Logger, 
 	out.Content = issue
 	out.ContentType = envelope.ContentStructured
 	return out
+}
+
+func handleTransition(ctx context.Context, client *JiraClient, logger *slog.Logger, id string, flags map[string]string, out envelope.Envelope) envelope.Envelope {
+	statusName := flags["status"]
+	if statusName == "" {
+		statusName = flags["modifier"]
+	}
+	if statusName == "" {
+		out.Error = envelope.FatalError("--status is required: provide the target status name (e.g., In Progress)")
+		return out
+	}
+
+	logger.Debug("transition issue", "id", id, "status", statusName)
+
+	if err := client.TransitionIssue(ctx, id, statusName); err != nil {
+		out.Error = classifyJiraError(id, err)
+		return out
+	}
+
+	issue, err := client.GetIssue(ctx, id, nil, "summary,status")
+	if err != nil {
+		out.Error = classifyJiraError(id, err)
+		return out
+	}
+
+	out.Content = map[string]any{
+		"action":  "transition",
+		"key":     issue.Key,
+		"summary": issue.Summary,
+		"status":  issue.Status,
+	}
+	out.ContentType = envelope.ContentStructured
+	return out
+}
+
+// SearchIssues queries Jira via JQL and returns matching issues, paginating up to limit.
+func (c *JiraClient) SearchIssues(ctx context.Context, jql string, expand []string, limit int) ([]Issue, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+
+	fields := []string{"summary", "status", "priority", "assignee", "reporter", "labels", "description", "issuetype", "created", "updated", "comment", "attachment"}
+	expandParam := []string{"renderedFields", "names"}
+
+	var all []Issue
+	startAt := 0
+
+	for {
+		batch := limit - len(all)
+		if batch <= 0 {
+			break
+		}
+		if batch > 100 {
+			batch = 100
+		}
+
+		u := fmt.Sprintf("%s/rest/api/3/search/jql?jql=%s&maxResults=%d&startAt=%d&fields=%s&expand=%s",
+			c.BaseURL,
+			url.QueryEscape(jql),
+			batch,
+			startAt,
+			url.QueryEscape(strings.Join(fields, ",")),
+			url.QueryEscape(strings.Join(expandParam, ",")),
+		)
+		req, err := http.NewRequestWithContext(ctx, "GET", u, nil)
+		if err != nil {
+			return nil, err
+		}
+
+		resp, err := c.do(req)
+		if err != nil {
+			return nil, err
+		}
+
+		if err := checkResponse(resp); err != nil {
+			resp.Body.Close()
+			return nil, err
+		}
+
+		var result struct {
+			Total      int              `json:"total"`
+			StartAt    int              `json:"startAt"`
+			MaxResults int              `json:"maxResults"`
+			Issues     []map[string]any `json:"issues"`
+		}
+		err = json.NewDecoder(resp.Body).Decode(&result)
+		resp.Body.Close()
+		if err != nil {
+			return nil, fmt.Errorf("decode search response: %w", err)
+		}
+
+		for _, raw := range result.Issues {
+			issue, err := parseIssue(raw, expand)
+			if err != nil {
+				continue
+			}
+			all = append(all, *issue)
+		}
+
+		fetched := result.StartAt + len(result.Issues)
+		if fetched >= result.Total || len(result.Issues) == 0 {
+			break
+		}
+		startAt = fetched
+	}
+
+	return all, nil
+}
+
+// DetectNeedsAttention returns true if a UAT issue has unaddressed reviewer
+// comments (last comment author differs from assignee).
+func DetectNeedsAttention(issue *Issue) bool {
+	if !strings.EqualFold(issue.Status, "UAT") {
+		return false
+	}
+	if len(issue.Comments) == 0 {
+		return false
+	}
+	lastComment := issue.Comments[len(issue.Comments)-1]
+	return lastComment.Author != issue.Assignee
+}
+
+type searchItem struct {
+	key, summary, status, priority, issueType string
+	needsAttention                            bool
+}
+
+func handleSearch(ctx context.Context, client *JiraClient, logger *slog.Logger, flags map[string]string, out envelope.Envelope) envelope.Envelope {
+	jql := flags["jql"]
+	if jql == "" {
+		jql = "assignee = currentUser() AND sprint in openSprints() ORDER BY updated DESC"
+		if client.Project != "" {
+			jql = "assignee = currentUser() AND project = " + client.Project + " AND sprint in openSprints() ORDER BY updated DESC"
+		}
+	}
+
+	limitStr := flags["limit"]
+	limit := 100
+	if limitStr != "" {
+		if n, err := fmt.Sscanf(limitStr, "%d", &limit); n == 0 || err != nil {
+			limit = 100
+		}
+	}
+
+	var expand []string
+	if expandStr := flags["expand"]; expandStr != "" {
+		expand = strings.Split(expandStr, ",")
+		for i := range expand {
+			expand[i] = strings.TrimSpace(expand[i])
+		}
+	}
+
+	logger.Debug("search issues", "jql", jql, "limit", limit)
+
+	issues, err := client.SearchIssues(ctx, jql, expand, limit)
+	if err != nil {
+		out.Error = classifyJiraError("", err)
+		return out
+	}
+
+	items := make([]searchItem, 0, len(issues))
+	for i := range issues {
+		issue := &issues[i]
+		items = append(items, searchItem{
+			key:            issue.Key,
+			summary:        issue.Summary,
+			status:         issue.Status,
+			priority:       issue.Priority,
+			issueType:      issue.IssueType,
+			needsAttention: DetectNeedsAttention(issue),
+		})
+	}
+
+	// Sort: group by status, then fires first, then by priority
+	slices.SortStableFunc(items, func(a, b searchItem) int {
+		if c := cmp.Compare(statusRank(a.status), statusRank(b.status)); c != 0 {
+			return c
+		}
+		if c := cmp.Compare(typeUrgency(a.issueType), typeUrgency(b.issueType)); c != 0 {
+			return c
+		}
+		return cmp.Compare(priorityRank(a.priority), priorityRank(b.priority))
+	})
+
+	out.Content = formatSearchResults(items, client.BaseURL)
+	out.ContentType = envelope.ContentText
+	return out
+}
+
+func formatSearchResults(items []searchItem, baseURL string) string {
+	if len(items) == 0 {
+		return "No issues found."
+	}
+
+	const maxSummary = 42
+
+	// Compute column widths from data
+	var keyW, summaryW, priW int
+	for _, it := range items {
+		keyW = max(keyW, len([]rune(it.key)))
+		summaryW = max(summaryW, len([]rune(it.summary)))
+		priW = max(priW, len([]rune(it.priority)))
+	}
+	if summaryW > maxSummary {
+		summaryW = maxSummary
+	}
+
+	var b strings.Builder
+	fmt.Fprintf(&b, "%d issues:\n", len(items))
+
+	prevStatus := ""
+	for _, it := range items {
+		if it.status != prevStatus {
+			fmt.Fprintf(&b, "\n%s\n", it.status)
+			prevStatus = it.status
+		}
+		b.WriteString("  ")
+		b.WriteString(oscLink(baseURL, it.key))
+		b.WriteString(strings.Repeat(" ", max(0, keyW-len([]rune(it.key)))))
+		b.WriteString("  ")
+		b.WriteString(runepad(runetrunc(it.summary, summaryW), summaryW))
+		b.WriteString("  ")
+		b.WriteString(runepad(it.priority, priW))
+		b.WriteString("  ")
+		b.WriteString(it.issueType)
+		if it.needsAttention {
+			b.WriteString("  !!")
+		}
+		b.WriteByte('\n')
+	}
+
+	return "```\n" + b.String() + "```"
+}
+
+// oscLink wraps text in an OSC 8 hyperlink escape sequence.
+func oscLink(baseURL, key string) string {
+	if baseURL == "" {
+		return key
+	}
+	return "\x1b]8;;" + baseURL + "/browse/" + key + "\x1b\\" + key + "\x1b]8;;\x1b\\"
+}
+
+func runetrunc(s string, max int) string {
+	r := []rune(s)
+	if len(r) <= max {
+		return s
+	}
+	return string(r[:max-1]) + "…"
+}
+
+func runepad(s string, width int) string {
+	n := len([]rune(s))
+	if n >= width {
+		return s
+	}
+	return s + strings.Repeat(" ", width-n)
+}
+
+func statusRank(s string) int {
+	switch strings.ToLower(s) {
+	case "in progress", "in development":
+		return 0
+	case "blocked":
+		return 1
+	case "to do", "open", "backlog", "new":
+		return 2
+	case "needs clarification":
+		return 3
+	case "in qa", "qa", "testing", "in review", "code review":
+		return 4
+	case "uat":
+		return 5
+	case "done", "closed", "resolved":
+		return 6
+	default:
+		return 4
+	}
+}
+
+func typeUrgency(s string) int {
+	switch strings.ToLower(s) {
+	case "fire":
+		return 0
+	default:
+		return 1
+	}
+}
+
+func priorityRank(s string) int {
+	switch strings.ToLower(s) {
+	case "highest", "blocker":
+		return 0
+	case "high", "critical":
+		return 1
+	case "medium":
+		return 2
+	case "low":
+		return 3
+	case "lowest", "trivial":
+		return 4
+	default:
+		return 2
+	}
 }
 
 func classifyJiraError(id string, err error) *envelope.EnvelopeError {

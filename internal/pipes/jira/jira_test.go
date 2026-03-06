@@ -1,9 +1,12 @@
 package jira
 
 import (
+	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 
@@ -396,19 +399,13 @@ func TestGetIssueInvalidKeyFormat(t *testing.T) {
 	handler := NewHandler(client, nil)
 	input := envelope.New("input", "test")
 
-	cases := []string{"lowercase-123", "123", "PROJ", "proj-123", ""}
+	cases := []string{"123", "PROJ", "-123", "PROJ-"}
 	for _, key := range cases {
 		flags := map[string]string{"action": "get", "id": key}
 		result := handler(input, flags)
 		testutil.AssertFatalError(t, result)
-		if key == "" {
-			if !strings.Contains(result.Error.Message, "--id is required") {
-				t.Errorf("key=%q: expected '--id is required' message, got: %s", key, result.Error.Message)
-			}
-		} else {
-			if !strings.Contains(result.Error.Message, "invalid issue key") {
-				t.Errorf("key=%q: expected 'invalid issue key' message, got: %s", key, result.Error.Message)
-			}
+		if !strings.Contains(result.Error.Message, "invalid issue key") {
+			t.Errorf("key=%q: expected 'invalid issue key' message, got: %s", key, result.Error.Message)
 		}
 	}
 }
@@ -744,6 +741,363 @@ func TestCloudAuth(t *testing.T) {
 	_ = capturedAuth // Used by the real HTTP call above
 }
 
+// --- SEARCH action tests ---
+
+func mockSearchResponse(issues []map[string]any, total int) map[string]any {
+	return map[string]any{
+		"total":      total,
+		"startAt":    0,
+		"maxResults": len(issues),
+		"issues":     issues,
+	}
+}
+
+func mockUATIssueJSON(assignee, lastCommentAuthor string) map[string]any {
+	issue := mockIssueJSON()
+	issue["key"] = "PTP-42"
+	fields := issue["fields"].(map[string]any)
+	fields["status"] = map[string]any{"name": "UAT"}
+	fields["assignee"] = map[string]any{"displayName": assignee}
+	fields["comment"] = map[string]any{
+		"comments": []any{
+			map[string]any{
+				"id":      "99001",
+				"author":  map[string]any{"displayName": lastCommentAuthor},
+				"created": "2026-03-03T10:00:00.000+0000",
+				"updated": "2026-03-03T10:00:00.000+0000",
+				"body": map[string]any{
+					"version": 1,
+					"type":    "doc",
+					"content": []any{
+						map[string]any{
+							"type": "paragraph",
+							"content": []any{
+								map[string]any{"type": "text", "text": "Found a bug."},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+	issue["fields"] = fields
+	return issue
+}
+
+func mockSearchServer(t *testing.T, response map[string]any, statusCode int, capturedQuery *url.Values) *httptest.Server {
+	t.Helper()
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != "GET" || !strings.HasSuffix(r.URL.Path, "/search/jql") {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		if capturedQuery != nil {
+			*capturedQuery = r.URL.Query()
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(statusCode)
+		json.NewEncoder(w).Encode(response)
+	}))
+}
+
+func TestSearchDefault(t *testing.T) {
+	issue := mockIssueJSON()
+	srv := mockSearchServer(t, mockSearchResponse([]map[string]any{issue}, 1), http.StatusOK, nil)
+	defer srv.Close()
+
+	client := newTestClient(srv.URL)
+	handler := NewHandler(client, nil)
+	input := envelope.New("input", "test")
+
+	result := handler(input, map[string]string{"action": "search"})
+
+	testutil.AssertEnvelope(t, result, "jira", "search")
+	if result.Error != nil {
+		t.Fatalf("unexpected error: %v", result.Error.Message)
+	}
+	if result.ContentType != envelope.ContentText {
+		t.Errorf("expected content_type=text, got %s", result.ContentType)
+	}
+	text, ok := result.Content.(string)
+	if !ok {
+		t.Fatalf("expected string content, got %T", result.Content)
+	}
+	if !strings.Contains(text, "PROJ-123") {
+		t.Errorf("expected output to contain issue key, got: %s", text)
+	}
+}
+
+func TestSearchDoesNotRequireID(t *testing.T) {
+	srv := mockSearchServer(t, mockSearchResponse(nil, 0), http.StatusOK, nil)
+	defer srv.Close()
+
+	client := newTestClient(srv.URL)
+	handler := NewHandler(client, nil)
+	input := envelope.New("input", "test")
+
+	result := handler(input, map[string]string{"action": "search"})
+	if result.Error != nil {
+		t.Fatalf("search without --id should not error, got: %s", result.Error.Message)
+	}
+}
+
+func TestSearchCustomJQL(t *testing.T) {
+	var captured url.Values
+	srv := mockSearchServer(t, mockSearchResponse(nil, 0), http.StatusOK, &captured)
+	defer srv.Close()
+
+	client := newTestClient(srv.URL)
+	handler := NewHandler(client, nil)
+	input := envelope.New("input", "test")
+
+	customJQL := "project = PTP AND sprint in openSprints()"
+	handler(input, map[string]string{"action": "search", "jql": customJQL})
+
+	if captured.Get("jql") != customJQL {
+		t.Errorf("expected jql=%q, got %q", customJQL, captured.Get("jql"))
+	}
+}
+
+func TestSearchLimit(t *testing.T) {
+	var captured url.Values
+	srv := mockSearchServer(t, mockSearchResponse(nil, 0), http.StatusOK, &captured)
+	defer srv.Close()
+
+	client := newTestClient(srv.URL)
+	handler := NewHandler(client, nil)
+	input := envelope.New("input", "test")
+
+	handler(input, map[string]string{"action": "search", "limit": "10"})
+
+	if captured.Get("maxResults") != "10" {
+		t.Errorf("expected maxResults=10, got %q", captured.Get("maxResults"))
+	}
+}
+
+func TestSearchEmptyResults(t *testing.T) {
+	srv := mockSearchServer(t, mockSearchResponse(nil, 0), http.StatusOK, nil)
+	defer srv.Close()
+
+	client := newTestClient(srv.URL)
+	handler := NewHandler(client, nil)
+	input := envelope.New("input", "test")
+
+	result := handler(input, map[string]string{"action": "search"})
+	if result.Error != nil {
+		t.Fatalf("unexpected error: %v", result.Error.Message)
+	}
+	text, _ := result.Content.(string)
+	if text != "No issues found." {
+		t.Errorf("expected 'No issues found.', got: %s", text)
+	}
+}
+
+func TestSearchJQLSyntaxError(t *testing.T) {
+	errResponse := map[string]any{"errorMessages": []any{"Field 'bogus' does not exist"}}
+	srv := mockSearchServer(t, errResponse, http.StatusBadRequest, nil)
+	defer srv.Close()
+
+	client := newTestClient(srv.URL)
+	handler := NewHandler(client, nil)
+	input := envelope.New("input", "test")
+
+	result := handler(input, map[string]string{"action": "search", "jql": "bogus =!= nope"})
+	testutil.AssertFatalError(t, result)
+}
+
+func TestSearchPagination(t *testing.T) {
+	// Multi-page: first page has 2 issues, total=3; second page has 1
+	callCount := 0
+	page1Issue := mockIssueJSON()
+	page1Issue["key"] = "PTP-1"
+	page2Issue := mockIssueJSON()
+	page2Issue["key"] = "PTP-2"
+	page3Issue := mockIssueJSON()
+	page3Issue["key"] = "PTP-3"
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callCount++
+		w.Header().Set("Content-Type", "application/json")
+		q := r.URL.Query()
+		startAt := 0
+		maxResults := 100
+		fmt.Sscanf(q.Get("startAt"), "%d", &startAt)
+		fmt.Sscanf(q.Get("maxResults"), "%d", &maxResults)
+
+		var resp map[string]any
+		if startAt == 0 {
+			count := maxResults
+			if count > 2 {
+				count = 2
+			}
+			resp = map[string]any{
+				"total":      3,
+				"startAt":    0,
+				"maxResults": count,
+				"issues":     []map[string]any{page1Issue, page2Issue}[:count],
+			}
+		} else {
+			resp = map[string]any{
+				"total":      3,
+				"startAt":    startAt,
+				"maxResults": 1,
+				"issues":     []map[string]any{page3Issue},
+			}
+		}
+		json.NewEncoder(w).Encode(resp)
+	}))
+	defer srv.Close()
+
+	client := newTestClient(srv.URL)
+	issues, err := client.SearchIssues(context.Background(), "project = PTP", []string{"comments"}, 100)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(issues) != 3 {
+		t.Errorf("expected 3 issues across pages, got %d", len(issues))
+	}
+	if callCount < 2 {
+		t.Errorf("expected multiple API calls for pagination, got %d", callCount)
+	}
+}
+
+// --- DetectNeedsAttention unit tests ---
+
+func TestDetectNeedsAttention(t *testing.T) {
+	cases := []struct {
+		name     string
+		issue    Issue
+		expected bool
+	}{
+		{
+			name: "UAT + non-self comment -> true",
+			issue: Issue{
+				Status:   "UAT",
+				Assignee: "Dev User",
+				Comments: []Comment{{Author: "Client User", Body: "Found a bug"}},
+			},
+			expected: true,
+		},
+		{
+			name: "UAT + self comment -> false",
+			issue: Issue{
+				Status:   "UAT",
+				Assignee: "Dev User",
+				Comments: []Comment{{Author: "Dev User", Body: "Deployed fix"}},
+			},
+			expected: false,
+		},
+		{
+			name: "non-UAT status -> false",
+			issue: Issue{
+				Status:   "In Progress",
+				Assignee: "Dev User",
+				Comments: []Comment{{Author: "Client User", Body: "Found a bug"}},
+			},
+			expected: false,
+		},
+		{
+			name: "UAT + no comments -> false",
+			issue: Issue{
+				Status:    "UAT",
+				Assignee:  "Dev User",
+				Comments:  nil,
+			},
+			expected: false,
+		},
+		{
+			name: "case-insensitive 'uat' -> true",
+			issue: Issue{
+				Status:   "uat",
+				Assignee: "Dev User",
+				Comments: []Comment{{Author: "Client User", Body: "Fix needed"}},
+			},
+			expected: true,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := DetectNeedsAttention(&tc.issue)
+			if got != tc.expected {
+				t.Errorf("DetectNeedsAttention = %v, want %v", got, tc.expected)
+			}
+		})
+	}
+}
+
+func TestSearchNeedsAttention(t *testing.T) {
+	// UAT issue with non-self comment should have needs_attention=true
+	uatIssue := mockUATIssueJSON("Dev User", "Client User")
+	srv := mockSearchServer(t, mockSearchResponse([]map[string]any{uatIssue}, 1), http.StatusOK, nil)
+	defer srv.Close()
+
+	client := newTestClient(srv.URL)
+	handler := NewHandler(client, nil)
+	input := envelope.New("input", "test")
+
+	result := handler(input, map[string]string{"action": "search", "expand": "comments"})
+	if result.Error != nil {
+		t.Fatalf("unexpected error: %v", result.Error.Message)
+	}
+	text, _ := result.Content.(string)
+	if !strings.Contains(text, "!!") {
+		t.Errorf("expected '!!' attention marker in output, got: %s", text)
+	}
+}
+
+func TestSearchNeedsAttentionSelfComment(t *testing.T) {
+	uatIssue := mockUATIssueJSON("Dev User", "Dev User")
+	srv := mockSearchServer(t, mockSearchResponse([]map[string]any{uatIssue}, 1), http.StatusOK, nil)
+	defer srv.Close()
+
+	client := newTestClient(srv.URL)
+	handler := NewHandler(client, nil)
+	input := envelope.New("input", "test")
+
+	result := handler(input, map[string]string{"action": "search", "expand": "comments"})
+	if result.Error != nil {
+		t.Fatalf("unexpected error: %v", result.Error.Message)
+	}
+	text, _ := result.Content.(string)
+	if strings.Contains(text, "!!") {
+		t.Error("expected no attention marker when last comment is from assignee")
+	}
+}
+
+func TestGetNoIDFallsBackToSearch(t *testing.T) {
+	issue := mockIssueJSON()
+	srv := mockSearchServer(t, mockSearchResponse([]map[string]any{issue}, 1), http.StatusOK, nil)
+	defer srv.Close()
+
+	client := newTestClient(srv.URL)
+	handler := NewHandler(client, nil)
+	input := envelope.New("input", "test")
+
+	result := handler(input, map[string]string{"action": "get"})
+	if result.Error != nil {
+		t.Fatalf("expected search fallback, got error: %s", result.Error.Message)
+	}
+	if result.ContentType != envelope.ContentText {
+		t.Errorf("expected content_type=text from search fallback, got %q", result.ContentType)
+	}
+}
+
+func TestCommentStillRequiresID(t *testing.T) {
+	srv := mockJiraServer(t)
+	defer srv.Close()
+
+	client := newTestClient(srv.URL)
+	handler := NewHandler(client, nil)
+	input := envelope.New("input", "test")
+
+	result := handler(input, map[string]string{"action": "comment", "comment": "hello"})
+	testutil.AssertFatalError(t, result)
+	if !strings.Contains(result.Error.Message, "--id is required") {
+		t.Errorf("expected --id required message, got: %s", result.Error.Message)
+	}
+}
+
 // --- Server error tests ---
 
 func TestGetIssueServerError(t *testing.T) {
@@ -1043,6 +1397,147 @@ func TestStripHTML(t *testing.T) {
 				t.Errorf("expected %q, got %q", tc.expected, result)
 			}
 		})
+	}
+}
+
+// --- Sort ordering tests ---
+
+func TestSearchResultsSortedByStatusThenPriority(t *testing.T) {
+	mkIssue := func(key, status, priority, issueType string) map[string]any {
+		i := mockIssueJSON()
+		i["key"] = key
+		f := i["fields"].(map[string]any)
+		f["status"] = map[string]any{"name": status}
+		f["priority"] = map[string]any{"name": priority}
+		f["issuetype"] = map[string]any{"name": issueType}
+		return i
+	}
+
+	issues := []map[string]any{
+		mkIssue("A-1", "UAT", "Low", "Task"),
+		mkIssue("A-2", "To Do", "Medium", "Task"),
+		mkIssue("A-3", "UAT", "Highest", "Task"),
+		mkIssue("A-4", "To Do", "High", "Task"),
+		mkIssue("A-5", "UAT", "Medium", "Fire"),
+	}
+	srv := mockSearchServer(t, mockSearchResponse(issues, 5), http.StatusOK, nil)
+	defer srv.Close()
+
+	client := newTestClient(srv.URL)
+	handler := NewHandler(client, nil)
+	input := envelope.New("input", "test")
+
+	result := handler(input, map[string]string{"action": "search"})
+	if result.Error != nil {
+		t.Fatalf("unexpected error: %v", result.Error.Message)
+	}
+	text, _ := result.Content.(string)
+
+	// To Do before UAT. Within each group: fires first, then by priority.
+	// To Do: High=A-4, Medium=A-2
+	// UAT: Fire/Medium=A-5, Highest=A-3, Low=A-1
+	wantOrder := []string{"A-4", "A-2", "A-5", "A-3", "A-1"}
+	prev := -1
+	for _, key := range wantOrder {
+		idx := strings.Index(text, key)
+		if idx < 0 {
+			t.Errorf("expected %s in output", key)
+			continue
+		}
+		if idx <= prev {
+			t.Errorf("%s should appear after previous key in output", key)
+		}
+		prev = idx
+	}
+}
+
+// --- Transition action tests ---
+
+func TestTransitionAction(t *testing.T) {
+	srv := mockJiraServer(t)
+	defer srv.Close()
+
+	client := newTestClient(srv.URL)
+	handler := NewHandler(client, nil)
+	input := envelope.New("input", "test")
+
+	result := handler(input, map[string]string{"action": "transition", "id": "PROJ-123", "status": "Done"})
+
+	if result.Error != nil {
+		t.Fatalf("unexpected error: %v", result.Error.Message)
+	}
+
+	m, ok := result.Content.(map[string]any)
+	if !ok {
+		t.Fatalf("expected map content, got %T", result.Content)
+	}
+	if m["action"] != "transition" {
+		t.Errorf("expected action=transition, got %v", m["action"])
+	}
+	if m["key"] != "PROJ-123" {
+		t.Errorf("expected key=PROJ-123, got %v", m["key"])
+	}
+}
+
+func TestTransitionMissingStatus(t *testing.T) {
+	srv := mockJiraServer(t)
+	defer srv.Close()
+
+	client := newTestClient(srv.URL)
+	handler := NewHandler(client, nil)
+	input := envelope.New("input", "test")
+
+	result := handler(input, map[string]string{"action": "transition", "id": "PROJ-123"})
+
+	testutil.AssertFatalError(t, result)
+	if !strings.Contains(result.Error.Message, "--status is required") {
+		t.Errorf("expected status required message, got: %s", result.Error.Message)
+	}
+}
+
+func TestTransitionLowercaseID(t *testing.T) {
+	srv := mockJiraServer(t)
+	defer srv.Close()
+
+	client := newTestClient(srv.URL)
+	handler := NewHandler(client, nil)
+	input := envelope.New("input", "test")
+
+	result := handler(input, map[string]string{"action": "transition", "id": "proj-123", "status": "Done"})
+
+	if result.Error != nil {
+		t.Fatalf("unexpected error: %v", result.Error.Message)
+	}
+
+	m, ok := result.Content.(map[string]any)
+	if !ok {
+		t.Fatalf("expected map content, got %T", result.Content)
+	}
+	if m["key"] != "PROJ-123" {
+		t.Errorf("expected key=PROJ-123, got %v", m["key"])
+	}
+}
+
+func TestTopicPromotionLowercaseID(t *testing.T) {
+	srv := mockJiraServer(t)
+	defer srv.Close()
+
+	client := newTestClient(srv.URL)
+	handler := NewHandler(client, nil)
+	input := envelope.New("input", "test")
+
+	result := handler(input, map[string]string{"action": "get", "topic": "proj-123"})
+
+	if result.Error != nil {
+		t.Fatalf("unexpected error: %v", result.Error.Message)
+	}
+
+	issue, ok := result.Content.(*Issue)
+	if !ok {
+		t.Fatalf("expected *Issue content, got %T", result.Content)
+	}
+	if issue.Key != "PROJ-123" {
+		t.Errorf("expected PROJ-123, got key=%s", issue.Key)
 	}
 }
 

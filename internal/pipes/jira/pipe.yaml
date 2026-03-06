@@ -8,6 +8,9 @@ triggers:
   exact:
     - "check jira"
     - "get jira ticket"
+    - "my jira tickets"
+    - "what's assigned to me"
+    - "show my tickets"
   keywords:
     - jira
     - ticket
@@ -17,27 +20,45 @@ triggers:
     - story
     - epic
     - bug
+    - task
     - project
     - board
     - blocker
     - work
     - report
+    - assigned
+    - description
+    - mine
+    - my
+    - status
+    - progress
   patterns:
     - "get {topic}"
     - "update {topic}"
     - "comment on {topic}"
     - "show me {topic}"
+    - "search jira for {topic}"
+    - "find jira {topic}"
+    - "my {topic} tickets"
 
 flags:
   action:
     description: What operation to perform.
-    values: [get, comment, update]
+    values: [get, comment, update, search, transition]
     default: get
 
   id:
     description: Jira issue key (e.g., PROJ-123).
     default: ""
-    required: true
+    required: false
+
+  jql:
+    description: JQL query string for search action. Defaults to assigned non-done issues (scoped to project from jira.yaml if set).
+    default: ""
+
+  limit:
+    description: Maximum number of issues to return (for search action).
+    default: "100"
 
   fields:
     description: Comma-separated list of fields to return on get, or JSON object of fields to set on update.
@@ -47,32 +68,45 @@ flags:
     description: Comment body text to post (used with action=comment).
     default: ""
 
+  status:
+    description: Target status name for transition action (e.g., In Progress, Done).
+    default: ""
+
   expand:
     description: Comma-separated list of sections to expand on get.
     values: [comments, attachments, changelog, all]
     default: "comments,attachments"
 
 format:
-  structured: |
-    [{{.key}}] {{.summary}}
-    Status: {{.status}}  Priority: {{.priority}}  Assignee: {{.assignee}}
-    {{if .labels}}Labels: {{range $i, $l := .labels}}{{if $i}}, {{end}}{{$l}}{{end}}{{end}}
-    {{if .description}}
-    Description:
-    {{.description}}
-    {{end}}
-    {{if .comments}}
-    Comments ({{len .comments}}):{{range .comments}}
-      — {{.author}} ({{.created}}): {{.body}}{{end}}
-    {{end}}
-    {{if .attachments}}
-    Attachments ({{len .attachments}}):{{range .attachments}}
-      - {{.filename}} ({{.mimeType}}, {{.size}} bytes) {{.url}}{{end}}
-    {{end}}
+  list: |-
+    {{if eq .Count 0}}No issues found.{{else}}**{{.Count}} issue{{if gt .Count 1}}s{{end}}:**{{$prev := ""}}{{range .Items}}{{if ne .status $prev}}{{$prev = .status}}
+
+    **{{.status}}**{{end}}
+    - **{{.key}}** {{.summary}} — {{.priority}}{{if .type}} · {{.type}}{{end}}{{if .assignee}} · {{.assignee}}{{end}}{{if .needs_attention}} ⚠{{end}}{{end}}{{end}}
+  structured: |-
+    {{if eq .action "transition"}}✓ **{{.key}}** → {{.status}}{{else}}**{{.key}}** {{.summary}}
+
+    **Status:** {{.status}} · **Priority:** {{.priority}} · **Type:** {{.issue_type}}
+    **Assignee:** {{.assignee}}{{if .reporter}} · **Reporter:** {{.reporter}}{{end}}{{if .labels}}
+    **Labels:** {{range $i, $l := .labels}}{{if $i}}, {{end}}{{$l}}{{end}}{{end}}{{if .description}}
+
+    {{.description}}{{end}}{{if .comments}}
+
+    **Comments ({{len .comments}}):**
+    {{range .comments}}
+    - **{{.author}}** ({{.created}}): {{.body}}{{end}}{{end}}{{if .attachments}}
+
+    **Attachments ({{len .attachments}}):**
+    {{range .attachments}}
+    - {{.filename}} ({{.mimeType}}, {{.size}} bytes){{end}}{{end}}{{end}}
 
 vocabulary:
   verbs:
     jira: [jira.get]
+    search: [jira.search]
+    find: [jira.search]
+    move: [jira.transition]
+    transition: [jira.transition]
   types:
     ticket: [ticket]
     issue: [issue]
@@ -84,11 +118,21 @@ vocabulary:
     jira: [jira]
     tickets: [jira]
     issues: [jira]
-  modifiers: {}
+    assigned: [jira]
+  modifiers:
+    in progress: [In Progress]
+    in review: [In Review]
+    in qa: [In QA]
+    blocked: [Blocked]
 
 templates:
   priority: 50
   entries:
+    - requires: [verb, topic, modifier]
+      plan:
+        - pipe: jira
+          flags: { action: transition, id: "{topic}", status: "{modifier}" }
+
     - requires: [verb, source, topic]
       plan:
         - pipe: jira
@@ -98,3 +142,8 @@ templates:
       plan:
         - pipe: jira
           flags: { action: get }
+
+    - requires: [verb]
+      plan:
+        - pipe: jira
+          flags: { action: search }
