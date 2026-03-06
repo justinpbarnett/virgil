@@ -63,23 +63,23 @@ func LoadVoiceConfig(configDir string) (*VoiceConfig, error) {
 		return nil, fmt.Errorf("parsing voice.yaml: %w", err)
 	}
 
-	if cfg.ElevenLabsModel == "" {
-		cfg.ElevenLabsModel = "eleven_turbo_v2_5"
+	defaults := map[string]struct {
+		field *string
+		value string
+	}{
+		"elevenlabs_model": {&cfg.ElevenLabsModel, "eleven_turbo_v2_5"},
+		"push_to_talk_key": {&cfg.PushToTalkKey, "right_option"},
+		"mode_cycle_key":   {&cfg.ModeCycleKey, "f8"},
+		"output_mode":      {(*string)(&cfg.OutputMode), string(VoiceModeNotify)},
+		"voice_model":      {&cfg.VoiceModel, "gemini-3.1-flash-lite-preview"},
 	}
-	if cfg.PushToTalkKey == "" {
-		cfg.PushToTalkKey = "right_option"
-	}
-	if cfg.ModeCycleKey == "" {
-		cfg.ModeCycleKey = "f8"
-	}
-	if cfg.OutputMode == "" {
-		cfg.OutputMode = VoiceModeNotify
+	for _, d := range defaults {
+		if *d.field == "" {
+			*d.field = d.value
+		}
 	}
 	if cfg.MaxSpokenChars == 0 {
 		cfg.MaxSpokenChars = 200
-	}
-	if cfg.VoiceModel == "" {
-		cfg.VoiceModel = "gemini-3.1-flash-lite-preview"
 	}
 
 	switch cfg.OutputMode {
@@ -95,7 +95,7 @@ func LoadVoiceConfig(configDir string) (*VoiceConfig, error) {
 type LogLevel int
 
 const (
-	Unset   LogLevel = iota // zero value; means "inherit from parent"
+	Unset LogLevel = iota // zero value; means "inherit from parent"
 	Silent
 	Error
 	Warn
@@ -256,24 +256,24 @@ func DefaultMemoryConfig() MemoryConfig {
 }
 
 type PipeConfig struct {
-	Name         string                `yaml:"name"`
-	Description  string                `yaml:"description"`
-	Category     string                `yaml:"category"`
-	Streaming    bool                  `yaml:"streaming"`
-	Timeout      string                `yaml:"timeout"`
-	Provider     string                `yaml:"provider"`
-	Model        string                `yaml:"model"`
-	MaxTokens    *int                  `yaml:"max_tokens"`
-	MaxTurns     *int                  `yaml:"max_turns"`
-	PipeLogLevel LogLevel              `yaml:"log_level"`
-	Triggers     pipe.Triggers         `yaml:"triggers"`
-	Flags        map[string]pipe.Flag  `yaml:"flags"`
-	Prompts      PromptsConfig         `yaml:"prompts"`
-	Format       map[string]string     `yaml:"format"`
-	Vocabulary   VocabularyConfig      `yaml:"vocabulary"`
-	Templates    TemplateContrib       `yaml:"templates"`
-	Memory       MemoryConfig          `yaml:"memory"`
-	Dir          string                `yaml:"-"`
+	Name         string               `yaml:"name"`
+	Description  string               `yaml:"description"`
+	Category     string               `yaml:"category"`
+	Streaming    bool                 `yaml:"streaming"`
+	Timeout      string               `yaml:"timeout"`
+	Provider     string               `yaml:"provider"`
+	Model        string               `yaml:"model"`
+	MaxTokens    *int                 `yaml:"max_tokens"`
+	MaxTurns     *int                 `yaml:"max_turns"`
+	PipeLogLevel LogLevel             `yaml:"log_level"`
+	Triggers     pipe.Triggers        `yaml:"triggers"`
+	Flags        map[string]pipe.Flag `yaml:"flags"`
+	Prompts      PromptsConfig        `yaml:"prompts"`
+	Format       map[string]string    `yaml:"format"`
+	Vocabulary   VocabularyConfig     `yaml:"vocabulary"`
+	Templates    TemplateContrib      `yaml:"templates"`
+	Memory       MemoryConfig         `yaml:"memory"`
+	Dir          string               `yaml:"-"`
 }
 
 // EffectiveLogLevel returns the pipe's log level if set, otherwise the global default.
