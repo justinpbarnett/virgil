@@ -1,0 +1,55 @@
+name: sync
+description: Synchronizes JIRA tickets and Slack mentions into the native todo list.
+category: general
+streaming: false
+timeout: 60s
+
+triggers:
+  exact:
+    - "sync my tasks"
+    - "pull my tasks"
+    - "update my todos"
+    - "sync jira and slack"
+  keywords:
+    - sync
+    - synchronize
+    - pull
+    - import
+    - aggregate
+  patterns:
+    - "sync my {topic}"
+    - "pull {topic} from jira"
+    - "import {topic}"
+
+flags:
+  action:
+    description: What operation to perform.
+    values: [sync]
+    default: sync
+  since:
+    description: How far back to scan Slack mentions.
+    default: "7d"
+
+format:
+  structured: |-
+    Sync complete: {{.created}} created, {{.updated}} updated, {{.merged}} merged from Slack{{if gt .stale 0}}, {{.stale}} stale{{end}}.{{if .errors}}
+    Warnings:{{range .errors}}
+    - {{.}}{{end}}{{end}}
+
+vocabulary:
+  verbs:
+    sync: [sync]
+    pull: [sync]
+    import: [sync]
+    synchronize: [sync]
+  types: {}
+  sources:
+    tasks: [sync]
+  modifiers: {}
+
+templates:
+  priority: 50
+  entries:
+    - requires: [verb]
+      plan:
+        - pipe: sync
