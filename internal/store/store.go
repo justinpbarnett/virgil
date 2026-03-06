@@ -566,6 +566,9 @@ const (
 	TodoStatusDone    = "done"
 )
 
+// todoCols is the shared column list for all todo SELECT queries.
+const todoCols = `id, title, status, priority, COALESCE(due_date,''), tags, COALESCE(memory_id,''), COALESCE(external_id,''), COALESCE(details,''), created_at, COALESCE(completed_at,0)`
+
 // Todo represents a todo list item.
 type Todo struct {
 	ID          string    `json:"id"`
@@ -575,6 +578,8 @@ type Todo struct {
 	DueDate     string    `json:"due_date,omitempty"`
 	Tags        []string  `json:"tags,omitempty"`
 	MemoryID    string    `json:"memory_id,omitempty"`
+	ExternalID  string    `json:"external_id,omitempty"`
+	Details     string    `json:"details,omitempty"`
 	CreatedAt   time.Time `json:"created_at"`
 	CompletedAt time.Time `json:"completed_at,omitempty"`
 }
@@ -625,8 +630,7 @@ func (s *Store) ListTodos(status string, limit int) ([]Todo, error) {
 		limit = 25
 	}
 
-	const cols = `id, title, status, priority, COALESCE(due_date,''), tags, COALESCE(memory_id,''), created_at, COALESCE(completed_at,0)`
-	q := "SELECT " + cols + " FROM todos"
+	q := "SELECT " + todoCols + " FROM todos"
 	args := []any{}
 	if status != "" && status != "all" {
 		q += " WHERE status = ?"
@@ -646,12 +650,47 @@ func (s *Store) ListTodos(status string, limit int) ([]Todo, error) {
 
 // GetTodo returns a single todo by ID.
 func (s *Store) GetTodo(id string) (Todo, error) {
-	row := s.db.QueryRow(
-		`SELECT id, title, status, priority, COALESCE(due_date,''), tags, COALESCE(memory_id,''), created_at, COALESCE(completed_at,0)
-		 FROM todos WHERE id = ?`,
-		id,
-	)
+	row := s.db.QueryRow("SELECT "+todoCols+" FROM todos WHERE id = ?", id)
 	return scanTodoFrom(row)
+}
+
+// FindTodoByExternalID returns a todo by its external_id. Returns sql.ErrNoRows if not found.
+func (s *Store) FindTodoByExternalID(externalID string) (Todo, error) {
+	row := s.db.QueryRow("SELECT "+todoCols+" FROM todos WHERE external_id = ?", externalID)
+	return scanTodoFrom(row)
+}
+
+// UpsertTodoByExternalID inserts a todo if the external_id doesn't exist, or updates it if it does.
+// Returns the todo and true if it was created, false if it was updated.
+func (s *Store) UpsertTodoByExternalID(externalID, title, details string, priority int, dueDate string, tags []string) (Todo, bool, error) {
+	if externalID == "" {
+		return Todo{}, false, fmt.Errorf("external_id is required for upsert")
+	}
+	priority = clampPriority(priority)
+	id := newID()
+	now := time.Now()
+	tagStr := strings.Join(tags, ",")
+
+	_, err := s.db.Exec(`
+		INSERT INTO todos (id, title, status, priority, due_date, tags, external_id, details, created_at)
+		VALUES (?, ?, 'pending', ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(external_id) DO UPDATE SET
+			title    = excluded.title,
+			details  = excluded.details,
+			priority = excluded.priority,
+			due_date = excluded.due_date,
+			tags     = excluded.tags
+	`, id, title, priority, dueDate, tagStr, externalID, details, now.UnixNano())
+	if err != nil {
+		return Todo{}, false, err
+	}
+
+	todo, err := s.FindTodoByExternalID(externalID)
+	if err != nil {
+		return Todo{}, false, err
+	}
+	created := todo.ID == id
+	return todo, created, nil
 }
 
 // UpdateTodo updates specified fields on a todo. Supported keys: title, priority, due_date, tags.
@@ -665,7 +704,7 @@ func (s *Store) UpdateTodo(id string, updates map[string]string) error {
 
 	for k, v := range updates {
 		switch k {
-		case "title", "due_date", "tags":
+		case "title", "due_date", "tags", "details", "external_id":
 			setClauses = append(setClauses, k+" = ?")
 			args = append(args, v)
 		case "priority":
@@ -725,6 +764,19 @@ func (s *Store) SetTodoMemoryID(id, memoryID string) error {
 	return err
 }
 
+// ListTodosWithExternalIDPrefix returns all todos whose external_id starts with prefix.
+func (s *Store) ListTodosWithExternalIDPrefix(prefix string) ([]Todo, error) {
+	rows, err := s.db.Query(
+		"SELECT "+todoCols+" FROM todos WHERE external_id LIKE ? ORDER BY created_at ASC",
+		prefix+"%",
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return scanTodos(rows)
+}
+
 func scanTodos(rows *sql.Rows) ([]Todo, error) {
 	var todos []Todo
 	for rows.Next() {
@@ -743,12 +795,14 @@ type todoScanner interface {
 
 func scanTodoFrom(s todoScanner) (Todo, error) {
 	var t Todo
-	var tagStr, memoryID string
+	var tagStr, memoryID, externalID, details string
 	var createdNano, completedNano int64
-	if err := s.Scan(&t.ID, &t.Title, &t.Status, &t.Priority, &t.DueDate, &tagStr, &memoryID, &createdNano, &completedNano); err != nil {
+	if err := s.Scan(&t.ID, &t.Title, &t.Status, &t.Priority, &t.DueDate, &tagStr, &memoryID, &externalID, &details, &createdNano, &completedNano); err != nil {
 		return Todo{}, err
 	}
 	t.MemoryID = memoryID
+	t.ExternalID = externalID
+	t.Details = details
 	t.CreatedAt = time.Unix(0, createdNano)
 	if completedNano != 0 {
 		t.CompletedAt = time.Unix(0, completedNano)

@@ -27,11 +27,15 @@ triggers:
     - "remove {topic} from my todos"
     - "prioritize {topic}"
     - "reorder {topic}"
+    - "show me {topic}"
+    - "expand {topic}"
+    - "details for {topic}"
+    - "what is {topic}"
 
 flags:
   action:
     description: Which todo operation to perform.
-    values: [add, list, done, undone, remove, edit, reorder]
+    values: [add, list, done, undone, remove, edit, reorder, detail]
     default: list
   title:
     description: The todo item title (for add action).
@@ -56,13 +60,23 @@ flags:
   limit:
     description: Maximum items to return (for list action).
     default: "25"
+  details:
+    description: Detailed context for the todo item (JIRA description, Slack thread, etc.).
+    default: ""
+  external_id:
+    description: External reference ID for dedup (e.g., jira:PTP-123).
+    default: ""
 
 format:
   list: |-
     {{if eq .Count 0}}No todos.{{else}}{{.Count}} todo{{if gt .Count 1}}s{{end}}:{{range .Items}}
     {{if eq .status "done"}}- ~~{{.title}}~~{{else}}- {{.title}}{{end}}{{if .due_date}} — due {{.due_date}}{{end}} · p{{.priority}}{{end}}{{end}}
   structured: |-
-    {{if eq .action "done"}}✓ Completed: {{.title}}{{else if eq .action "undone"}}↺ Restored: {{.title}}{{else}}+ Added: {{.title}}{{end}}{{if .due_date}} — due {{.due_date}}{{end}} · p{{.priority}}
+    {{if eq .action "detail"}}{{.title}} · p{{.priority}} · {{.status}}{{if .due_date}} — due {{.due_date}}{{end}}{{if .external_id}}
+    Source: {{.external_id}}{{end}}{{if .details}}
+
+    {{.details}}{{else}}
+    No details available.{{end}}{{else if eq .action "done"}}✓ Completed: {{.title}}{{else if eq .action "undone"}}↺ Restored: {{.title}}{{else}}+ Added: {{.title}}{{end}}{{if and (ne .action "detail") .due_date}} — due {{.due_date}}{{end}}{{if ne .action "detail"}} · p{{.priority}}{{end}}
 
 memory:
   disabled: true
@@ -90,6 +104,10 @@ vocabulary:
     move: [todo.reorder]
     edit: [todo.edit]
     update: [todo.edit]
+    detail: [todo.detail]
+    details: [todo.detail]
+    expand: [todo.detail]
+    describe: [todo.detail]
   types: {}
   sources:
     todos: [todo]

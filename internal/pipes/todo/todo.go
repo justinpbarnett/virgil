@@ -48,6 +48,8 @@ func NewHandler(s *store.Store, logger *slog.Logger) pipe.Handler {
 			return handleEdit(s, input, flags, logger)
 		case "reorder":
 			return handleReorder(s, input, flags, logger)
+		case "detail":
+			return handleDetail(s, input, flags, logger)
 		default:
 			out := envelope.New("todo", action)
 			out.Args = flags
@@ -300,6 +302,25 @@ func handleReorder(s *store.Store, _ envelope.Envelope, flags map[string]string,
 	return out
 }
 
+func handleDetail(s *store.Store, input envelope.Envelope, flags map[string]string, logger *slog.Logger) envelope.Envelope {
+	out := envelope.New("todo", "detail")
+	out.Args = flags
+	defer func() { out.Duration = time.Since(out.Timestamp) }()
+
+	todo, err := resolveTodo(s, input, flags, "all")
+	if err != nil {
+		out.Error = envelope.FatalError(err.Error())
+		return out
+	}
+
+	logger.Info("detail todo", "id", todo.ID, "title", todo.Title)
+	m := todoToMap(todo)
+	m["action"] = "detail"
+	out.Content = m
+	out.ContentType = envelope.ContentStructured
+	return out
+}
+
 func resolveTodo(s *store.Store, input envelope.Envelope, flags map[string]string, status string) (store.Todo, error) {
 	if id := flags["id"]; id != "" {
 		todo, err := s.GetTodo(id)
@@ -371,6 +392,12 @@ func todoToMap(t store.Todo) map[string]any {
 	}
 	if len(t.Tags) > 0 {
 		m["tags"] = t.Tags
+	}
+	if t.ExternalID != "" {
+		m["external_id"] = t.ExternalID
+	}
+	if t.Details != "" {
+		m["details"] = t.Details
 	}
 	if !t.CreatedAt.IsZero() {
 		m["created_at"] = t.CreatedAt.Format(time.RFC3339)
