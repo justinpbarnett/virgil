@@ -116,6 +116,7 @@ Create `~/.config/virgil/jira.yaml`:
 base_url: https://yourco.atlassian.net
 email: you@example.com
 token: your-api-token
+project: PTP  # optional — scopes default JQL and Slack key extraction to this project
 ```
 
 For Jira Server / Data Center, `email` is still required in the file but is unused — only the Bearer token is sent. You can set it to any non-empty string.
@@ -125,6 +126,51 @@ For Jira Server / Data Center, `email` is still required in the file but is unus
 ```
 ~/.config/virgil/
   jira.yaml   # Jira credentials
+```
+
+## Slack API Setup
+
+The slack and sync pipes require a Slack user token and your user/channel IDs.
+
+### 1. Create a Slack App (User Token)
+
+1. Go to [api.slack.com/apps](https://api.slack.com/apps) and click **Create New App > From scratch**
+2. Give it a name (e.g., "virgil") and select your workspace
+3. Navigate to **OAuth & Permissions**
+4. Under **User Token Scopes**, add:
+   - `channels:history` — read public channel messages
+   - `channels:read` — list channels
+   - `users:read` — resolve user display names
+5. Click **Install to Workspace** and approve
+6. Copy the **User OAuth Token** (starts with `xoxp-`)
+
+### 2. Find Your User ID and Channel IDs
+
+**Your user ID:**
+- In Slack, click your name in the sidebar → **Profile**
+- Click the three-dot menu → **Copy member ID** (starts with `U`)
+
+**Channel IDs:**
+- Right-click a channel in the sidebar → **View channel details**
+- Scroll to the bottom — the channel ID starts with `C`
+
+### 3. Create the Credentials File
+
+Create `~/.config/virgil/slack.yaml`:
+
+```yaml
+token: xoxp-...
+user_id: U...
+channels:
+  - C...
+  - C...
+```
+
+### Expected File Location
+
+```
+~/.config/virgil/
+  slack.yaml   # Slack user token and channel list
 ```
 
 ## AI Provider API Keys
