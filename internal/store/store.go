@@ -184,13 +184,16 @@ func runMigrations(db *sql.DB) error {
 	}
 
 	// One-time data migration from the old entries/working_state/invocations schema.
-	// All three old tables must exist for the migration to run.
+	// All three old tables must exist for the full migration to run.
 	var oldTableCount int
 	_ = db.QueryRow("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN ('entries','working_state','invocations')").Scan(&oldTableCount)
 	if oldTableCount == 3 {
 		if err := migrateOldSchema(db); err != nil {
 			return fmt.Errorf("legacy migration: %w", err)
 		}
+	} else if oldTableCount > 0 {
+		// Partial old schema remnants — clean up whatever is left.
+		dropOrphanedOldTables(db)
 	}
 
 	return nil
@@ -285,24 +288,37 @@ func migrateOldSchema(db *sql.DB) error {
 		return err
 	}
 
-	for _, stmt := range []string{
-		"DROP TRIGGER IF EXISTS entries_ai",
-		"DROP TRIGGER IF EXISTS entries_ad",
-		"DROP TRIGGER IF EXISTS entries_au",
-		"DROP TRIGGER IF EXISTS invocations_ai",
-		"DROP TRIGGER IF EXISTS invocations_ad",
-		"DROP TABLE IF EXISTS entries_fts",
-		"DROP TABLE IF EXISTS invocations_fts",
-		"DROP TABLE IF EXISTS entries",
-		"DROP TABLE IF EXISTS working_state",
-		"DROP TABLE IF EXISTS invocations",
-	} {
+	for _, stmt := range oldSchemaDropStatements {
 		if _, err := tx.Exec(stmt); err != nil {
 			return err
 		}
 	}
 
 	return tx.Commit()
+}
+
+// oldSchemaDropStatements lists the DDL needed to remove the pre-goose schema.
+// Order matters: triggers before FTS shadow tables before base tables.
+var oldSchemaDropStatements = []string{
+	"DROP TRIGGER IF EXISTS entries_ai",
+	"DROP TRIGGER IF EXISTS entries_ad",
+	"DROP TRIGGER IF EXISTS entries_au",
+	"DROP TRIGGER IF EXISTS invocations_ai",
+	"DROP TRIGGER IF EXISTS invocations_ad",
+	"DROP TABLE IF EXISTS entries_fts",
+	"DROP TABLE IF EXISTS invocations_fts",
+	"DROP TABLE IF EXISTS entries",
+	"DROP TABLE IF EXISTS working_state",
+	"DROP TABLE IF EXISTS invocations",
+}
+
+// dropOrphanedOldTables removes leftover pre-goose tables that can't be fully
+// migrated (because not all three old tables are present). Safe to call multiple
+// times — each statement uses IF EXISTS.
+func dropOrphanedOldTables(db *sql.DB) {
+	for _, stmt := range oldSchemaDropStatements {
+		db.Exec(stmt) //nolint:errcheck
+	}
 }
 
 func (s *Store) Close() error {
@@ -542,6 +558,196 @@ func (s *Store) RecentInvocations(limit int) ([]InvocationEntry, error) {
 	}
 	defer rows.Close()
 	return scanInvocations(rows)
+}
+
+// Todo status values.
+const (
+	TodoStatusPending = "pending"
+	TodoStatusDone    = "done"
+)
+
+// Todo represents a todo list item.
+type Todo struct {
+	ID          string    `json:"id"`
+	Title       string    `json:"title"`
+	Status      string    `json:"status"`
+	Priority    int       `json:"priority"`
+	DueDate     string    `json:"due_date,omitempty"`
+	Tags        []string  `json:"tags,omitempty"`
+	MemoryID    string    `json:"memory_id,omitempty"`
+	CreatedAt   time.Time `json:"created_at"`
+	CompletedAt time.Time `json:"completed_at,omitempty"`
+}
+
+// clampPriority restricts a priority value to the valid range [1, 5].
+func clampPriority(p int) int {
+	if p < 1 {
+		return 1
+	}
+	if p > 5 {
+		return 5
+	}
+	return p
+}
+
+// AddTodo inserts a new todo item and returns the created Todo.
+func (s *Store) AddTodo(title string, priority int, dueDate string, tags []string) (Todo, error) {
+	priority = clampPriority(priority)
+
+	id := newID()
+	now := time.Now()
+	tagStr := strings.Join(tags, ",")
+
+	_, err := s.db.Exec(
+		`INSERT INTO todos (id, title, status, priority, due_date, tags, created_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		id, title, TodoStatusPending, priority, dueDate, tagStr, now.UnixNano(),
+	)
+	if err != nil {
+		return Todo{}, err
+	}
+
+	return Todo{
+		ID:        id,
+		Title:     title,
+		Status:    TodoStatusPending,
+		Priority:  priority,
+		DueDate:   dueDate,
+		Tags:      tags,
+		CreatedAt: now,
+	}, nil
+}
+
+// ListTodos returns todos ordered by priority ASC, created_at ASC.
+// When status is empty or "all", returns all items. Default limit is 25.
+func (s *Store) ListTodos(status string, limit int) ([]Todo, error) {
+	if limit <= 0 {
+		limit = 25
+	}
+
+	const cols = `id, title, status, priority, COALESCE(due_date,''), tags, COALESCE(memory_id,''), created_at, COALESCE(completed_at,0)`
+	q := "SELECT " + cols + " FROM todos"
+	args := []any{}
+	if status != "" && status != "all" {
+		q += " WHERE status = ?"
+		args = append(args, status)
+	}
+	q += " ORDER BY priority ASC, created_at ASC LIMIT ?"
+	args = append(args, limit)
+
+	rows, err := s.db.Query(q, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	return scanTodos(rows)
+}
+
+// GetTodo returns a single todo by ID.
+func (s *Store) GetTodo(id string) (Todo, error) {
+	row := s.db.QueryRow(
+		`SELECT id, title, status, priority, COALESCE(due_date,''), tags, COALESCE(memory_id,''), created_at, COALESCE(completed_at,0)
+		 FROM todos WHERE id = ?`,
+		id,
+	)
+	return scanTodoFrom(row)
+}
+
+// UpdateTodo updates specified fields on a todo. Supported keys: title, priority, due_date, tags.
+func (s *Store) UpdateTodo(id string, updates map[string]string) error {
+	if len(updates) == 0 {
+		return nil
+	}
+
+	setClauses := make([]string, 0, len(updates))
+	args := make([]any, 0, len(updates)+1)
+
+	for k, v := range updates {
+		switch k {
+		case "title", "due_date", "tags":
+			setClauses = append(setClauses, k+" = ?")
+			args = append(args, v)
+		case "priority":
+			p, err := strconv.Atoi(v)
+			if err != nil {
+				return fmt.Errorf("invalid priority %q: %w", v, err)
+			}
+			setClauses = append(setClauses, "priority = ?")
+			args = append(args, clampPriority(p))
+		}
+	}
+
+	if len(setClauses) == 0 {
+		return nil
+	}
+
+	args = append(args, id)
+	query := fmt.Sprintf("UPDATE todos SET %s WHERE id = ?", strings.Join(setClauses, ", "))
+	_, err := s.db.Exec(query, args...)
+	return err
+}
+
+// CompleteTodo marks a todo as done.
+func (s *Store) CompleteTodo(id string) error {
+	_, err := s.db.Exec(
+		"UPDATE todos SET status = ?, completed_at = ? WHERE id = ?",
+		TodoStatusDone,
+		time.Now().UnixNano(), id,
+	)
+	return err
+}
+
+// DeleteTodo removes a todo by ID.
+func (s *Store) DeleteTodo(id string) error {
+	_, err := s.db.Exec("DELETE FROM todos WHERE id = ?", id)
+	return err
+}
+
+// ReorderTodo changes a todo's priority.
+func (s *Store) ReorderTodo(id string, newPriority int) error {
+	_, err := s.db.Exec("UPDATE todos SET priority = ? WHERE id = ?", clampPriority(newPriority), id)
+	return err
+}
+
+// SetTodoMemoryID links a todo to its creation memory node.
+func (s *Store) SetTodoMemoryID(id, memoryID string) error {
+	_, err := s.db.Exec("UPDATE todos SET memory_id = ? WHERE id = ?", memoryID, id)
+	return err
+}
+
+func scanTodos(rows *sql.Rows) ([]Todo, error) {
+	var todos []Todo
+	for rows.Next() {
+		t, err := scanTodoFrom(rows)
+		if err != nil {
+			return nil, err
+		}
+		todos = append(todos, t)
+	}
+	return todos, rows.Err()
+}
+
+type todoScanner interface {
+	Scan(dest ...any) error
+}
+
+func scanTodoFrom(s todoScanner) (Todo, error) {
+	var t Todo
+	var tagStr, memoryID string
+	var createdNano, completedNano int64
+	if err := s.Scan(&t.ID, &t.Title, &t.Status, &t.Priority, &t.DueDate, &tagStr, &memoryID, &createdNano, &completedNano); err != nil {
+		return Todo{}, err
+	}
+	t.MemoryID = memoryID
+	t.CreatedAt = time.Unix(0, createdNano)
+	if completedNano != 0 {
+		t.CompletedAt = time.Unix(0, completedNano)
+	}
+	if tagStr != "" {
+		t.Tags = strings.Split(tagStr, ",")
+	}
+	return t, nil
 }
 
 // parseStateID splits a composite "namespace/key" ID back into its parts.
