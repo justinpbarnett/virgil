@@ -1,0 +1,98 @@
+name: build
+description: Takes a feature spec and produces a pull request ready for human review.
+category: dev
+
+triggers:
+  exact:
+    - "build a feature"
+    - "implement a feature"
+  keywords:
+    - feature
+    - implement
+    - add
+  patterns:
+    - "add {feature} to {target}"
+    - "implement {feature} in {target}"
+    - "build {feature} for {target}"
+
+steps:
+  - name: worktree
+    pipe: worktree
+    args:
+      branch: "feat/{{feature | slugify}}"
+
+  - name: study
+    parallel:
+      - pipe: study
+        args:
+          source: codebase
+          role: builder
+          budget: "8000"
+      - pipe: study
+        args:
+          source: codebase
+          role: reviewer
+          budget: "8000"
+    on_branch_failure: halt
+
+  - name: decompose
+    pipe: decompose
+    args:
+      cwd: "{{worktree.path}}"
+      spec: "{{signal}}"
+      findings: "{{findings}}"
+      max_tasks: "8"
+
+  - name: build-tasks
+    graph:
+      source: decompose.tasks
+      pipe: build
+      args:
+        cwd: "{{worktree.path}}"
+        spec: "{{task.spec}}"
+        style: tdd
+      on_task_failure: halt
+      max_parallel: 4
+
+  - name: verify
+    pipe: verify
+    args:
+      cwd: "{{worktree.path}}"
+      lint: "true"
+      plan-check: "true"
+
+  - name: fix
+    pipe: fix
+    args:
+      cwd: "{{worktree.path}}"
+      attempt: "{{loop.iteration}}"
+    condition: verify.error
+
+  - name: publish
+    pipe: publish
+    args:
+      cwd: "{{worktree.path}}"
+      base: main
+      update-strategy: force-push
+
+  - name: review
+    pipe: review
+    args:
+      source: pr-diff
+      pr: "{{publish.pr_number}}"
+      criteria: dev-review
+      strictness: normal
+
+loops:
+  - name: verify-fix
+    steps: [verify, fix]
+    until: verify.error == null
+    max: 5
+
+cycles:
+  - name: review-rework
+    from: review
+    to: decompose
+    condition: review.outcome == "fail"
+    carry: findings
+    max: 3

@@ -207,9 +207,10 @@ type Config struct {
 	LogLevel     LogLevel              `yaml:"log_level"`
 	DatabasePath string                `yaml:"database_path"`
 	ConfigDir    string                `yaml:"-"`
-	Pipes        map[string]PipeConfig `yaml:"-"`
-	Vocabulary   VocabularyConfig      `yaml:"-"`
-	Templates    TemplatesConfig       `yaml:"-"`
+	Pipes        map[string]PipeConfig     `yaml:"-"`
+	Pipelines    map[string]PipelineConfig `yaml:"-"`
+	Vocabulary   VocabularyConfig          `yaml:"-"`
+	Templates    TemplatesConfig           `yaml:"-"`
 }
 
 // RawFormats extracts the per-pipe format templates from all configured pipes.
@@ -358,19 +359,54 @@ type LoopConfig struct {
 	Max   int      `yaml:"max"`    // iteration cap; 0 means unlimited (not recommended)
 }
 
+// ParallelBranch declares one branch of a parallel fan-out within a pipeline step.
+type ParallelBranch struct {
+	Pipe string            `yaml:"pipe"`
+	Args map[string]string `yaml:"args"`
+}
+
+// GraphStepConfig holds the configuration for a graph execution step
+// where a single pipe processes a dynamically-generated DAG of tasks.
+type GraphStepConfig struct {
+	Source        string            `yaml:"source"`
+	Pipe          string            `yaml:"pipe"`
+	Args          map[string]string `yaml:"args"`
+	OnTaskFailure string            `yaml:"on_task_failure"`
+	MaxParallel   int               `yaml:"max_parallel"`
+}
+
+// CycleConfig declares a backward edge in a pipeline DAG, allowing control
+// flow to jump from one step to an earlier step under a condition.
+type CycleConfig struct {
+	Name      string `yaml:"name"`
+	From      string `yaml:"from"`
+	To        string `yaml:"to"`
+	Condition string `yaml:"condition"`
+	Carry     string `yaml:"carry"`
+	Max       int    `yaml:"max"`
+}
+
 // PipelineStepConfig is a single step in a pipeline.
 type PipelineStepConfig struct {
-	Name      string            `yaml:"name"`
-	Pipe      string            `yaml:"pipe"`
-	Args      map[string]string `yaml:"args"`
-	Condition string            `yaml:"condition"`
+	Name            string            `yaml:"name"`
+	Pipe            string            `yaml:"pipe"`
+	Pipeline        string            `yaml:"pipeline"`
+	Parallel        []ParallelBranch  `yaml:"parallel"`
+	Graph           *GraphStepConfig  `yaml:"graph"`
+	Args            map[string]string `yaml:"args"`
+	Condition       string            `yaml:"condition"`
+	OnBranchFailure string            `yaml:"on_branch_failure"`
 }
 
 // PipelineConfig declares a pipeline: an ordered list of steps with optional loop overlays.
 type PipelineConfig struct {
-	Name  string               `yaml:"name"`
-	Steps []PipelineStepConfig `yaml:"steps"`
-	Loops []LoopConfig         `yaml:"loops"`
+	Name        string               `yaml:"name"`
+	Description string               `yaml:"description"`
+	Category    string               `yaml:"category"`
+	Triggers    pipe.Triggers        `yaml:"triggers"`
+	Steps       []PipelineStepConfig `yaml:"steps"`
+	Loops       []LoopConfig         `yaml:"loops"`
+	Cycles      []CycleConfig        `yaml:"cycles"`
 }
 
 func Load(configDir string, pipesDir string) (*Config, error) {
@@ -380,6 +416,7 @@ func Load(configDir string, pipesDir string) (*Config, error) {
 		Provider:  ProviderConfig{Name: "claude", Model: "sonnet", Binary: "claude", MaxTokens: 8192},
 		LogLevel:  Info,
 		Pipes:     make(map[string]PipeConfig),
+		Pipelines: make(map[string]PipelineConfig),
 	}
 
 	// Load virgil.yaml
@@ -422,6 +459,38 @@ func Load(configDir string, pipesDir string) (*Config, error) {
 		}
 		pc.Dir = pipeDir
 		cfg.Pipes[pc.Name] = pc
+	}
+
+	// Load pipeline definitions from pipelines/*/pipeline.yaml (sibling to pipesDir)
+	pipelinesDir := filepath.Join(filepath.Dir(absPipesDir), "pipelines")
+	pipelineEntries, err := os.ReadDir(pipelinesDir)
+	if err != nil && !os.IsNotExist(err) {
+		return nil, fmt.Errorf("reading pipelines directory: %w", err)
+	}
+	for _, entry := range pipelineEntries {
+		if !entry.IsDir() {
+			continue
+		}
+		plYAML := filepath.Join(pipelinesDir, entry.Name(), "pipeline.yaml")
+		var pc PipelineConfig
+		if err := loadYAML(plYAML, &pc); err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			return nil, fmt.Errorf("loading pipeline config %s: %w", entry.Name(), err)
+		}
+		cfg.Pipelines[pc.Name] = pc
+	}
+
+	// Validate each loaded pipeline against known pipe names.
+	pipeNames := make(map[string]bool, len(cfg.Pipes))
+	for name := range cfg.Pipes {
+		pipeNames[name] = true
+	}
+	for _, pl := range cfg.Pipelines {
+		if err := ValidatePipeline(pl, pipeNames); err != nil {
+			return nil, fmt.Errorf("validating pipeline %s: %w", pl.Name, err)
+		}
 	}
 
 	// Merge vocabulary from all pipes
@@ -497,6 +566,113 @@ func mergeTemplates(cfg *Config) {
 		e.Pipe = pe.pipeName
 		cfg.Templates.Templates[i] = e
 	}
+}
+
+// validateConditionExpr checks that a condition expression uses supported
+// syntax: truthy ("field"), null check ("field == null"), or equality
+// ("field == value"). Rejects unsupported operators at config load time
+// so invalid pipelines fail fast rather than at first execution.
+func validateConditionExpr(expr string) error {
+	expr = strings.TrimSpace(expr)
+	if expr == "" {
+		return fmt.Errorf("empty condition expression")
+	}
+	for _, op := range []string{" != ", " > ", " < ", " >= ", " <= ", " && ", " || "} {
+		if strings.Contains(expr, op) {
+			return fmt.Errorf("unsupported operator in condition: %q", expr)
+		}
+	}
+	parts := strings.SplitN(expr, " == ", 2)
+	if strings.TrimSpace(parts[0]) == "" {
+		return fmt.Errorf("empty field in condition: %q", expr)
+	}
+	return nil
+}
+
+// ValidatePipeline checks a PipelineConfig for structural errors.
+// pipeNames is the set of known pipe names from cfg.Pipes.
+func ValidatePipeline(pc PipelineConfig, pipeNames map[string]bool) error {
+	stepNames := make(map[string]bool, len(pc.Steps))
+
+	for i, step := range pc.Steps {
+		// Unique step names.
+		if step.Name != "" {
+			if stepNames[step.Name] {
+				return fmt.Errorf("duplicate step name %q", step.Name)
+			}
+			stepNames[step.Name] = true
+		}
+
+		// Nested pipeline references not yet supported.
+		if step.Pipeline != "" {
+			return fmt.Errorf("step %d (%s): nested pipeline references not yet supported", i, stepName(step))
+		}
+
+		// Validate pipe references.
+		if step.Pipe != "" && !pipeNames[step.Pipe] {
+			return fmt.Errorf("step %d (%s): unknown pipe %q", i, stepName(step), step.Pipe)
+		}
+
+		// Validate parallel branch pipes.
+		for _, branch := range step.Parallel {
+			if branch.Pipe != "" && !pipeNames[branch.Pipe] {
+				return fmt.Errorf("step %d (%s): parallel branch references unknown pipe %q", i, stepName(step), branch.Pipe)
+			}
+		}
+
+		// Validate graph step pipe.
+		if step.Graph != nil && step.Graph.Pipe != "" && !pipeNames[step.Graph.Pipe] {
+			return fmt.Errorf("step %d (%s): graph references unknown pipe %q", i, stepName(step), step.Graph.Pipe)
+		}
+	}
+
+	// Validate loop step references.
+	for _, loop := range pc.Loops {
+		for _, s := range loop.Steps {
+			if !stepNames[s] {
+				return fmt.Errorf("loop %q references unknown step %q", loop.Name, s)
+			}
+		}
+	}
+
+	// Validate cycle from/to references.
+	for _, cycle := range pc.Cycles {
+		if !stepNames[cycle.From] {
+			return fmt.Errorf("cycle %q: from references unknown step %q", cycle.Name, cycle.From)
+		}
+		if !stepNames[cycle.To] {
+			return fmt.Errorf("cycle %q: to references unknown step %q", cycle.Name, cycle.To)
+		}
+	}
+
+	// Validate all condition expressions parse as supported syntax.
+	for _, step := range pc.Steps {
+		if step.Condition != "" {
+			if err := validateConditionExpr(step.Condition); err != nil {
+				return fmt.Errorf("step %q: invalid condition: %w", stepName(step), err)
+			}
+		}
+	}
+	for _, loop := range pc.Loops {
+		if err := validateConditionExpr(loop.Until); err != nil {
+			return fmt.Errorf("loop %q: invalid until condition: %w", loop.Name, err)
+		}
+	}
+	for _, cycle := range pc.Cycles {
+		if err := validateConditionExpr(cycle.Condition); err != nil {
+			return fmt.Errorf("cycle %q: invalid condition: %w", cycle.Name, err)
+		}
+	}
+
+	return nil
+}
+
+// stepName returns a display name for a pipeline step, falling back to "<unnamed>".
+func stepName(step PipelineStepConfig) string {
+	if step.Name != "" {
+		return step.Name
+	}
+	return "<unnamed>"
 }
 
 func loadYAML(path string, target any) error {

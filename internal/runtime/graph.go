@@ -62,6 +62,7 @@ type GraphExecutor struct {
 	registry *pipe.Registry
 	observer Observer
 	logger   *slog.Logger
+	sink     func(StreamEvent) // optional SSE sink for progress events
 }
 
 // NewGraphExecutor creates a GraphExecutor. If observer is nil a noop observer
@@ -78,6 +79,11 @@ func NewGraphExecutor(registry *pipe.Registry, observer Observer, logger *slog.L
 		observer: observer,
 		logger:   logger,
 	}
+}
+
+// emitProgress sends a pipeline_progress SSE event if a sink is set.
+func (g *GraphExecutor) emitProgress(payload map[string]any) {
+	emitProgress(g.sink, payload)
 }
 
 // Execute runs the task graph to completion. It validates the DAG, sorts tasks
@@ -235,7 +241,7 @@ func (g *GraphExecutor) executeLevels(
 
 	limit := effectiveMaxParallel(cfg)
 
-	for _, level := range levels {
+	for levelIdx, level := range levels {
 		// Filter out tasks whose dependencies failed (both failure modes).
 		var runnable []TaskNode
 		for _, t := range level {
@@ -258,6 +264,14 @@ func (g *GraphExecutor) executeLevels(
 		if len(runnable) == 0 {
 			continue
 		}
+
+		g.emitProgress(map[string]any{
+			"type":     "graph_level",
+			"name":     cfg.Pipe,
+			"level":    levelIdx,
+			"tasks":    len(runnable),
+			"parallel": limit,
+		})
 
 		levelCtx, levelCancel := context.WithCancel(ctx)
 		eg, gCtx := errgroup.WithContext(levelCtx)
@@ -369,21 +383,37 @@ func (g *GraphExecutor) executeTask(
 		if result.Error != nil {
 			errMsg = result.Error.Message
 		}
-		return TaskResult{
+		tr := TaskResult{
 			ID:       task.ID,
 			Name:     task.Name,
 			Status:   "fail",
 			Error:    errMsg,
 			Duration: duration,
 		}
+		g.emitProgress(map[string]any{
+			"type":     "graph_task",
+			"name":     cfg.Pipe,
+			"task":     task.Name,
+			"status":   tr.Status,
+			"duration": duration.String(),
+		})
+		return tr
 	}
 
-	return TaskResult{
+	tr := TaskResult{
 		ID:       task.ID,
 		Name:     task.Name,
 		Status:   "pass",
 		Duration: duration,
 	}
+	g.emitProgress(map[string]any{
+		"type":     "graph_task",
+		"name":     cfg.Pipe,
+		"task":     task.Name,
+		"status":   tr.Status,
+		"duration": duration.String(),
+	})
+	return tr
 }
 
 // resolveTaskArgs returns a copy of args with {{task.*}} placeholders replaced

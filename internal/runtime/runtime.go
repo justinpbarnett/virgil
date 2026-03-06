@@ -35,6 +35,18 @@ type StreamEvent struct {
 	Data string
 }
 
+// emitProgress sends a pipeline_progress SSE event via sink. No-op if sink is nil.
+func emitProgress(sink func(StreamEvent), payload map[string]any) {
+	if sink == nil {
+		return
+	}
+	data, err := json.Marshal(payload)
+	if err != nil {
+		return
+	}
+	sink(StreamEvent{Type: envelope.SSEEventPipelineProgress, Data: string(data)})
+}
+
 type Runtime struct {
 	registry      *pipe.Registry
 	observer      Observer

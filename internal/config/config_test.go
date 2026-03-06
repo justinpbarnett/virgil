@@ -949,3 +949,102 @@ func TestDailyPath(t *testing.T) {
 		t.Errorf("DailyPath = %q, want %q", got, want)
 	}
 }
+
+func TestValidatePipeline_ConditionValidation(t *testing.T) {
+	pipeNames := map[string]bool{"verify": true, "fix": true, "review": true, "decompose": true}
+
+	t.Run("valid step condition", func(t *testing.T) {
+		pc := PipelineConfig{
+			Steps: []PipelineStepConfig{
+				{Name: "verify", Pipe: "verify"},
+				{Name: "fix", Pipe: "fix", Condition: "verify.error"},
+			},
+		}
+		if err := ValidatePipeline(pc, pipeNames); err != nil {
+			t.Errorf("unexpected error: %v", err)
+		}
+	})
+
+	t.Run("invalid step condition operator", func(t *testing.T) {
+		pc := PipelineConfig{
+			Steps: []PipelineStepConfig{
+				{Name: "verify", Pipe: "verify"},
+				{Name: "fix", Pipe: "fix", Condition: "verify.error != null"},
+			},
+		}
+		err := ValidatePipeline(pc, pipeNames)
+		if err == nil {
+			t.Error("expected error for unsupported operator in step condition")
+		}
+		if !strings.Contains(err.Error(), "invalid condition") {
+			t.Errorf("expected 'invalid condition' in error, got: %v", err)
+		}
+	})
+
+	t.Run("valid loop until", func(t *testing.T) {
+		pc := PipelineConfig{
+			Steps: []PipelineStepConfig{
+				{Name: "verify", Pipe: "verify"},
+				{Name: "fix", Pipe: "fix"},
+			},
+			Loops: []LoopConfig{
+				{Name: "vf", Steps: []string{"verify", "fix"}, Until: "verify.error == null", Max: 5},
+			},
+		}
+		if err := ValidatePipeline(pc, pipeNames); err != nil {
+			t.Errorf("unexpected error: %v", err)
+		}
+	})
+
+	t.Run("invalid loop until operator", func(t *testing.T) {
+		pc := PipelineConfig{
+			Steps: []PipelineStepConfig{
+				{Name: "verify", Pipe: "verify"},
+			},
+			Loops: []LoopConfig{
+				{Name: "bad", Steps: []string{"verify"}, Until: "verify.count > 3", Max: 5},
+			},
+		}
+		err := ValidatePipeline(pc, pipeNames)
+		if err == nil {
+			t.Error("expected error for unsupported operator in loop until")
+		}
+		if !strings.Contains(err.Error(), "invalid until condition") {
+			t.Errorf("expected 'invalid until condition' in error, got: %v", err)
+		}
+	})
+
+	t.Run("valid cycle condition", func(t *testing.T) {
+		pc := PipelineConfig{
+			Steps: []PipelineStepConfig{
+				{Name: "decompose", Pipe: "decompose"},
+				{Name: "review", Pipe: "review"},
+			},
+			Cycles: []CycleConfig{
+				{Name: "rework", From: "review", To: "decompose", Condition: `review.outcome == "fail"`, Max: 3},
+			},
+		}
+		if err := ValidatePipeline(pc, pipeNames); err != nil {
+			t.Errorf("unexpected error: %v", err)
+		}
+	})
+
+	t.Run("invalid cycle condition operator", func(t *testing.T) {
+		pc := PipelineConfig{
+			Steps: []PipelineStepConfig{
+				{Name: "decompose", Pipe: "decompose"},
+				{Name: "review", Pipe: "review"},
+			},
+			Cycles: []CycleConfig{
+				{Name: "bad", From: "review", To: "decompose", Condition: "a && b", Max: 3},
+			},
+		}
+		err := ValidatePipeline(pc, pipeNames)
+		if err == nil {
+			t.Error("expected error for unsupported operator in cycle condition")
+		}
+		if !strings.Contains(err.Error(), "invalid condition") {
+			t.Errorf("expected 'invalid condition' in error, got: %v", err)
+		}
+	})
+}

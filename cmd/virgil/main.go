@@ -213,7 +213,26 @@ func runServer(cfgDir string) error {
 		logger.Info("registered pipe", "pipe", name, "handler", handlerPath)
 	}
 
-	// Build router from registered definitions
+	// Build router from registered definitions.
+	// Pipelines take precedence: exclude pipe definitions shadowed by pipelines.
+	defs := reg.Definitions()
+	if len(cfg.Pipelines) > 0 {
+		filtered := make([]pipe.Definition, 0, len(defs))
+		for _, d := range defs {
+			if _, shadowed := cfg.Pipelines[d.Name]; !shadowed {
+				filtered = append(filtered, d)
+			}
+		}
+		defs = filtered
+		for _, pl := range cfg.Pipelines {
+			defs = append(defs, pipe.Definition{
+				Name:     pl.Name,
+				Category: pl.Category,
+				Triggers: pl.Triggers,
+			})
+		}
+	}
+
 	missLogPath := config.DailyPath(config.LogDir(), "misses", ".jsonl")
 	missLog, err := router.NewMissLog(missLogPath)
 	if err != nil {
@@ -223,7 +242,7 @@ func runServer(cfgDir string) error {
 		defer missLog.Close()
 	}
 
-	rt := router.NewRouter(reg.Definitions(), logger)
+	rt := router.NewRouter(defs, logger)
 	defer rt.Close()
 
 	// Build AI planner for Layer 4 routing
