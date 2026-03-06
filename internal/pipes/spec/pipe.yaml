@@ -1,0 +1,120 @@
+name: spec
+description: Interactive specification collaboration — generates, updates, and manages spec files.
+category: dev
+streaming: true
+timeout: 3m
+provider: anthropic
+model: claude-opus-4-6
+
+triggers:
+  exact:
+    - "write a spec"
+    - "create a spec"
+    - "spec this out"
+  keywords:
+    - spec
+    - specification
+    - requirements
+    - design document
+  patterns:
+    - "spec out {topic}"
+    - "spec {topic}"
+    - "let's spec {topic}"
+    - "create a spec for {topic}"
+    - "write a spec for {topic}"
+
+flags:
+  topic:
+    description: Feature description or search term for resolving existing spec.
+    default: ""
+  path:
+    description: Explicit spec file path, overrides resolution.
+    default: ""
+
+memory:
+  context:
+    - type: working_state
+    - type: recent_history
+    - type: codebase
+  budget: 2000
+
+vocabulary:
+  verbs:
+    spec: [spec]
+    specify: [spec]
+  types:
+    spec: [spec]
+    specification: [spec]
+  sources: {}
+  modifiers: {}
+
+templates:
+  priority: 25
+  entries:
+    - requires: [verb]
+      plan:
+        - pipe: study
+          flags:
+            source: codebase
+            role: planner
+            budget: "6000"
+        - pipe: spec
+
+prompts:
+  system: |
+    You are a senior software architect collaborating on an implementation
+    specification. You write specs for builders — no fluff, no business
+    justification, no motivation sections. Every section earns its place
+    by helping someone implement the feature correctly.
+
+  templates:
+    create: |
+      Create an implementation specification for this feature.
+
+      Feature request:
+      {{.Signal}}
+
+      {{if .CodebaseContext}}
+      Codebase context:
+      {{.CodebaseContext}}
+      {{end}}
+
+      Write a complete spec document in markdown with these sections:
+      - **Metadata** — type: feat, task_id (slug from feature name), prompt (one-sentence summary)
+      - **Feature Description** — what the feature does and why, written for builders
+      - **User Story** — As a / I want / So that
+      - **Relevant Files** — existing files that will be modified, with why. Subsection for new files.
+      - **Implementation Plan** — phased approach (Foundation, Core, Integration)
+      - **Step by Step Tasks** — numbered, ordered, with specific file paths and function names
+      - **Testing Strategy** — unit tests, edge cases
+      - **Risk Assessment** — what could break, migration concerns
+      - **Validation Commands** — actual commands to verify (go test, go build, etc.)
+      - **Open Questions** — anything you're uncertain about, with why it matters and your recommended answer
+
+      Mark uncertain assumptions with [?]. Implementation steps must be independently verifiable.
+      Be specific — name files, functions, types. Don't be vague.
+
+    update: |
+      Update this specification based on new input from the engineer.
+
+      Current spec:
+      {{.State}}
+
+      Engineer's input:
+      {{.Signal}}
+
+      {{if .CodebaseContext}}
+      Additional codebase context:
+      {{.CodebaseContext}}
+      {{end}}
+
+      Rules:
+      - Resolve any open questions addressed by the input — move them to a Decisions section with rationale
+      - Update affected sections (scope, implementation plan, risks, step-by-step tasks)
+      - Add any new open questions that arise from the decisions
+      - Do NOT remove or rewrite decisions from previous rounds unless the engineer explicitly reverses them
+      - If a new decision contradicts a previous one, flag it explicitly
+      - Keep the document structure intact — update sections surgically, don't regenerate from scratch
+      - Preserve all metadata and section headings
+
+      Return the complete updated spec document.
