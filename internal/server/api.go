@@ -261,6 +261,12 @@ func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request, req signalReq
 			sse.WriteEvent(w, flusher, envelope.SSEEventStep, []byte(event.Data))
 		case envelope.SSEEventTool:
 			sse.WriteEvent(w, flusher, envelope.SSEEventTool, []byte(event.Data))
+		case envelope.SSEEventTaskStatus:
+			sse.WriteEvent(w, flusher, envelope.SSEEventTaskStatus, []byte(event.Data))
+		case envelope.SSEEventTaskChunk:
+			sse.WriteEvent(w, flusher, envelope.SSEEventTaskChunk, []byte(event.Data))
+		case envelope.SSEEventTaskDone:
+			sse.WriteEvent(w, flusher, envelope.SSEEventTaskDone, []byte(event.Data))
 		}
 		flusher.Flush()
 	}

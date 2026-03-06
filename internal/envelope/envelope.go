@@ -34,6 +34,7 @@ const (
 	SSEEventRoute  = "route"
 	SSEEventAck    = "ack"
 	SSEEventTool   = "tool"
+	SSEEventStatus = "status" // subprocess status event from stderr side-channel
 	SSEContentType = "text/event-stream"
 
 	SSEEventVoiceStatus = "voice_status"
@@ -41,6 +42,11 @@ const (
 	SSEEventVoiceSpeak  = "voice_speak"
 	SSEEventVoiceCycle  = "voice_cycle"
 	SSEEventVoiceStop   = "voice_stop"
+
+	// Parallel task events — emitted during parallel pipeline execution.
+	SSEEventTaskStatus = "task_status"
+	SSEEventTaskChunk  = "task_chunk"
+	SSEEventTaskDone   = "task_done"
 )
 
 // Voice priority constants for speak events.

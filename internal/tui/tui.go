@@ -14,6 +14,7 @@ import (
 	"github.com/justinpbarnett/virgil/internal/envelope"
 	"github.com/justinpbarnett/virgil/internal/pipe"
 	"github.com/justinpbarnett/virgil/internal/sse"
+	"github.com/justinpbarnett/virgil/internal/version"
 	"github.com/justinpbarnett/virgil/internal/voice"
 )
 
@@ -67,6 +68,11 @@ type model struct {
 	pipelineSteps []string
 	pipelineTools []string // tool calls within the current (last) step
 	pipelineDone  bool
+
+	// Parallel task tracking (nil when no parallel execution active)
+	parallelTasks []*parallelTask
+	panelSelected int // cursor within parallel task list (-1 = none)
+	panelExpanded int // index of expanded task (-1 = none)
 
 	// Session cost accumulator — reset on :clear and app start
 	sessionCost float64
@@ -123,19 +129,65 @@ type pipesLoadedMsg struct {
 	defs []pipe.Definition
 }
 
+// parallelTask tracks a single task within a parallel pipeline step.
+type parallelTask struct {
+	ID        string
+	Name      string
+	Pipe      string
+	Status    string // "waiting", "running", "done", "failed"
+	Activity  string // last tool/activity description
+	Duration  string // set on completion, e.g. "0.3s"
+	Error     string // non-empty on failure
+	Output    strings.Builder
+	DependsOn []string
+}
+
+type taskStatusMsg struct {
+	ts struct {
+		TaskID    string   `json:"task_id"`
+		Name      string   `json:"name"`
+		Pipe      string   `json:"pipe"`
+		Status    string   `json:"status"`
+		Activity  string   `json:"activity"`
+		DependsOn []string `json:"depends_on"`
+	}
+	streamID int
+	reader   *sse.Reader
+}
+
+type taskChunkMsg struct {
+	taskID   string
+	text     string
+	streamID int
+	reader   *sse.Reader
+}
+
+type taskDoneMsg struct {
+	td struct {
+		TaskID   string `json:"task_id"`
+		Status   string `json:"status"`
+		Duration string `json:"duration"`
+		Error    string `json:"error"`
+	}
+	streamID int
+	reader   *sse.Reader
+}
+
 func RunSession(serverAddr string) error {
 	theme := NewTheme("dark")
 	cmds := NewCommandRegistry()
 	comp := NewCompleter(cmds.List())
 	m := model{
-		stream:     NewStream(&theme),
-		input:      NewInput(&theme),
-		panel:      NewPanel(&theme),
-		theme:      theme,
-		cmds:       cmds,
-		completer:  comp,
-		serverAddr: serverAddr,
-		connected:  true,
+		stream:        NewStream(&theme),
+		input:         NewInput(&theme),
+		panel:         NewPanel(&theme),
+		theme:         theme,
+		cmds:          cmds,
+		completer:     comp,
+		serverAddr:    serverAddr,
+		connected:     true,
+		panelSelected: -1,
+		panelExpanded: -1,
 	}
 
 	p := tea.NewProgram(m, tea.WithAltScreen())
@@ -276,6 +328,33 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		cmds = append(cmds, readNextEvent(msg.reader, msg.streamID))
 		return m, tea.Batch(cmds...)
 
+	case taskStatusMsg:
+		if msg.streamID == m.activeStreamID {
+			m.upsertParallelTask(msg.ts.TaskID, msg.ts.Name, msg.ts.Pipe, msg.ts.Status, msg.ts.Activity, msg.ts.DependsOn)
+			m.showPipelinePanel()
+		}
+		return m, readNextEvent(msg.reader, msg.streamID)
+
+	case taskChunkMsg:
+		if msg.streamID == m.activeStreamID {
+			m.appendTaskOutput(msg.taskID, msg.text)
+			if m.panelExpanded >= 0 && m.panelExpanded < len(m.parallelTasks) && m.parallelTasks[m.panelExpanded].ID == msg.taskID {
+				m.showPipelinePanel()
+			}
+		}
+		return m, readNextEvent(msg.reader, msg.streamID)
+
+	case taskDoneMsg:
+		if msg.streamID == m.activeStreamID {
+			m.completeParallelTask(msg.td.TaskID, msg.td.Status, msg.td.Duration, msg.td.Error)
+			m.showPipelinePanel()
+			if msg.td.Status == "failed" {
+				label := m.taskLabel(msg.td.TaskID)
+				m.stream.Append(KindNotification, SymArrow+" "+label+": failed")
+			}
+		}
+		return m, readNextEvent(msg.reader, msg.streamID)
+
 	case pipesLoadedMsg:
 		m.completer.SetPipes(msg.defs)
 		return m, nil
@@ -397,6 +476,12 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case tea.KeyEsc:
+		// Collapse expanded task output first (before cancel handling).
+		if m.panelExpanded >= 0 {
+			m.panelExpanded = -1
+			m.showPipelinePanel()
+			return m, nil
+		}
 		if m.cancelFn != nil {
 			now := time.Now()
 			if m.lastEscTime.IsZero() || now.Sub(m.lastEscTime) > escapeWindow {
@@ -455,15 +540,43 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.updateLayout()
 			return m, nil
 		}
+		// Expand/collapse a selected parallel task in the panel.
+		if m.panel.IsOpen() && m.panelSelected >= 0 && len(m.parallelTasks) > 0 {
+			if m.panelExpanded == m.panelSelected {
+				m.panelExpanded = -1
+			} else {
+				m.panelExpanded = m.panelSelected
+			}
+			m.showPipelinePanel()
+			return m, nil
+		}
 		return m.handleSubmit()
 
 	case tea.KeyCtrlJ:
+		if m.panel.IsOpen() && len(m.parallelTasks) > 0 {
+			// Move selection down through the task list.
+			if m.panelSelected < len(m.parallelTasks)-1 {
+				m.panelSelected++
+			}
+			m.showPipelinePanel()
+			return m, nil
+		}
 		if m.panel.IsOpen() {
 			m.panel.ScrollDown(3)
 			return m, nil
 		}
 
 	case tea.KeyCtrlK:
+		if m.panel.IsOpen() && len(m.parallelTasks) > 0 {
+			// Move selection up through the task list.
+			if m.panelSelected > 0 {
+				m.panelSelected--
+			} else if m.panelSelected == 0 {
+				m.panelSelected = -1
+			}
+			m.showPipelinePanel()
+			return m, nil
+		}
 		if !m.keysShown {
 			m.stream.Append(KindNotification, keybindingSummary())
 			m.keysShown = true
@@ -590,6 +703,7 @@ func (m model) fetchStatus() tea.Cmd {
 			return serverCmdMsg{err: err}
 		}
 		var b strings.Builder
+		b.WriteString(version.FullVersion() + "\n\n")
 		b.WriteString("server status:\n")
 		for k, v := range status {
 			b.WriteString(fmt.Sprintf("  %s: %v\n", k, v))
@@ -603,6 +717,7 @@ func (m model) sendSignal(text string) (tea.Model, tea.Cmd) {
 	m.pipelineSteps = nil
 	m.pipelineTools = nil
 	m.pipelineDone = false
+	m.clearParallelState()
 	m.stream.Append(KindInput, SymPrompt+" "+text)
 	m.waiting = true
 	m.pending.Reset()
@@ -649,11 +764,16 @@ func (m *model) formatPipelineSteps() string {
 		isLast := i == len(m.pipelineSteps)-1
 		if isLast && !m.pipelineDone {
 			b.WriteString(SymActive + " " + step + "\n")
-			for j, tool := range m.pipelineTools {
-				if j == len(m.pipelineTools)-1 {
-					b.WriteString("  " + SymActive + " " + tool + "\n")
-				} else {
-					b.WriteString("  " + SymCheck + " " + tool + "\n")
+			// Render parallel tasks if active; otherwise render tool calls.
+			if len(m.parallelTasks) > 0 {
+				m.formatParallelTasks(&b)
+			} else {
+				for j, tool := range m.pipelineTools {
+					if j == len(m.pipelineTools)-1 {
+						b.WriteString("  " + SymActive + " " + tool + "\n")
+					} else {
+						b.WriteString("  " + SymCheck + " " + tool + "\n")
+					}
 				}
 			}
 		} else {
@@ -665,7 +785,62 @@ func (m *model) formatPipelineSteps() string {
 			}
 		}
 	}
+
+	// When panelExpanded >= 0, append the expanded task's output below a rule.
+	if m.panelExpanded >= 0 && m.panelExpanded < len(m.parallelTasks) {
+		task := m.parallelTasks[m.panelExpanded]
+		b.WriteString("\n" + SymSeparator + SymSeparator + " " + task.Name + " " + strings.Repeat(SymSeparator, 10) + "\n")
+		b.WriteString(task.Output.String())
+	}
+
 	return b.String()
+}
+
+// formatParallelTasks writes the indented task tree with status symbols.
+func (m *model) formatParallelTasks(b *strings.Builder) {
+	n := len(m.parallelTasks)
+	for i, task := range m.parallelTasks {
+		isLast := i == n-1
+		connector := "├"
+		if isLast {
+			connector = "└"
+		}
+
+		sym := taskSymbol(task.Status)
+
+		line := "  " + connector + " " + sym + " " + task.Name
+		if task.Activity != "" {
+			line += "   " + task.Activity
+		} else if task.Duration != "" {
+			line += "   " + task.Duration
+		}
+
+		// Highlight selected task (> marker prefix).
+		if m.panelSelected == i {
+			line = "▸ " + connector + " " + sym + " " + task.Name
+			if task.Activity != "" {
+				line += "   " + task.Activity
+			} else if task.Duration != "" {
+				line += "   " + task.Duration
+			}
+		}
+
+		b.WriteString(line + "\n")
+	}
+}
+
+// taskSymbol maps a task status to the correct symbol from the TUI vocabulary.
+func taskSymbol(status string) string {
+	switch status {
+	case "done":
+		return SymCheck
+	case "failed":
+		return SymCross
+	case "running":
+		return SymActive
+	default: // "waiting" and anything else
+		return SymInactive
+	}
 }
 
 // toolLabel builds a human-readable display string for a tool call.
@@ -690,11 +865,92 @@ func toolLabel(name, summary string) string {
 }
 
 func (m *model) showPipelinePanel() {
-	m.panel.SetContent("pipeline", m.formatPipelineSteps())
-	if !m.panel.IsOpen() && (len(m.pipelineSteps) > 1 || len(m.pipelineTools) > 0) {
+	title := "pipeline"
+	if m.panelExpanded >= 0 && m.panelExpanded < len(m.parallelTasks) {
+		title = m.parallelTasks[m.panelExpanded].Name
+	}
+	m.panel.SetContent(title, m.formatPipelineSteps())
+	if !m.panel.IsOpen() && (len(m.pipelineSteps) > 1 || len(m.pipelineTools) > 0 || len(m.parallelTasks) > 0) {
 		m.panel.Toggle()
 		m.updateLayout()
 	}
+}
+
+// upsertParallelTask creates or updates a parallel task by ID.
+func (m *model) upsertParallelTask(id, name, pipeName, status, activity string, dependsOn []string) {
+	for _, t := range m.parallelTasks {
+		if t.ID == id {
+			if status != "" {
+				t.Status = status
+			}
+			if activity != "" {
+				t.Activity = activity
+			}
+			if name != "" {
+				t.Name = name
+			}
+			if pipeName != "" {
+				t.Pipe = pipeName
+			}
+			if dependsOn != nil {
+				t.DependsOn = dependsOn
+			}
+			return
+		}
+	}
+	// New task — register it.
+	task := &parallelTask{
+		ID:        id,
+		Name:      name,
+		Pipe:      pipeName,
+		Status:    status,
+		Activity:  activity,
+		DependsOn: dependsOn,
+	}
+	m.parallelTasks = append(m.parallelTasks, task)
+}
+
+// appendTaskOutput appends streaming text to a task's output buffer.
+func (m *model) appendTaskOutput(taskID, text string) {
+	for _, t := range m.parallelTasks {
+		if t.ID == taskID {
+			t.Output.WriteString(text)
+			return
+		}
+	}
+}
+
+// completeParallelTask finalises a task with its terminal status and duration.
+func (m *model) completeParallelTask(taskID, status, duration, errMsg string) {
+	for _, t := range m.parallelTasks {
+		if t.ID == taskID {
+			t.Status = status
+			t.Duration = duration
+			t.Error = errMsg
+			t.Activity = "" // clear live activity on completion
+			return
+		}
+	}
+}
+
+// taskLabel returns a human-readable "name (pipe)" label for a task ID.
+func (m *model) taskLabel(taskID string) string {
+	for _, t := range m.parallelTasks {
+		if t.ID == taskID {
+			if t.Pipe != "" {
+				return t.Name + " (" + t.Pipe + ")"
+			}
+			return t.Name
+		}
+	}
+	return taskID
+}
+
+// clearParallelState resets all parallel task tracking fields.
+func (m *model) clearParallelState() {
+	m.parallelTasks = nil
+	m.panelSelected = -1
+	m.panelExpanded = -1
 }
 
 func (m model) handleStreamDone(msg streamDoneMsg) (tea.Model, tea.Cmd) {
@@ -711,6 +967,8 @@ func (m model) handleStreamDone(msg streamDoneMsg) (tea.Model, tea.Cmd) {
 		m.pipelineDone = true
 		m.showPipelinePanel()
 	}
+	// Clear parallel state — the pipeline is done.
+	m.clearParallelState()
 
 	if msg.err == nil && msg.env.Usage != nil {
 		m.sessionCost += msg.env.Usage.Cost
@@ -970,6 +1228,34 @@ func readNextEventSync(reader *sse.Reader, streamID int) tea.Msg {
 			}
 			if err := json.Unmarshal([]byte(event.Data), &tool); err == nil {
 				return streamToolMsg{name: tool.Name, summary: tool.Summary, streamID: streamID, reader: reader}
+			}
+			continue
+
+		case envelope.SSEEventTaskStatus:
+			var msg taskStatusMsg
+			if err := json.Unmarshal([]byte(event.Data), &msg.ts); err == nil {
+				msg.streamID = streamID
+				msg.reader = reader
+				return msg
+			}
+			continue
+
+		case envelope.SSEEventTaskChunk:
+			var tc struct {
+				TaskID string `json:"task_id"`
+				Text   string `json:"text"`
+			}
+			if err := json.Unmarshal([]byte(event.Data), &tc); err == nil {
+				return taskChunkMsg{taskID: tc.TaskID, text: tc.Text, streamID: streamID, reader: reader}
+			}
+			continue
+
+		case envelope.SSEEventTaskDone:
+			var msg taskDoneMsg
+			if err := json.Unmarshal([]byte(event.Data), &msg.td); err == nil {
+				msg.streamID = streamID
+				msg.reader = reader
+				return msg
 			}
 			continue
 
