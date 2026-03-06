@@ -1,7 +1,7 @@
 default: build
 
 build: build-pipes
-    go build -o bin/virgil ./cmd/virgil
+    go build -ldflags "-X github.com/justinpbarnett/virgil/internal/version.version=$(git describe --tags --always --dirty 2>/dev/null || echo dev) -X github.com/justinpbarnett/virgil/internal/version.gitCommit=$(git rev-parse --short HEAD 2>/dev/null || echo unknown) -X github.com/justinpbarnett/virgil/internal/version.buildTime=$(date -u +%Y-%m-%dT%H:%M:%SZ)" -o bin/virgil ./cmd/virgil
 
 build-if-changed:
     #!/usr/bin/env sh
@@ -54,3 +54,12 @@ auth:
 
 lint:
     $HOME/go/bin/golangci-lint run ./...
+
+clean:
+    rm -rf bin/
+    rm -f internal/pipes/*/run
+
+version:
+    @echo "Version: $(git describe --tags --always --dirty 2>/dev/null || echo dev)"
+    @echo "Commit:  $(git rev-parse --short HEAD 2>/dev/null || echo unknown)"
+    @echo "Built:   $(date -u +%Y-%m-%dT%H:%M:%SZ)"
