@@ -15,6 +15,17 @@ triggers:
     - hey virgil
     - hi virgil
     - hello virgil
+    - good morning
+    - good morning virgil
+    - good afternoon
+    - good afternoon virgil
+    - good evening
+    - good evening virgil
+    - morning
+    - morning virgil
+    - howdy
+    - yo
+    - sup
   keywords:
     - chat
     - talk

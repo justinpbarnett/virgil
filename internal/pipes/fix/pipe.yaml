@@ -31,6 +31,9 @@ triggers:
     - "fix errors in {topic}"
 
 flags:
+  cwd:
+    description: Working directory (worktree path).
+    default: ""
   scope:
     description: How broadly to fix.
     values: [targeted, broad]
