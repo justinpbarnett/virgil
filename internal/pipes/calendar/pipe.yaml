@@ -16,6 +16,10 @@ triggers:
     - meeting
     - event
     - appointment
+    - today
+    - tomorrow
+    - agenda
+    - appt
     - add
     - create
     - cancel

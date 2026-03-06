@@ -18,9 +18,6 @@ triggers:
   keywords:
     - chat
     - talk
-    - hello
-    - hi
-    - hey
   patterns: []
 
 flags:

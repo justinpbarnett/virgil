@@ -12,6 +12,7 @@ triggers:
     - build
     - implement
     - construct
+    - compile
   patterns:
     - "build {topic}"
     - "implement {topic}"

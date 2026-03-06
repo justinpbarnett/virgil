@@ -8,9 +8,6 @@ triggers:
     - "execute command"
   keywords:
     - shell
-    - run
-    - execute
-    - vet
   patterns:
     - "run {type}"
     - "execute {type}"

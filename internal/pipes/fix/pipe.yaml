@@ -15,6 +15,9 @@ triggers:
     - repair
     - correct
     - patch
+    - debug
+    - bug
+    - broken
   patterns:
     - "fix {topic}"
     - "fix errors in {topic}"

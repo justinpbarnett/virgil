@@ -15,6 +15,7 @@ triggers:
     - compose
     - write
     - author
+    - msg
   patterns:
     - "draft {type}"
     - "write {type} about {topic}"
