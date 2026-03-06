@@ -31,7 +31,7 @@ type Tool struct {
 
 // ToolCall is a single tool invocation returned by the model.
 type ToolCall struct {
-	ID    string          // provider-assigned call ID, echoed in the result
+	ID    string // provider-assigned call ID, echoed in the result
 	Name  string
 	Input json.RawMessage
 }
@@ -45,7 +45,7 @@ type AgenticResponse struct {
 
 // AgenticMessage is a single entry in the conversation history.
 type AgenticMessage struct {
-	Role        string       // "user", "assistant"
+	Role        string // "user", "assistant"
 	Content     string
 	ToolCalls   []ToolCall   // populated for assistant turns that requested tools
 	ToolResults []ToolResult // populated for user turns responding to tool calls
@@ -153,6 +153,8 @@ func CreateProvider(config ProviderConfig) (Provider, error) {
 		return OpenAIProvider(config, "https://api.openai.com/v1", "OPENAI_API_KEY")
 	case "xai":
 		return OpenAIProvider(config, "https://api.x.ai/v1", "XAI_API_KEY")
+	case "zen":
+		return OpenAIProvider(config, "https://opencode.ai/zen/v1", "ZEN_API_KEY")
 	case "gemini":
 		return GeminiProvider(config)
 	default:

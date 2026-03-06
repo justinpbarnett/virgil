@@ -3,7 +3,7 @@ server:
   port: 7890
 
 provider:
-  # Available providers: anthropic, openai, xai, gemini, claude (CLI fallback)
+  # Available providers: anthropic, openai, xai, zen, gemini, claude (CLI fallback)
   name: anthropic
   model: claude-sonnet-4-20250514
   binary: claude
