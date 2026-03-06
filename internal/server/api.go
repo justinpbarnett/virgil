@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/justinpbarnett/virgil/internal/config"
 	"github.com/justinpbarnett/virgil/internal/envelope"
 	"github.com/justinpbarnett/virgil/internal/parser"
 	"github.com/justinpbarnett/virgil/internal/planner"
@@ -190,16 +191,23 @@ func (s *Server) handleSignal(w http.ResponseWriter, r *http.Request) {
 	// Synchronous path — route first (deterministic, <1ms), then execute.
 	seed := buildSeed(req)
 	route := s.router.Route(r.Context(), req.Text, parsed)
-	plan := s.buildPlanForRoute(&route, req.Text, parsed)
 
-	execSeed := seed
-	if len(plan.Steps) == 1 {
-		memCh := s.runtime.PrefetchMemory(seed, plan.Steps[0].Pipe)
-		execSeed = <-memCh
-		plan.SkipFirstMemoryInjection = true
+	// Check if this route maps to a pipeline.
+	var result envelope.Envelope
+	if pc := s.pipelineForRoute(route.Pipe); pc != nil {
+		result = s.executePipeline(*pc, seed)
+	} else {
+		plan := s.buildPlanForRoute(&route, req.Text, parsed)
+
+		execSeed := seed
+		if len(plan.Steps) == 1 {
+			memCh := s.runtime.PrefetchMemory(seed, plan.Steps[0].Pipe)
+			execSeed = <-memCh
+			plan.SkipFirstMemoryInjection = true
+		}
+
+		result = s.runtime.Execute(plan, execSeed)
 	}
-
-	result := s.runtime.Execute(plan, execSeed)
 
 	s.logger.Info("signal complete", "duration", time.Since(start).String())
 
@@ -218,6 +226,39 @@ func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request, req signalReq
 	route := s.router.Route(r.Context(), req.Text, parsed)
 
 	var mu sync.Mutex
+
+	sseSink := func(event runtime.StreamEvent) {
+		mu.Lock()
+		defer mu.Unlock()
+		switch event.Type {
+		case envelope.SSEEventChunk:
+			w.Write([]byte(sse.FormatText(envelope.SSEEventChunk, event.Data))) //nolint:errcheck
+		case envelope.SSEEventStep:
+			sse.WriteEvent(w, flusher, envelope.SSEEventStep, []byte(event.Data))
+		case envelope.SSEEventTool:
+			sse.WriteEvent(w, flusher, envelope.SSEEventTool, []byte(event.Data))
+		case envelope.SSEEventTaskStatus:
+			sse.WriteEvent(w, flusher, envelope.SSEEventTaskStatus, []byte(event.Data))
+		case envelope.SSEEventTaskChunk:
+			sse.WriteEvent(w, flusher, envelope.SSEEventTaskChunk, []byte(event.Data))
+		case envelope.SSEEventTaskDone:
+			sse.WriteEvent(w, flusher, envelope.SSEEventTaskDone, []byte(event.Data))
+		case envelope.SSEEventPipelineProgress:
+			sse.WriteEvent(w, flusher, envelope.SSEEventPipelineProgress, []byte(event.Data))
+		}
+		flusher.Flush()
+	}
+
+	// Check if this route maps to a pipeline.
+	if pc := s.pipelineForRoute(route.Pipe); pc != nil {
+		sse.WriteJSON(w, flusher, envelope.SSEEventRoute, map[string]any{"pipe": pc.Name, "layer": route.Layer})
+		result := s.executePipelineStream(*pc, seed, sseSink)
+		mu.Lock()
+		sse.WriteJSON(w, flusher, envelope.SSEEventDone, result)
+		mu.Unlock()
+		return
+	}
+
 	isLayer4 := route.Layer == router.LayerFallback
 
 	// Layer 4: start ack IMMEDIATELY — before AI planning.
@@ -235,8 +276,9 @@ func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request, req signalReq
 		sse.WriteJSON(w, flusher, envelope.SSEEventRoute, map[string]any{"pipe": plan.Steps[0].Pipe, "layer": route.Layer})
 	}
 
-	// Layers 1-3: start ack after planning (planning was instant).
-	if ackDone == nil {
+	// Layers 2-3: start ack after planning (planning was instant).
+	// Skip ack for layer 1 (exact match) — response is fast, ack would be redundant.
+	if ackDone == nil && route.Layer != router.LayerExact {
 		pipeIsAIBacked := len(plan.Steps) > 0 && s.config.Pipes[plan.Steps[0].Pipe].Prompts.System != ""
 		if pipeIsAIBacked {
 			ackDone = s.startAck(r.Context(), req.Text, &mu, w, flusher)
@@ -251,27 +293,7 @@ func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request, req signalReq
 		plan.SkipFirstMemoryInjection = true
 	}
 
-	sink := func(event runtime.StreamEvent) {
-		mu.Lock()
-		defer mu.Unlock()
-		switch event.Type {
-		case envelope.SSEEventChunk:
-			w.Write([]byte(sse.FormatText(envelope.SSEEventChunk, event.Data))) //nolint:errcheck
-		case envelope.SSEEventStep:
-			sse.WriteEvent(w, flusher, envelope.SSEEventStep, []byte(event.Data))
-		case envelope.SSEEventTool:
-			sse.WriteEvent(w, flusher, envelope.SSEEventTool, []byte(event.Data))
-		case envelope.SSEEventTaskStatus:
-			sse.WriteEvent(w, flusher, envelope.SSEEventTaskStatus, []byte(event.Data))
-		case envelope.SSEEventTaskChunk:
-			sse.WriteEvent(w, flusher, envelope.SSEEventTaskChunk, []byte(event.Data))
-		case envelope.SSEEventTaskDone:
-			sse.WriteEvent(w, flusher, envelope.SSEEventTaskDone, []byte(event.Data))
-		}
-		flusher.Flush()
-	}
-
-	result := s.runtime.ExecuteStream(r.Context(), plan, execSeed, sink)
+	result := s.runtime.ExecuteStream(r.Context(), plan, execSeed, sseSink)
 	if ackDone != nil {
 		<-ackDone
 	}
@@ -300,6 +322,44 @@ func (s *Server) handleStatus(w http.ResponseWriter, _ *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(status)
+}
+
+// pipelineForRoute returns the PipelineConfig if the route maps to a pipeline
+// rather than a regular pipe. Returns nil if the route is a regular pipe.
+func (s *Server) pipelineForRoute(pipeName string) *config.PipelineConfig {
+	if s.config == nil {
+		return nil
+	}
+	if pc, ok := s.config.Pipelines[pipeName]; ok {
+		return &pc
+	}
+	return nil
+}
+
+// newPipelineExecutor creates a PipelineExecutor for the given config.
+func (s *Server) newPipelineExecutor(pc config.PipelineConfig) (*runtime.PipelineExecutor, error) {
+	observer := runtime.NewLogObserver(s.logger, s.config.LogLevel)
+	return runtime.NewPipelineExecutor(s.runtime, pc, observer, s.logger)
+}
+
+// executePipeline creates a PipelineExecutor and runs the pipeline with the
+// given seed envelope. Returns the final output envelope.
+func (s *Server) executePipeline(pc config.PipelineConfig, seed envelope.Envelope) envelope.Envelope {
+	pe, err := s.newPipelineExecutor(pc)
+	if err != nil {
+		return envelope.NewFatalError(pc.Name, "pipeline init: "+err.Error())
+	}
+	return pe.Execute(seed)
+}
+
+// executePipelineStream creates a PipelineExecutor with an SSE sink for
+// streaming progress events during pipeline execution.
+func (s *Server) executePipelineStream(pc config.PipelineConfig, seed envelope.Envelope, sink func(runtime.StreamEvent)) envelope.Envelope {
+	pe, err := s.newPipelineExecutor(pc)
+	if err != nil {
+		return envelope.NewFatalError(pc.Name, "pipeline init: "+err.Error())
+	}
+	return pe.ExecuteStream(seed, sink)
 }
 
 func marshalJSON(v any) []byte {

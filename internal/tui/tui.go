@@ -51,9 +51,9 @@ type model struct {
 	keysShown      bool   // ctrl+k debounce
 
 	// Streaming state
-	pending        strings.Builder
+	pending        strings.Builder // response chunks
+	ackBuf         strings.Builder // ack chunks (separate from response)
 	waiting        bool
-	hadAck         bool // true after ack chunks have been received
 	dotPhase       int
 	activeStreamID int
 	cancelFn       context.CancelFunc
@@ -280,7 +280,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.stream.Append(KindInput, SymPrompt+" "+msg.Text)
 		m.waiting = true
 		m.pending.Reset()
-		m.hadAck = false
+		m.ackBuf.Reset()
 		m.dotPhase = 0
 		m.activeStreamID++
 		m.voiceStreamID = m.activeStreamID
@@ -721,7 +721,7 @@ func (m model) sendSignal(text string) (tea.Model, tea.Cmd) {
 	m.stream.Append(KindInput, SymPrompt+" "+text)
 	m.waiting = true
 	m.pending.Reset()
-	m.hadAck = false
+	m.ackBuf.Reset()
 	m.dotPhase = 0
 	m.activeStreamID++
 	streamID := m.activeStreamID
@@ -742,19 +742,23 @@ func (m model) handleStreamChunk(msg streamChunkMsg) (tea.Model, tea.Cmd) {
 		msg.reader.Close()
 		return m, nil
 	}
-	// Insert a blank line when transitioning from ack to response.
-	if m.hadAck && !msg.isAck {
-		m.pending.WriteString("\n\n")
-		m.hadAck = false
-	}
 	if msg.isAck {
-		m.hadAck = true
-	}
-	m.pending.WriteString(msg.text)
-	if !msg.isAck {
+		m.ackBuf.WriteString(msg.text)
+	} else {
+		// First response chunk: commit ack to stream as its own message.
+		if m.ackBuf.Len() > 0 {
+			m.stream.Append(KindResponse, m.ackBuf.String())
+			m.ackBuf.Reset()
+		}
+		m.pending.WriteString(msg.text)
 		m.waiting = false
 	}
-	m.stream.SetPending(m.pending.String())
+	// Show ack while waiting for response, then show response.
+	if m.pending.Len() > 0 {
+		m.stream.SetPending(m.pending.String())
+	} else {
+		m.stream.SetPending(m.ackBuf.String())
+	}
 	return m, readNextEvent(msg.reader, msg.streamID)
 }
 
@@ -800,29 +804,21 @@ func (m *model) formatPipelineSteps() string {
 func (m *model) formatParallelTasks(b *strings.Builder) {
 	n := len(m.parallelTasks)
 	for i, task := range m.parallelTasks {
-		isLast := i == n-1
 		connector := "├"
-		if isLast {
+		if i == n-1 {
 			connector = "└"
 		}
 
-		sym := taskSymbol(task.Status)
+		prefix := "  "
+		if m.panelSelected == i {
+			prefix = "▸ "
+		}
 
-		line := "  " + connector + " " + sym + " " + task.Name
+		line := prefix + connector + " " + taskSymbol(task.Status) + " " + task.Name
 		if task.Activity != "" {
 			line += "   " + task.Activity
 		} else if task.Duration != "" {
 			line += "   " + task.Duration
-		}
-
-		// Highlight selected task (> marker prefix).
-		if m.panelSelected == i {
-			line = "▸ " + connector + " " + sym + " " + task.Name
-			if task.Activity != "" {
-				line += "   " + task.Activity
-			} else if task.Duration != "" {
-				line += "   " + task.Duration
-			}
 		}
 
 		b.WriteString(line + "\n")
@@ -876,72 +872,71 @@ func (m *model) showPipelinePanel() {
 	}
 }
 
-// upsertParallelTask creates or updates a parallel task by ID.
-func (m *model) upsertParallelTask(id, name, pipeName, status, activity string, dependsOn []string) {
+// findParallelTask returns the task with the given ID, or nil if not found.
+func (m *model) findParallelTask(taskID string) *parallelTask {
 	for _, t := range m.parallelTasks {
-		if t.ID == id {
-			if status != "" {
-				t.Status = status
-			}
-			if activity != "" {
-				t.Activity = activity
-			}
-			if name != "" {
-				t.Name = name
-			}
-			if pipeName != "" {
-				t.Pipe = pipeName
-			}
-			if dependsOn != nil {
-				t.DependsOn = dependsOn
-			}
-			return
+		if t.ID == taskID {
+			return t
 		}
 	}
+	return nil
+}
+
+// upsertParallelTask creates or updates a parallel task by ID.
+func (m *model) upsertParallelTask(id, name, pipeName, status, activity string, dependsOn []string) {
+	if t := m.findParallelTask(id); t != nil {
+		if status != "" {
+			t.Status = status
+		}
+		if activity != "" {
+			t.Activity = activity
+		}
+		if name != "" {
+			t.Name = name
+		}
+		if pipeName != "" {
+			t.Pipe = pipeName
+		}
+		if dependsOn != nil {
+			t.DependsOn = dependsOn
+		}
+		return
+	}
 	// New task — register it.
-	task := &parallelTask{
+	m.parallelTasks = append(m.parallelTasks, &parallelTask{
 		ID:        id,
 		Name:      name,
 		Pipe:      pipeName,
 		Status:    status,
 		Activity:  activity,
 		DependsOn: dependsOn,
-	}
-	m.parallelTasks = append(m.parallelTasks, task)
+	})
 }
 
 // appendTaskOutput appends streaming text to a task's output buffer.
 func (m *model) appendTaskOutput(taskID, text string) {
-	for _, t := range m.parallelTasks {
-		if t.ID == taskID {
-			t.Output.WriteString(text)
-			return
-		}
+	if t := m.findParallelTask(taskID); t != nil {
+		t.Output.WriteString(text)
 	}
 }
 
 // completeParallelTask finalises a task with its terminal status and duration.
 func (m *model) completeParallelTask(taskID, status, duration, errMsg string) {
-	for _, t := range m.parallelTasks {
-		if t.ID == taskID {
-			t.Status = status
-			t.Duration = duration
-			t.Error = errMsg
-			t.Activity = "" // clear live activity on completion
-			return
-		}
+	if t := m.findParallelTask(taskID); t != nil {
+		t.Status = status
+		t.Duration = duration
+		t.Error = errMsg
+		t.Activity = "" // clear live activity on completion
 	}
 }
 
 // taskLabel returns a human-readable "name (pipe)" label for a task ID.
 func (m *model) taskLabel(taskID string) string {
-	for _, t := range m.parallelTasks {
-		if t.ID == taskID {
-			if t.Pipe != "" {
-				return t.Name + " (" + t.Pipe + ")"
-			}
-			return t.Name
+	if t := m.findParallelTask(taskID); t != nil {
+		if t.Pipe != "" {
+			return t.Name + " (" + t.Pipe + ")"
 		}
+		return t.Name
 	}
 	return taskID
 }
@@ -975,18 +970,15 @@ func (m model) handleStreamDone(msg streamDoneMsg) (tea.Model, tea.Cmd) {
 	}
 
 	pendingText := m.pending.String()
+	ackText := m.ackBuf.String()
 	var contentText string
 	if msg.err == nil {
 		contentText = envelope.ContentToText(msg.env.Content, msg.env.ContentType)
 	}
 
-	// Determine the actual response text. If we only received ack chunks
-	// (no response streaming) and the envelope carries content, the envelope
-	// content is the real response — the ack was just a placeholder.
+	// Determine the response text: streamed chunks, or envelope content as fallback.
 	responseText := pendingText
-	if m.hadAck && contentText != "" {
-		responseText = contentText
-	} else if responseText == "" {
+	if responseText == "" {
 		responseText = contentText
 	}
 
@@ -1001,16 +993,20 @@ func (m model) handleStreamDone(msg streamDoneMsg) (tea.Model, tea.Cmd) {
 	m.stream.ClearPending()
 	if msg.err != nil {
 		m.stream.Append(KindError, fmt.Sprintf("error: %v", msg.err))
-	} else if m.hadAck && contentText != "" {
-		// Ack was shown as pending; finalize with the actual pipe response.
-		m.stream.Append(KindNotification, pendingText)
-		m.stream.Append(KindResponse, contentText)
-	} else if pendingText != "" {
-		m.stream.Append(KindResponse, pendingText)
-	} else if contentText != "" {
-		m.stream.Append(KindResponse, contentText)
+	} else {
+		// Commit any remaining ack that wasn't flushed during streaming
+		// (e.g. only ack chunks arrived, no response chunks).
+		if ackText != "" {
+			m.stream.Append(KindResponse, ackText)
+		}
+		if responseText != "" {
+			m.stream.Append(KindResponse, responseText)
+		} else if contentText != "" {
+			m.stream.Append(KindResponse, contentText)
+		}
 	}
 	m.pending.Reset()
+	m.ackBuf.Reset()
 	return m, speakCmd
 }
 

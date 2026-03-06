@@ -47,6 +47,10 @@ const (
 	SSEEventTaskStatus = "task_status"
 	SSEEventTaskChunk  = "task_chunk"
 	SSEEventTaskDone   = "task_done"
+
+	// Pipeline progress events — emitted by the pipeline executor for
+	// loop iterations, cycle triggers, and graph-level progress.
+	SSEEventPipelineProgress = "pipeline_progress"
 )
 
 // Voice priority constants for speak events.
