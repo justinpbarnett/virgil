@@ -237,6 +237,30 @@ func TestShortKeywordSignalMatchesLayer2(t *testing.T) {
 	}
 }
 
+func TestExactMatchStripsTrailingPunctuation(t *testing.T) {
+	r := NewRouter(testDefs(), nil)
+	defer r.Close()
+
+	tests := []struct {
+		signal string
+		pipe   string
+	}{
+		{"check my calendar?", "calendar"},
+		{"what's on my schedule!", "calendar"},
+		{"remember this.", "memory"},
+	}
+
+	for _, tt := range tests {
+		result := r.Route(context.Background(), tt.signal, parser.ParsedSignal{})
+		if result.Pipe != tt.pipe {
+			t.Errorf("signal %q: expected %s, got %s (layer %d)", tt.signal, tt.pipe, result.Pipe, result.Layer)
+		}
+		if result.Layer != LayerExact {
+			t.Errorf("signal %q: expected layer %d, got %d", tt.signal, LayerExact, result.Layer)
+		}
+	}
+}
+
 func TestExactMatchCaseInsensitive(t *testing.T) {
 	r := NewRouter(testDefs(), nil)
 	defer r.Close()

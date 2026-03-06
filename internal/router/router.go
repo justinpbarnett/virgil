@@ -58,7 +58,7 @@ func NewRouter(defs []pipe.Definition, logger *slog.Logger) *Router {
 	for _, def := range defs {
 		r.definitions[def.Name] = def
 		for _, exact := range def.Triggers.Exact {
-			r.exactMap[strings.ToLower(exact)] = def.Name
+			r.exactMap[parser.CleanToken(strings.ToLower(exact))] = def.Name
 		}
 	}
 
@@ -141,8 +141,8 @@ func buildIndex(defs []pipe.Definition, pipeWords map[string][]string) (bleve.In
 func (r *Router) Route(_ context.Context, signal string, parsed parser.ParsedSignal) RouteResult {
 	lower := strings.ToLower(signal)
 
-	// Layer 1: Exact match
-	if pipeName, ok := r.exactMap[lower]; ok {
+	// Layer 1: Exact match (punctuation stripped at index time via CleanToken)
+	if pipeName, ok := r.exactMap[parser.CleanToken(lower)]; ok {
 		r.logger.Info("routed", "pipe", pipeName, "layer", LayerExact)
 		return RouteResult{Pipe: pipeName, Confidence: 1.0, Layer: LayerExact}
 	}
