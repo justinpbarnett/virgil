@@ -40,6 +40,8 @@ func NewHandler(s *store.Store, logger *slog.Logger) pipe.Handler {
 			return handleList(s, input, flags, logger)
 		case "done":
 			return handleDone(s, input, flags, logger)
+		case "undone":
+			return handleUndone(s, input, flags, logger)
 		case "remove":
 			return handleRemove(s, input, flags, logger)
 		case "edit":
@@ -61,10 +63,7 @@ func handleAdd(s *store.Store, input envelope.Envelope, flags map[string]string,
 	out.Args = flags
 	defer func() { out.Duration = time.Since(out.Timestamp) }()
 
-	title := flags["title"]
-	if title == "" {
-		title = envelope.ContentToText(input.Content, input.ContentType)
-	}
+	title := resolveInput(flags, input)
 	if title == "" {
 		out.Error = envelope.FatalError("title is required for add action")
 		return out
@@ -101,7 +100,9 @@ func handleAdd(s *store.Store, input envelope.Envelope, flags map[string]string,
 	}
 
 	logger.Info("added todo", "id", todo.ID, "title", title)
-	out.Content = todoToMap(todo)
+	m := todoToMap(todo)
+	m["action"] = "add"
+	out.Content = m
 	out.ContentType = envelope.ContentStructured
 	return out
 }
@@ -113,7 +114,7 @@ func handleList(s *store.Store, _ envelope.Envelope, flags map[string]string, lo
 
 	status := flags["status"]
 	if status == "" {
-		status = "pending"
+		status = store.TodoStatusPending
 	}
 
 	limit := 25
@@ -143,35 +144,10 @@ func handleDone(s *store.Store, input envelope.Envelope, flags map[string]string
 	out.Args = flags
 	defer func() { out.Duration = time.Since(out.Timestamp) }()
 
-	id := flags["id"]
-	var todo store.Todo
-	var err error
-
-	if id != "" {
-		todo, err = s.GetTodo(id)
-		if err != nil {
-			if err == sql.ErrNoRows {
-				out.Error = envelope.FatalError(fmt.Sprintf("todo not found: %s", id))
-			} else {
-				out.Error = envelope.FatalError(fmt.Sprintf("failed to get todo: %v", err))
-			}
-			return out
-		}
-	} else {
-		// Fuzzy title match
-		search := flags["title"]
-		if search == "" {
-			search = envelope.ContentToText(input.Content, input.ContentType)
-		}
-		if search == "" {
-			out.Error = envelope.FatalError("id or title is required for done action")
-			return out
-		}
-		todo, err = fuzzyFind(s, search)
-		if err != nil {
-			out.Error = envelope.FatalError(err.Error())
-			return out
-		}
+	todo, err := resolveTodo(s, input, flags, store.TodoStatusPending)
+	if err != nil {
+		out.Error = envelope.FatalError(err.Error())
+		return out
 	}
 
 	if err := s.CompleteTodo(todo.ID); err != nil {
@@ -194,41 +170,60 @@ func handleDone(s *store.Store, input envelope.Envelope, flags map[string]string
 		}
 	}
 
-	todo.Status = "done"
+	todo.Status = store.TodoStatusDone
 	logger.Info("completed todo", "id", todo.ID, "title", todo.Title)
-	out.Content = todoToMap(todo)
+	m := todoToMap(todo)
+	m["action"] = "done"
+	out.Content = m
 	out.ContentType = envelope.ContentStructured
 	return out
 }
 
-func handleRemove(s *store.Store, _ envelope.Envelope, flags map[string]string, logger *slog.Logger) envelope.Envelope {
+func handleUndone(s *store.Store, input envelope.Envelope, flags map[string]string, logger *slog.Logger) envelope.Envelope {
+	out := envelope.New("todo", "undone")
+	out.Args = flags
+	defer func() { out.Duration = time.Since(out.Timestamp) }()
+
+	todo, err := resolveTodo(s, input, flags, store.TodoStatusDone)
+	if err != nil {
+		out.Error = envelope.FatalError(err.Error())
+		return out
+	}
+
+	if err := s.UncompleteTodo(todo.ID); err != nil {
+		logger.Error("uncomplete todo failed", "error", err)
+		out.Error = envelope.FatalError(fmt.Sprintf("failed to uncomplete todo: %v", err))
+		return out
+	}
+
+	todo.Status = store.TodoStatusPending
+	logger.Info("uncompleted todo", "id", todo.ID, "title", todo.Title)
+	m := todoToMap(todo)
+	m["action"] = "undone"
+	out.Content = m
+	out.ContentType = envelope.ContentStructured
+	return out
+}
+
+func handleRemove(s *store.Store, input envelope.Envelope, flags map[string]string, logger *slog.Logger) envelope.Envelope {
 	out := envelope.New("todo", "remove")
 	out.Args = flags
 	defer func() { out.Duration = time.Since(out.Timestamp) }()
 
-	id := flags["id"]
-	if id == "" {
-		out.Error = envelope.FatalError("id is required for remove action")
+	todo, err := resolveTodo(s, input, flags, "all")
+	if err != nil {
+		out.Error = envelope.FatalError(err.Error())
 		return out
 	}
 
-	if _, err := s.GetTodo(id); err != nil {
-		if err == sql.ErrNoRows {
-			out.Error = envelope.FatalError(fmt.Sprintf("todo not found: %s", id))
-		} else {
-			out.Error = envelope.FatalError(fmt.Sprintf("failed to get todo: %v", err))
-		}
-		return out
-	}
-
-	if err := s.DeleteTodo(id); err != nil {
+	if err := s.DeleteTodo(todo.ID); err != nil {
 		logger.Error("delete todo failed", "error", err)
 		out.Error = envelope.FatalError(fmt.Sprintf("failed to remove todo: %v", err))
 		return out
 	}
 
-	logger.Info("removed todo", "id", id)
-	out.Content = map[string]any{"status": "removed", "id": id}
+	logger.Info("removed todo", "id", todo.ID)
+	out.Content = map[string]any{"status": "removed", "id": todo.ID}
 	out.ContentType = envelope.ContentStructured
 	return out
 }
@@ -305,18 +300,48 @@ func handleReorder(s *store.Store, _ envelope.Envelope, flags map[string]string,
 	return out
 }
 
-func fuzzyFind(s *store.Store, search string) (store.Todo, error) {
-	todos, err := s.ListTodos("pending", 100)
+func resolveTodo(s *store.Store, input envelope.Envelope, flags map[string]string, status string) (store.Todo, error) {
+	if id := flags["id"]; id != "" {
+		todo, err := s.GetTodo(id)
+		if err != nil {
+			if err == sql.ErrNoRows {
+				return store.Todo{}, fmt.Errorf("todo not found: %s", id)
+			}
+			return store.Todo{}, fmt.Errorf("failed to get todo: %v", err)
+		}
+		return todo, nil
+	}
+	search := resolveInput(flags, input)
+	if search == "" {
+		return store.Todo{}, fmt.Errorf("id or title is required")
+	}
+	return fuzzyFind(s, search, status)
+}
+
+func resolveInput(flags map[string]string, input envelope.Envelope) string {
+	if v := flags["title"]; v != "" {
+		return v
+	}
+	if v := flags["topic"]; v != "" {
+		return v
+	}
+	return envelope.ContentToText(input.Content, input.ContentType)
+}
+
+func fuzzyFind(s *store.Store, search string, status string) (store.Todo, error) {
+	todos, err := s.ListTodos(status, 100)
 	if err != nil {
 		return store.Todo{}, fmt.Errorf("failed to search todos: %v", err)
 	}
 	lower := strings.ToLower(search)
 	for _, t := range todos {
-		if strings.Contains(strings.ToLower(t.Title), lower) {
+		titleLower := strings.ToLower(t.Title)
+		// Match if title contains search OR search contains title (handles full-signal inputs)
+		if strings.Contains(titleLower, lower) || strings.Contains(lower, titleLower) {
 			return t, nil
 		}
 	}
-	return store.Todo{}, fmt.Errorf("no pending todo found matching %q", search)
+	return store.Todo{}, fmt.Errorf("no %s todo found matching %q", status, search)
 }
 
 func resolveDueDate(due string) string {

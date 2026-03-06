@@ -698,6 +698,15 @@ func (s *Store) CompleteTodo(id string) error {
 	return err
 }
 
+// UncompleteTodo marks a completed todo as pending again.
+func (s *Store) UncompleteTodo(id string) error {
+	_, err := s.db.Exec(
+		"UPDATE todos SET status = ?, completed_at = 0 WHERE id = ?",
+		TodoStatusPending, id,
+	)
+	return err
+}
+
 // DeleteTodo removes a todo by ID.
 func (s *Store) DeleteTodo(id string) error {
 	_, err := s.db.Exec("DELETE FROM todos WHERE id = ?", id)
