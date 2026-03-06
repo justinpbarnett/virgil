@@ -6,12 +6,12 @@ import (
 	"log/slog"
 	"os/exec"
 	"path/filepath"
-	"regexp"
 	"strings"
 	"time"
 
 	"github.com/justinpbarnett/virgil/internal/envelope"
 	"github.com/justinpbarnett/virgil/internal/pipe"
+	"github.com/justinpbarnett/virgil/internal/slug"
 )
 
 // WorktreeOutput is the structured content returned on success.
@@ -57,7 +57,10 @@ func NewHandler(executor GitExecutor, logger *slog.Logger) pipe.Handler {
 		branch := flags["branch"]
 		if branch == "" {
 			text := envelope.ContentToText(input.Content, input.ContentType)
-			branch = slugify(text)
+			branch = slug.Slugify(text)
+			if branch != "" && !strings.Contains(branch, "/") {
+				branch = "feat/" + branch
+			}
 		}
 		if branch == "" {
 			out.Error = envelope.FatalError("no branch name: provide a branch flag or input content")
@@ -220,35 +223,3 @@ func resolveCommit(executor GitExecutor, ref string) (string, error) {
 	return strings.TrimSpace(out), nil
 }
 
-// nonAlphaNum matches any character that is not a lowercase letter, digit, or forward slash.
-var nonAlphaNum = regexp.MustCompile(`[^a-z0-9/]+`)
-
-// multiHyphen matches two or more consecutive hyphens.
-var multiHyphen = regexp.MustCompile(`-{2,}`)
-
-// slugify converts arbitrary text into a branch-safe slug.
-// - Lowercases the input
-// - Replaces spaces and special characters with hyphens
-// - Collapses consecutive hyphens
-// - Trims leading/trailing hyphens
-// - Prefixes with "feat/" if no slash-prefix is present
-func slugify(s string) string {
-	s = strings.ToLower(strings.TrimSpace(s))
-	if s == "" {
-		return ""
-	}
-
-	s = nonAlphaNum.ReplaceAllString(s, "-")
-	s = multiHyphen.ReplaceAllString(s, "-")
-	s = strings.Trim(s, "-")
-
-	if s == "" {
-		return ""
-	}
-
-	if !strings.Contains(s, "/") {
-		s = "feat/" + s
-	}
-
-	return s
-}

@@ -219,29 +219,41 @@ func TestWorktreeBranchFromInput(t *testing.T) {
 	}
 }
 
-func TestWorktreeSlugify(t *testing.T) {
+func TestWorktreeSlugifyWithPrefix(t *testing.T) {
+	// Verify that the handler correctly applies feat/ prefix via slug.Slugify.
+	// Core slug tests live in internal/slug/slug_test.go.
 	tests := []struct {
 		name   string
 		input  string
-		expect string
+		branch string
 	}{
-		{"simple words", "OAuth Login", "feat/oauth-login"},
-		{"special chars", "fix: auth bug #123", "feat/fix-auth-bug-123"},
-		{"consecutive hyphens", "hello---world", "feat/hello-world"},
-		{"leading trailing special", "  --hello--  ", "feat/hello"},
-		{"empty string", "", ""},
-		{"only special chars", "!@#$%", ""},
-		{"already has prefix", "fix/something", "fix/something"},
-		{"uppercase mixed", "My GREAT Feature", "feat/my-great-feature"},
-		{"numbers only", "123", "feat/123"},
-		{"single word", "refactor", "feat/refactor"},
+		{"simple words get feat prefix", "OAuth Login", "feat/oauth-login"},
+		{"already has slash prefix", "fix/something", "fix/something"},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			got := slugify(tc.input)
-			if got != tc.expect {
-				t.Errorf("slugify(%q) = %q, want %q", tc.input, got, tc.expect)
+			mock := &mockGitExecutor{
+				calls: []mockCall{
+					{stdout: "/repo\n"},
+					{stdout: "worktree /repo\nHEAD aaa\nbranch refs/heads/main\n"},
+					{stdout: "sha123\n"},
+					{err: fmt.Errorf("not found")},
+					{stdout: ""},
+				},
+			}
+			handler := NewHandler(mock, nil)
+			input := envelope.New("input", "test")
+			input.Content = tc.input
+			input.ContentType = envelope.ContentText
+
+			result := handler(input, map[string]string{})
+			if result.Error != nil {
+				t.Fatalf("unexpected error: %v", result.Error)
+			}
+			content := result.Content.(WorktreeOutput)
+			if content.Branch != tc.branch {
+				t.Errorf("expected branch=%s, got %s", tc.branch, content.Branch)
 			}
 		})
 	}
