@@ -14,6 +14,13 @@ triggers:
     - scope
     - assess
     - decompose
+    - analysis
+    - investigate
+    - breakdown
+    - examine
+    - evaluation
+    - risk
+    - technical
   patterns:
     - "analyze {topic}"
     - "scope {topic}"
@@ -31,15 +38,15 @@ flags:
 
 vocabulary:
   verbs:
-    analyze: analyze
-    scope: analyze
-    assess: analyze
-    decompose: analyze
+    analyze: [analyze]
+    scope: [analyze]
+    assess: [analyze]
+    decompose: [analyze]
   types: {}
   sources: {}
   modifiers:
-    shallow: shallow
-    deep: deep
+    shallow: [shallow]
+    deep: [deep]
 
 prompts:
   system: |

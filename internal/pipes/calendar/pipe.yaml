@@ -27,6 +27,13 @@ triggers:
     - update
     - move
     - reschedule
+    - remind
+    - reminder
+    - availability
+    - busy
+    - free
+    - slot
+    - block
   patterns:
     - "what's on my calendar {modifier}"
     - "check my calendar {modifier}"
@@ -77,17 +84,17 @@ memory:
 
 vocabulary:
   verbs:
-    show: calendar
-    schedule: calendar
-    cancel: calendar
-    reschedule: calendar
+    show: [calendar]
+    schedule: [calendar]
+    cancel: [calendar]
+    reschedule: [calendar]
   types: {}
   sources:
-    calendar: calendar
+    calendar: [calendar]
   modifiers:
-    next: next
-    recent: latest
-    today: today
-    tomorrow: tomorrow
-    "this week": this-week
-    "next week": next-week
+    next: [next]
+    recent: [latest]
+    today: [today]
+    tomorrow: [tomorrow]
+    "this week": [this-week]
+    "next week": [next-week]

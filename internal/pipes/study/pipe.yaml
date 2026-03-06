@@ -15,6 +15,11 @@ triggers:
     - gather
     - understand
     - codebase
+    - research
+    - explore
+    - investigate
+    - summarize
+    - analysis
   patterns:
     - "study {source}"
     - "study {source} for {topic}"
@@ -57,21 +62,21 @@ format:
 
 vocabulary:
   verbs:
-    study: study
-    gather: study
-    understand: study
-    investigate: study
+    study: [study]
+    gather: [study]
+    understand: [study]
+    investigate: [study]
   types: {}
   sources:
-    codebase: codebase
-    code: codebase
-    repo: codebase
-    files: files
-    docs: files
-    notes: memory
+    codebase: [codebase]
+    code: [codebase]
+    repo: [codebase]
+    files: [files]
+    docs: [files]
+    notes: [memory]
   modifiers:
-    shallow: shallow
-    deep: deep
+    shallow: [shallow]
+    deep: [deep]
 
 prompts:
   system: |

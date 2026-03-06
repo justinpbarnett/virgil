@@ -7,11 +7,16 @@ import (
 )
 
 type ParsedSignal struct {
-	Verb       string // pipe name (resolved from vocabulary)
-	Action     string // extracted from pipe.action mapping, empty otherwise
+	Verb       string            // pipe name (resolved from vocabulary) - empty if ambiguous
+	Action     string            // extracted from pipe.action mapping, empty otherwise
+	Verbs      []string          // all matching verbs (when ambiguous)
+	Actions    map[string]string // verb -> action mapping for all matches
 	Type       string
+	Types      []string // all matching types (when ambiguous)
 	Source     string
+	Sources    []string // all matching sources (when ambiguous)
 	Modifier   string
+	Modifiers  []string // all matching modifiers (when ambiguous)
 	Topic      string
 	Raw        string
 	IsQuestion bool // true when signal is a wh-question, not a command
@@ -48,140 +53,221 @@ func CleanToken(s string) string {
 
 func (p *Parser) Parse(signal string) ParsedSignal {
 	signal = strings.TrimSpace(signal)
-	result := ParsedSignal{Raw: signal}
+	result := ParsedSignal{
+		Raw:     signal,
+		Actions: make(map[string]string),
+	}
 	lower := strings.ToLower(signal)
+	words := tokenize(lower)
+	used := make([]bool, len(words))
+
+	result.IsQuestion = detectQuestion(words, lower)
+	result.Modifiers, used = p.extractModifiers(words, lower, used)
+	result.Verbs, result.Actions, used = p.extractVerbs(words, used)
+	used = p.consumeVerbEchoes(words, used, result.Verbs)
+	result.Type, result.Types, used = p.extractType(words, used)
+	result.Source, result.Sources, used = p.extractSource(words, used)
+	result.Topic = extractTopic(words, used)
+
+	// If only one verb match, set the singular fields
+	if len(result.Verbs) == 1 {
+		result.Verb = result.Verbs[0]
+		result.Action = result.Actions[result.Verb]
+	}
+
+	// If single modifier match, also set singular
+	if len(result.Modifiers) == 1 {
+		result.Modifier = result.Modifiers[0]
+	}
+
+	// Interrogative detection: flip "store" to "retrieve" in questions
+	result.Action = maybeFlipToRetrieve(result.Action, words, lower)
+
+	return result
+}
+
+func tokenize(lower string) []string {
 	words := strings.Fields(lower)
 	for i, w := range words {
 		words[i] = CleanToken(w)
 	}
-	used := make([]bool, len(words))
+	return words
+}
 
-	// Detect wh-questions: starts with a wh-word and ends with "?"
-	if len(words) > 0 && whWords[words[0]] && strings.HasSuffix(strings.TrimSpace(lower), "?") {
-		result.IsQuestion = true
-	}
+func detectQuestion(words []string, lower string) bool {
+	return len(words) > 0 && whWords[words[0]] && strings.HasSuffix(strings.TrimSpace(lower), "?")
+}
+
+func (p *Parser) extractModifiers(words []string, lower string, used []bool) ([]string, []bool) {
+	var modifiers []string
 
 	// Try multi-word modifiers first
-	for phrase, canonical := range p.vocab.Modifiers {
+	for phrase, canonicalList := range p.vocab.Modifiers {
 		phraseLower := strings.ToLower(phrase)
-		if strings.Contains(lower, phraseLower) {
-			result.Modifier = canonical
-			// Mark words as used
-			phraseWords := strings.Fields(phraseLower)
-			for i := 0; i <= len(words)-len(phraseWords); i++ {
-				match := true
-				for j, pw := range phraseWords {
-					if words[i+j] != pw {
-						match = false
-						break
-					}
-				}
-				if match {
-					for j := range phraseWords {
-						used[i+j] = true
-					}
-					break
-				}
-			}
-			break
-		}
-	}
-
-	// Extract verb (first match wins; try exact token then Porter2 stem)
-	verbIdx := -1
-	for i, w := range words {
-		if used[i] {
+		if !strings.Contains(lower, phraseLower) {
 			continue
 		}
-		mapping, ok := nlp.LookupStemmed(p.vocab.Verbs, w)
-		if ok {
-			if strings.Contains(mapping, ".") {
-				parts := strings.SplitN(mapping, ".", 2)
-				result.Verb = parts[0]
-				result.Action = parts[1]
-			} else {
-				result.Verb = mapping
-			}
-			used[i] = true
-			verbIdx = i
-			break
-		}
-	}
-
-	// Interrogative detection: if the signal is a question and the action
-	// would be "store", flip to "retrieve". Catches patterns like
-	// "do you remember X?" where "remember" maps to store but the intent
-	// is retrieval.
-	if result.Action == "store" {
-		interrogative := false
-		if verbIdx > 0 {
-			for j := 0; j < verbIdx; j++ {
-				if interrogativeWords[words[j]] {
-					interrogative = true
-					break
+		modifiers = append(modifiers, canonicalList...)
+		phraseWords := strings.Fields(phraseLower)
+		for i := 0; i <= len(words)-len(phraseWords); i++ {
+			if matchPhrase(words, i, phraseWords) {
+				for j := range phraseWords {
+					used[i+j] = true
 				}
+				break
 			}
 		}
-		if !interrogative && strings.HasSuffix(lower, "?") {
-			interrogative = true
-		}
-		if interrogative {
-			result.Action = "retrieve"
-		}
+		break
 	}
 
-	// Extract type (exact then stemmed fallback)
-	for i, w := range words {
-		if used[i] {
-			continue
-		}
-		canonical, ok := nlp.LookupStemmed(p.vocab.Types, w)
-		if ok {
-			result.Type = canonical
-			used[i] = true
-			break
-		}
-	}
-
-	// Extract source (exact then stemmed fallback)
-	for i, w := range words {
-		if used[i] {
-			continue
-		}
-		canonical, ok := nlp.LookupStemmed(p.vocab.Sources, w)
-		if ok {
-			result.Source = canonical
-			used[i] = true
-			break
-		}
-	}
-
-	// Extract single-word modifier if not already found
-	if result.Modifier == "" {
+	// If no multi-word match, try single-word modifiers
+	if len(modifiers) == 0 {
 		for i, w := range words {
 			if used[i] {
 				continue
 			}
-			if canonical, ok := p.vocab.Modifiers[w]; ok {
-				result.Modifier = canonical
+			if canonicalList, ok := p.vocab.Modifiers[w]; ok {
+				modifiers = append(modifiers, canonicalList...)
 				used[i] = true
 				break
 			}
 		}
 	}
 
-	// Topic: remaining words after removing stop words and used words
-	var topicWords []string
+	return modifiers, used
+}
+
+func matchPhrase(words []string, start int, phraseWords []string) bool {
+	for j, pw := range phraseWords {
+		if words[start+j] != pw {
+			return false
+		}
+	}
+	return true
+}
+
+func (p *Parser) extractVerbs(words []string, used []bool) ([]string, map[string]string, []bool) {
+	verbs := []string{}
+	actions := make(map[string]string)
+
 	for i, w := range words {
 		if used[i] {
 			continue
 		}
-		if nlp.IsStopWord(w) {
+		mappings, ok := nlp.LookupStemmedList(p.vocab.Verbs, w)
+		if !ok {
+			continue
+		}
+		for _, mapping := range mappings {
+			pipeName, action := splitMapping(mapping)
+			verbs = append(verbs, pipeName)
+			if _, exists := actions[pipeName]; !exists {
+				actions[pipeName] = action
+			}
+		}
+		used[i] = true
+		break
+	}
+
+	return verbs, actions, used
+}
+
+// consumeVerbEchoes marks remaining words as used if they are verb-vocabulary
+// entries that map to the same pipe(s) as the already-extracted verb. This
+// prevents words like "done" from leaking into the topic when "mark" already
+// established the action (e.g. "mark X as done").
+func (p *Parser) consumeVerbEchoes(words []string, used []bool, matchedVerbs []string) []bool {
+	if len(matchedVerbs) == 0 {
+		return used
+	}
+	pipeSet := make(map[string]bool, len(matchedVerbs))
+	for _, v := range matchedVerbs {
+		pipeSet[v] = true
+	}
+	for i, w := range words {
+		if used[i] {
+			continue
+		}
+		mappings, ok := nlp.LookupStemmedList(p.vocab.Verbs, w)
+		if !ok {
+			continue
+		}
+		for _, mapping := range mappings {
+			pipeName, _ := splitMapping(mapping)
+			if pipeSet[pipeName] {
+				used[i] = true
+				break
+			}
+		}
+	}
+	return used
+}
+
+func splitMapping(mapping string) (string, string) {
+	if idx := strings.Index(mapping, "."); idx >= 0 {
+		return mapping[:idx], mapping[idx+1:]
+	}
+	return mapping, ""
+}
+
+func (p *Parser) extractType(words []string, used []bool) (string, []string, []bool) {
+	return p.extractVocabMatches(words, used, p.vocab.Types)
+}
+
+func (p *Parser) extractSource(words []string, used []bool) (string, []string, []bool) {
+	return p.extractVocabMatches(words, used, p.vocab.Sources)
+}
+
+func (p *Parser) extractVocabMatches(words []string, used []bool, vocab map[string][]string) (string, []string, []bool) {
+	var matches []string
+	for i, w := range words {
+		if used[i] {
+			continue
+		}
+		canonicalList, ok := nlp.LookupStemmedList(vocab, w)
+		if !ok {
+			continue
+		}
+		matches = append(matches, canonicalList...)
+		used[i] = true
+		break
+	}
+
+	singular := ""
+	if len(matches) == 1 {
+		singular = matches[0]
+	}
+	return singular, matches, used
+}
+
+func extractTopic(words []string, used []bool) string {
+	var topicWords []string
+	for i, w := range words {
+		if used[i] || nlp.IsStopWord(w) {
 			continue
 		}
 		topicWords = append(topicWords, w)
 	}
-	result.Topic = strings.Join(topicWords, " ")
+	return strings.Join(topicWords, " ")
+}
 
-	return result
+func maybeFlipToRetrieve(action string, words []string, lower string) string {
+	if action != "store" {
+		return action
+	}
+	if detectInterrogative(words, lower) {
+		return "retrieve"
+	}
+	return action
+}
+
+func detectInterrogative(words []string, lower string) bool {
+	// Check for interrogative words before the verb
+	for j := 0; j < len(words) && j < 3; j++ {
+		if interrogativeWords[words[j]] {
+			return true
+		}
+	}
+	// Or just check if it ends with a question mark
+	return strings.HasSuffix(lower, "?")
 }

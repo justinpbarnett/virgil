@@ -9,6 +9,10 @@ triggers:
     - worktree
     - branch
     - isolate
+    - checkout
+    - sandbox
+    - git
+    - development
   patterns:
     - "create worktree for {topic}"
     - "worktree {topic}"
@@ -26,8 +30,8 @@ flags:
 
 vocabulary:
   verbs:
-    worktree: worktree
-    isolate: worktree
+    worktree: [worktree]
+    isolate: [worktree]
   types: {}
   sources: {}
   modifiers: {}

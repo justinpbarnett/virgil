@@ -16,6 +16,14 @@ triggers:
     - write
     - author
     - msg
+    - message
+    - letter
+    - document
+    - article
+    - blog
+    - content
+    - note
+    - text
   patterns:
     - "draft {type}"
     - "write {type} about {topic}"
@@ -50,19 +58,19 @@ memory:
 
 vocabulary:
   verbs:
-    draft: draft
-    write: draft
-    compose: draft
-    summarize: draft
-    summary: draft
-    spec: draft
-    specify: draft
+    draft: [draft]
+    write: [draft]
+    compose: [draft]
+    summarize: [draft]
+    summary: [draft]
+    spec: [draft]
+    specify: [draft]
   types:
-    blog: blog
-    email: email
-    pr: pr
-    memo: memo
-    spec: spec
+    blog: [blog]
+    email: [email]
+    pr: [pr]
+    memo: [memo]
+    spec: [spec]
   sources: {}
   modifiers: {}
 

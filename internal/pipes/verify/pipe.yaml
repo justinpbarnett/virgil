@@ -13,6 +13,11 @@ triggers:
     - test
     - validate
     - check
+    - lint
+    - tests
+    - compile
+    - assert
+    - ensure
   patterns:
     - "verify {topic}"
     - "test {topic}"
@@ -35,13 +40,13 @@ flags:
 
 vocabulary:
   verbs:
-    verify: verify
-    validate: verify
-    check: verify
+    verify: [verify]
+    validate: [verify]
+    check: [verify]
   types:
-    tests: tests
-    lint: lint
-    all: all
+    tests: [tests]
+    lint: [lint]
+    all: [all]
   sources: {}
   modifiers: {}
 

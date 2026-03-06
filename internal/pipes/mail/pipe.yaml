@@ -16,6 +16,16 @@ triggers:
     - inbox
     - gmail
     - message
+    - send
+    - thread
+    - reply
+    - forward
+    - unread
+    - compose
+    - attachment
+    - draft
+    - recipient
+    - sender
   patterns:
     - "check my email {modifier}"
     - "read email from {topic}"
@@ -71,21 +81,21 @@ format:
 
 vocabulary:
   verbs:
-    email: mail
-    mail: mail
+    email: [mail]
+    mail: [mail]
   types:
-    email: email
-    mail: email
+    email: [email]
+    mail: [email]
   sources:
-    email: mail
-    mail: mail
-    inbox: mail
+    email: [mail]
+    mail: [mail]
+    inbox: [mail]
   modifiers:
-    latest: latest
-    last: latest
-    newest: latest
-    recent: latest
-    most recent: latest
+    latest: [latest]
+    last: [latest]
+    newest: [latest]
+    recent: [latest]
+    most recent: [latest]
 
 templates:
   priority: 50

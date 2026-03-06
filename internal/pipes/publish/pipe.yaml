@@ -13,6 +13,12 @@ triggers:
     - push
     - pr
     - pull request
+    - merge
+    - release
+    - commit
+    - deploy
+    - ship
+    - upload
   patterns:
     - "publish {topic}"
     - "create pr for {topic}"
@@ -35,11 +41,11 @@ flags:
 
 vocabulary:
   verbs:
-    publish: publish
-    push: publish
-    ship: publish
+    publish: [publish]
+    push: [publish]
+    ship: [publish]
   types:
-    changes: changes
+    changes: [changes]
   sources: {}
   modifiers: {}
 

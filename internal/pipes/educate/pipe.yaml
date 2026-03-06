@@ -18,6 +18,12 @@ triggers:
     - explain
     - understand
     - lesson
+    - guide
+    - tutorial
+    - concept
+    - training
+    - practice
+    - how
   patterns:
     - "teach me {topic}"
     - "explain {topic}"
@@ -51,11 +57,11 @@ memory:
 
 vocabulary:
   verbs:
-    teach: educate
-    learn: educate
-    educate: educate
-    tutor: educate
-    explain: educate
+    teach: [educate]
+    learn: [educate]
+    educate: [educate]
+    tutor: [educate]
+    explain: [educate]
   types: {}
   sources: {}
   modifiers: {}

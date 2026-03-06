@@ -19,6 +19,11 @@ triggers:
     - diagram
     - visualization
     - manim
+    - chart
+    - graph
+    - render
+    - draw
+    - figure
   patterns:
     - "visualize {topic}"
     - "animate {topic}"
@@ -46,14 +51,14 @@ flags:
 
 vocabulary:
   verbs:
-    visualize: visualize
-    animate: visualize
-    illustrate: visualize
+    visualize: [visualize]
+    animate: [visualize]
+    illustrate: [visualize]
   types:
-    animation: animation
-    video: video
-    diagram: diagram
-    visualization: visualization
+    animation: [animation]
+    video: [video]
+    diagram: [diagram]
+    visualization: [visualization]
   sources: {}
   modifiers: {}
 

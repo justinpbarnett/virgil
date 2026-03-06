@@ -14,6 +14,11 @@ triggers:
     - tasks
     - checklist
     - backlog
+    - list
+    - item
+    - items
+    - pending
+    - action
   patterns:
     - "add {topic} to my todo list"
     - "add {topic} to my todos"
@@ -26,7 +31,7 @@ triggers:
 flags:
   action:
     description: Which todo operation to perform.
-    values: [add, list, done, remove, edit, reorder]
+    values: [add, list, done, undone, remove, edit, reorder]
     default: list
   title:
     description: The todo item title (for add action).
@@ -54,22 +59,41 @@ flags:
 
 format:
   list: |-
-    {{if eq .Count 0}}No todos.{{else}}{{range .Items}}
-    {{if eq .status "done"}}[x]{{else}}[ ]{{end}} {{.title}}{{if .due_date}} (due {{.due_date}}){{end}} [p{{.priority}}] {{.id}}{{end}}{{end}}
+    {{if eq .Count 0}}No todos.{{else}}{{.Count}} todo{{if gt .Count 1}}s{{end}}:{{range .Items}}
+    {{if eq .status "done"}}- ~~{{.title}}~~{{else}}- {{.title}}{{end}}{{if .due_date}} — due {{.due_date}}{{end}} · p{{.priority}}{{end}}{{end}}
   structured: |-
-    {{if .status}}{{if eq .status "done"}}Completed{{else}}Added{{end}}: {{.title}}{{end}}{{if .priority}} [p{{.priority}}]{{end}}
+    {{if eq .action "done"}}✓ Completed: {{.title}}{{else if eq .action "undone"}}↺ Restored: {{.title}}{{else}}+ Added: {{.title}}{{end}}{{if .due_date}} — due {{.due_date}}{{end}} · p{{.priority}}
 
 memory:
   disabled: true
 
 vocabulary:
   verbs:
-    todo: todo
-    task: todo
+    todo: [todo]
+    task: [todo]
+    show: [todo]
+    list: [todo.list]
+    add: [todo.add]
+    create: [todo.add]
+    mark: [todo.done]
+    complete: [todo.done]
+    finish: [todo.done]
+    done: [todo.done]
+    check: [todo.done]
+    uncheck: [todo.undone]
+    undo: [todo.undone]
+    remove: [todo.remove]
+    delete: [todo.remove]
+    rm: [todo.remove]
+    prioritize: [todo.reorder]
+    reorder: [todo.reorder]
+    move: [todo.reorder]
+    edit: [todo.edit]
+    update: [todo.edit]
   types: {}
   sources:
-    todos: todo
-    tasks: todo
+    todos: [todo]
+    tasks: [todo]
   modifiers: {}
 
 templates:

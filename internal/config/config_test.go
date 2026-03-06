@@ -4,9 +4,9 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
-	"time"
 	"strings"
 	"testing"
+	"time"
 
 	"gopkg.in/yaml.v3"
 )
@@ -50,10 +50,10 @@ triggers:
   patterns: []
 vocabulary:
   verbs:
-    remember: memory.store
+    remember: [memory.store]
   types: {}
   sources:
-    notes: memory
+    notes: [memory]
   modifiers: {}
 `)
 
@@ -69,12 +69,12 @@ triggers:
   patterns: []
 vocabulary:
   verbs:
-    draft: draft
+    draft: [draft]
   types:
-    blog: blog
+    blog: [blog]
   sources: {}
   modifiers:
-    today: today
+    today: [today]
 templates:
   priority: 50
   entries:
@@ -117,14 +117,14 @@ func TestLoadVocabulary(t *testing.T) {
 		t.Fatalf("failed to load config: %v", err)
 	}
 
-	if cfg.Vocabulary.Verbs["draft"] != "draft" {
-		t.Errorf("expected verb draft→draft, got %s", cfg.Vocabulary.Verbs["draft"])
+	if cfg.Vocabulary.Verbs["draft"][0] != "draft" {
+		t.Errorf("expected verb draft→draft, got %s", cfg.Vocabulary.Verbs["draft"][0])
 	}
-	if cfg.Vocabulary.Verbs["remember"] != "memory.store" {
-		t.Errorf("expected verb remember→memory.store, got %s", cfg.Vocabulary.Verbs["remember"])
+	if cfg.Vocabulary.Verbs["remember"][0] != "memory.store" {
+		t.Errorf("expected verb remember→memory.store, got %s", cfg.Vocabulary.Verbs["remember"][0])
 	}
-	if cfg.Vocabulary.Sources["notes"] != "memory" {
-		t.Errorf("expected source notes→memory, got %s", cfg.Vocabulary.Sources["notes"])
+	if cfg.Vocabulary.Sources["notes"][0] != "memory" {
+		t.Errorf("expected source notes→memory, got %s", cfg.Vocabulary.Sources["notes"][0])
 	}
 }
 
@@ -227,9 +227,9 @@ triggers:
   patterns: []
 vocabulary:
   verbs:
-    run: alpha
+    run: [alpha]
   types:
-    report: report
+    report: [report]
   sources: {}
   modifiers: {}
 `)
@@ -244,12 +244,12 @@ triggers:
   patterns: []
 vocabulary:
   verbs:
-    build: beta
+    build: [beta]
   types: {}
   sources:
-    logs: beta
+    logs: [beta]
   modifiers:
-    recent: recent
+    recent: [recent]
 `)
 
 	cfg, err := Load(configDir, pipesDir)
@@ -257,24 +257,24 @@ vocabulary:
 		t.Fatalf("failed to load config: %v", err)
 	}
 
-	if cfg.Vocabulary.Verbs["run"] != "alpha" {
-		t.Errorf("expected verb run→alpha, got %s", cfg.Vocabulary.Verbs["run"])
+	if cfg.Vocabulary.Verbs["run"][0] != "alpha" {
+		t.Errorf("expected verb run→alpha, got %s", cfg.Vocabulary.Verbs["run"][0])
 	}
-	if cfg.Vocabulary.Verbs["build"] != "beta" {
-		t.Errorf("expected verb build→beta, got %s", cfg.Vocabulary.Verbs["build"])
+	if cfg.Vocabulary.Verbs["build"][0] != "beta" {
+		t.Errorf("expected verb build→beta, got %s", cfg.Vocabulary.Verbs["build"][0])
 	}
-	if cfg.Vocabulary.Types["report"] != "report" {
-		t.Errorf("expected type report→report, got %s", cfg.Vocabulary.Types["report"])
+	if cfg.Vocabulary.Types["report"][0] != "report" {
+		t.Errorf("expected type report→report, got %s", cfg.Vocabulary.Types["report"][0])
 	}
-	if cfg.Vocabulary.Sources["logs"] != "beta" {
-		t.Errorf("expected source logs→beta, got %s", cfg.Vocabulary.Sources["logs"])
+	if cfg.Vocabulary.Sources["logs"][0] != "beta" {
+		t.Errorf("expected source logs→beta, got %s", cfg.Vocabulary.Sources["logs"][0])
 	}
-	if cfg.Vocabulary.Modifiers["recent"] != "recent" {
-		t.Errorf("expected modifier recent→recent, got %s", cfg.Vocabulary.Modifiers["recent"])
+	if cfg.Vocabulary.Modifiers["recent"][0] != "recent" {
+		t.Errorf("expected modifier recent→recent, got %s", cfg.Vocabulary.Modifiers["recent"][0])
 	}
 }
 
-func TestVocabularyConflictDetection(t *testing.T) {
+func TestVocabularyMultipleMappings(t *testing.T) {
 	configDir := t.TempDir()
 	pipesDir := t.TempDir()
 
@@ -294,7 +294,7 @@ triggers:
   patterns: []
 vocabulary:
   verbs:
-    run: alpha
+    run: [alpha]
   types: {}
   sources: {}
   modifiers: {}
@@ -310,18 +310,19 @@ triggers:
   patterns: []
 vocabulary:
   verbs:
-    run: beta
+    run: [beta]
   types: {}
   sources: {}
   modifiers: {}
 `)
 
-	_, err := Load(configDir, pipesDir)
-	if err == nil {
-		t.Fatal("expected vocabulary conflict error")
+	cfg, err := Load(configDir, pipesDir)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
 	}
-	if !strings.Contains(err.Error(), "vocabulary conflict") {
-		t.Errorf("expected 'vocabulary conflict' in error, got: %s", err.Error())
+	// Both mappings should be preserved
+	if len(cfg.Vocabulary.Verbs["run"]) != 2 {
+		t.Errorf("expected 2 mappings for 'run', got %d: %v", len(cfg.Vocabulary.Verbs["run"]), cfg.Vocabulary.Verbs["run"])
 	}
 }
 
@@ -345,7 +346,7 @@ triggers:
   patterns: []
 vocabulary:
   verbs:
-    run: shared
+    run: [shared]
   types: {}
   sources: {}
   modifiers: {}
@@ -361,7 +362,7 @@ triggers:
   patterns: []
 vocabulary:
   verbs:
-    run: shared
+    run: [shared]
   types: {}
   sources: {}
   modifiers: {}
@@ -371,8 +372,8 @@ vocabulary:
 	if err != nil {
 		t.Fatalf("expected no error for identical mapping, got: %v", err)
 	}
-	if cfg.Vocabulary.Verbs["run"] != "shared" {
-		t.Errorf("expected verb run→shared, got %s", cfg.Vocabulary.Verbs["run"])
+	if len(cfg.Vocabulary.Verbs["run"]) != 2 || cfg.Vocabulary.Verbs["run"][0] != "shared" || cfg.Vocabulary.Verbs["run"][1] != "shared" {
+		t.Errorf("expected verb run to have [shared, shared], got %v", cfg.Vocabulary.Verbs["run"])
 	}
 }
 
@@ -948,4 +949,3 @@ func TestDailyPath(t *testing.T) {
 		t.Errorf("DailyPath = %q, want %q", got, want)
 	}
 }
-

@@ -18,6 +18,12 @@ triggers:
   keywords:
     - chat
     - talk
+    - ask
+    - question
+    - discuss
+    - conversation
+    - help
+    - answer
   patterns: []
 
 flags:
@@ -43,15 +49,15 @@ memory:
 
 vocabulary:
   verbs:
-    chat: chat
-    talk: chat
+    chat: [chat]
+    talk: [chat]
   types: {}
   sources:
-    codebase: codebase
-    code: codebase
-    repo: codebase
-    memory: memory
-    files: files
+    codebase: [codebase]
+    code: [codebase]
+    repo: [codebase]
+    memory: [memory]
+    files: [files]
   modifiers: {}
 
 templates:

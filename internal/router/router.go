@@ -96,9 +96,12 @@ func pipeRoutingTerms(def pipe.Definition) []string {
 	for word := range def.Vocabulary.Sources {
 		terms = append(terms, word)
 	}
-	for word, target := range def.Vocabulary.Verbs {
-		if target == def.Name || strings.HasPrefix(target, def.Name+".") {
-			terms = append(terms, word)
+	for word, targets := range def.Vocabulary.Verbs {
+		for _, target := range targets {
+			if target == def.Name || strings.HasPrefix(target, def.Name+".") {
+				terms = append(terms, word)
+				break
+			}
 		}
 	}
 	return terms

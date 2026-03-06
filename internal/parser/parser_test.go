@@ -8,32 +8,32 @@ import (
 
 func testVocab() *Vocabulary {
 	return LoadVocabulary(config.VocabularyConfig{
-		Verbs: map[string]string{
-			"draft":    "draft",
-			"write":    "draft",
-			"compose":  "draft",
-			"remember": "memory.store",
-			"recall":   "memory.retrieve",
-			"know":     "memory.retrieve",
-			"check":    "calendar",
-			"show":     "calendar",
+		Verbs: map[string][]string{
+			"draft":    {"draft"},
+			"write":    {"draft"},
+			"compose":  {"draft"},
+			"remember": {"memory.store"},
+			"recall":   {"memory.retrieve"},
+			"know":     {"memory.retrieve"},
+			"check":    {"calendar"},
+			"show":     {"calendar"},
 		},
-		Types: map[string]string{
-			"blog":  "blog",
-			"email": "email",
-			"pr":    "pr",
-			"memo":  "memo",
+		Types: map[string][]string{
+			"blog":  {"blog"},
+			"email": {"email"},
+			"pr":    {"pr"},
+			"memo":  {"memo"},
 		},
-		Sources: map[string]string{
-			"notes":    "memory",
-			"calendar": "calendar",
-			"memory":   "memory",
+		Sources: map[string][]string{
+			"notes":    {"memory"},
+			"calendar": {"calendar"},
+			"memory":   {"memory"},
 		},
-		Modifiers: map[string]string{
-			"recent":    "recent",
-			"today":     "today",
-			"tomorrow":  "tomorrow",
-			"this week": "this-week",
+		Modifiers: map[string][]string{
+			"recent":    {"recent"},
+			"today":     {"today"},
+			"tomorrow":  {"tomorrow"},
+			"this week": {"this-week"},
 		},
 	})
 }

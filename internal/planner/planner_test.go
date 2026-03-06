@@ -47,10 +47,10 @@ func testPlanner() *Planner {
 		},
 	}
 
-	sources := map[string]string{
-		"notes":    "memory",
-		"calendar": "calendar",
-		"memory":   "memory",
+	sources := map[string][]string{
+		"notes":    {"memory"},
+		"calendar": {"calendar"},
+		"memory":   {"memory"},
 	}
 
 	return New(templates, sources, nil)
@@ -279,7 +279,7 @@ func TestPlanVerbSourceSamePipeCollapsedMergesFlags(t *testing.T) {
 			},
 		},
 	}
-	sources := map[string]string{"memory": "memory"}
+	sources := map[string][]string{"memory": {"memory"}}
 	p := New(templates, sources, nil)
 
 	parsed := parser.ParsedSignal{

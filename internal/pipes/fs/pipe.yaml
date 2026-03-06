@@ -20,6 +20,12 @@ triggers:
     - folder
     - path
     - glob
+    - open
+    - view
+    - find
+    - search
+    - dir
+    - mkdir
   patterns:
     - "read {path}"
     - "list files in {path}"
@@ -47,18 +53,18 @@ format:
 
 vocabulary:
   verbs:
-    read: fs.read
-    list: fs.list
-    find: fs.list
-    save: fs.write
-    persist: fs.write
+    read: [fs.read]
+    list: [fs.list]
+    find: [fs.list]
+    save: [fs.write]
+    persist: [fs.write]
   types:
-    file: file
-    directory: directory
-    folder: directory
+    file: [file]
+    directory: [directory]
+    folder: [directory]
   sources:
-    filesystem: fs
-    disk: fs
+    filesystem: [fs]
+    disk: [fs]
   modifiers: {}
 
 templates:

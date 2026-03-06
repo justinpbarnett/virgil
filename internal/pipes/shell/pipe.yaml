@@ -8,6 +8,12 @@ triggers:
     - "execute command"
   keywords:
     - shell
+    - command
+    - bash
+    - terminal
+    - script
+    - cmd
+    - execute
   patterns:
     - "run {type}"
     - "execute {type}"
@@ -29,14 +35,14 @@ flags:
 
 vocabulary:
   verbs:
-    run: shell
-    execute: shell
-    test: shell
-    vet: shell
-    lint: shell
+    run: [shell]
+    execute: [shell]
+    test: [shell]
+    vet: [shell]
+    lint: [shell]
   types:
-    build: build
-    vet: vet
+    build: [build]
+    vet: [vet]
   sources: {}
   modifiers: {}
 

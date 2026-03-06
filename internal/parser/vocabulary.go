@@ -3,10 +3,10 @@ package parser
 import "github.com/justinpbarnett/virgil/internal/config"
 
 type Vocabulary struct {
-	Verbs     map[string]string // word → pipe name or pipe.action
-	Types     map[string]string
-	Sources   map[string]string
-	Modifiers map[string]string
+	Verbs     map[string][]string // word -> []pipe name or pipe.action
+	Types     map[string][]string
+	Sources   map[string][]string
+	Modifiers map[string][]string
 }
 
 func LoadVocabulary(cfg config.VocabularyConfig) *Vocabulary {

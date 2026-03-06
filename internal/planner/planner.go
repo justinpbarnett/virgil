@@ -13,11 +13,11 @@ import (
 
 type Planner struct {
 	templates []config.TemplateEntry
-	sources   map[string]string // source name → pipe name
+	sources   map[string][]string // source name → []pipe names
 	logger    *slog.Logger
 }
 
-func New(templates config.TemplatesConfig, sources map[string]string, logger *slog.Logger) *Planner {
+func New(templates config.TemplatesConfig, sources map[string][]string, logger *slog.Logger) *Planner {
 	if logger == nil {
 		logger = slog.Default()
 	}
@@ -29,13 +29,15 @@ func New(templates config.TemplatesConfig, sources map[string]string, logger *sl
 }
 
 func (p *Planner) Plan(route router.RouteResult, parsed parser.ParsedSignal) runtime.Plan {
+	verb, action := reconcileAmbiguousVerb(parsed, route.Pipe)
+
 	// Try template matching (component-presence-based, scoped to routed pipe)
 	for _, tmpl := range p.templates {
 		if tmpl.Pipe != "" && tmpl.Pipe != route.Pipe {
 			continue
 		}
-		if p.matchesRequirements(tmpl.Requires, parsed) {
-			plan := p.resolveTemplate(tmpl, parsed)
+		if matchesRequirements(tmpl.Requires, parsed, verb) {
+			plan := p.resolveTemplate(tmpl, parsed, verb, action)
 			p.logger.Info("planned", "steps", len(plan.Steps))
 			p.logger.Debug("template matched", "requires", tmpl.Requires, "steps", len(plan.Steps))
 			return plan
@@ -43,33 +45,28 @@ func (p *Planner) Plan(route router.RouteResult, parsed parser.ParsedSignal) run
 	}
 
 	// No template match — single step plan for the routed pipe
-	// Capacity hint: up to 3 entries (action, topic, modifier).
-	flags := make(map[string]string, 3)
-	if parsed.Action != "" {
-		flags["action"] = parsed.Action
-	}
-	if parsed.Topic != "" {
-		flags["topic"] = parsed.Topic
-	}
-	if parsed.Modifier != "" {
-		flags["modifier"] = parsed.Modifier
-	}
-
-	plan := runtime.Plan{
-		Steps: []runtime.Step{
-			{Pipe: route.Pipe, Flags: flags},
-		},
-	}
-	p.logger.Info("planned", "steps", len(plan.Steps))
-	p.logger.Debug("no template, single step", "pipe", route.Pipe)
-	return plan
+	return p.singleStepPlan(route.Pipe, parsed, action)
 }
 
-func (p *Planner) matchesRequirements(requires []string, parsed parser.ParsedSignal) bool {
+func reconcileAmbiguousVerb(parsed parser.ParsedSignal, routedPipe string) (string, string) {
+	if parsed.Verb != "" {
+		return parsed.Verb, parsed.Action
+	}
+
+	// Check if the routed pipe matches any of the ambiguous verbs
+	for _, v := range parsed.Verbs {
+		if v == routedPipe {
+			return v, parsed.Actions[v]
+		}
+	}
+	return "", ""
+}
+
+func matchesRequirements(requires []string, parsed parser.ParsedSignal, verb string) bool {
 	for _, req := range requires {
 		switch req {
 		case "verb":
-			if parsed.Verb == "" {
+			if verb == "" {
 				return false
 			}
 		case "type":
@@ -93,7 +90,27 @@ func (p *Planner) matchesRequirements(requires []string, parsed parser.ParsedSig
 	return true
 }
 
-func (p *Planner) resolveTemplate(tmpl config.TemplateEntry, parsed parser.ParsedSignal) runtime.Plan {
+func (p *Planner) singleStepPlan(pipe string, parsed parser.ParsedSignal, action string) runtime.Plan {
+	flags := make(map[string]string, 3)
+	if action != "" {
+		flags["action"] = action
+	}
+	if parsed.Topic != "" {
+		flags["topic"] = parsed.Topic
+	}
+	if parsed.Modifier != "" {
+		flags["modifier"] = parsed.Modifier
+	}
+
+	plan := runtime.Plan{
+		Steps: []runtime.Step{{Pipe: pipe, Flags: flags}},
+	}
+	p.logger.Info("planned", "steps", len(plan.Steps))
+	p.logger.Debug("no template, single step", "pipe", pipe)
+	return plan
+}
+
+func (p *Planner) resolveTemplate(tmpl config.TemplateEntry, parsed parser.ParsedSignal, verb string, action string) runtime.Plan {
 	var steps []runtime.Step
 
 	for _, planStep := range tmpl.Plan {
@@ -104,42 +121,40 @@ func (p *Planner) resolveTemplate(tmpl config.TemplateEntry, parsed parser.Parse
 			flags[k] = p.resolveVar(v, parsed)
 		}
 
-		// Add action from parser if available and not already in flags
-		if _, hasAction := flags["action"]; !hasAction && parsed.Action != "" {
-			flags["action"] = parsed.Action
+		// Add action and topic from parser if not already in flags
+		if action != "" {
+			flags["action"] = action
 		}
-
-		// Add topic from parser if available and not already in flags
-		if _, hasTopic := flags["topic"]; !hasTopic && parsed.Topic != "" {
+		if parsed.Topic != "" {
 			flags["topic"] = parsed.Topic
 		}
 
 		steps = append(steps, runtime.Step{Pipe: pipeName, Flags: flags})
 	}
 
-	// Collapse consecutive steps targeting the same pipe.
-	// This prevents redundant execution when verb and source resolve
-	// to the same pipe (e.g., "check my calendar" → calendar→calendar
-	// collapses to a single calendar step). Flags from the later step
-	// are merged in (earlier step wins on conflicts).
-	if len(steps) > 1 {
-		collapsed := []runtime.Step{steps[0]}
-		for i := 1; i < len(steps); i++ {
-			last := &collapsed[len(collapsed)-1]
-			if steps[i].Pipe != last.Pipe {
-				collapsed = append(collapsed, steps[i])
-			} else {
-				for k, v := range steps[i].Flags {
-					if _, exists := last.Flags[k]; !exists {
-						last.Flags[k] = v
-					}
+	return runtime.Plan{Steps: collapseConsecutiveSteps(steps)}
+}
+
+func collapseConsecutiveSteps(steps []runtime.Step) []runtime.Step {
+	if len(steps) <= 1 {
+		return steps
+	}
+
+	collapsed := []runtime.Step{steps[0]}
+	for i := 1; i < len(steps); i++ {
+		last := &collapsed[len(collapsed)-1]
+		if steps[i].Pipe != last.Pipe {
+			collapsed = append(collapsed, steps[i])
+		} else {
+			// Merge flags from later step (earlier wins on conflicts)
+			for k, v := range steps[i].Flags {
+				if _, exists := last.Flags[k]; !exists {
+					last.Flags[k] = v
 				}
 			}
 		}
-		steps = collapsed
 	}
-
-	return runtime.Plan{Steps: steps}
+	return collapsed
 }
 
 // varSyntax converts pipe.yaml variable syntax ({verb}) to Go template syntax ({{.Verb}}).
@@ -165,8 +180,8 @@ func (p *Planner) resolveVar(s string, parsed parser.ParsedSignal) string {
 	}
 
 	sourcePipe := parsed.Source
-	if mapped, ok := p.sources[parsed.Source]; ok {
-		sourcePipe = mapped
+	if mapped, ok := p.sources[parsed.Source]; ok && len(mapped) > 0 {
+		sourcePipe = mapped[0]
 	}
 
 	tmpl, err := template.New("").Option("missingkey=zero").Parse(varSyntax.Replace(s))

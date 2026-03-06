@@ -13,6 +13,10 @@ triggers:
     - implement
     - construct
     - compile
+    - feature
+    - develop
+    - development
+    - create
   patterns:
     - "build {topic}"
     - "implement {topic}"
@@ -38,9 +42,9 @@ flags:
 
 vocabulary:
   verbs:
-    build: build
-    implement: build
-    construct: build
+    build: [build]
+    implement: [build]
+    construct: [build]
   types: {}
   sources: {}
   modifiers: {}

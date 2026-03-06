@@ -18,6 +18,14 @@ triggers:
     - debug
     - bug
     - broken
+    - error
+    - issue
+    - problem
+    - failure
+    - resolve
+    - solve
+    - crash
+    - exception
   patterns:
     - "fix {topic}"
     - "fix errors in {topic}"
@@ -33,10 +41,10 @@ flags:
 
 vocabulary:
   verbs:
-    fix: fix
-    repair: fix
-    correct: fix
-    patch: fix
+    fix: [fix]
+    repair: [fix]
+    correct: [fix]
+    patch: [fix]
   types: {}
   sources: {}
   modifiers: {}

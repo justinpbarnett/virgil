@@ -17,6 +17,11 @@ triggers:
     - story
     - epic
     - bug
+    - project
+    - board
+    - blocker
+    - work
+    - report
   patterns:
     - "get {topic}"
     - "update {topic}"
@@ -67,18 +72,18 @@ format:
 
 vocabulary:
   verbs:
-    jira: jira.get
+    jira: [jira.get]
   types:
-    ticket: ticket
-    issue: issue
-    story: story
-    epic: epic
-    bug: bug
-    task: task
+    ticket: [ticket]
+    issue: [issue]
+    story: [story]
+    epic: [epic]
+    bug: [bug]
+    task: [task]
   sources:
-    jira: jira
-    tickets: jira
-    issues: jira
+    jira: [jira]
+    tickets: [jira]
+    issues: [jira]
   modifiers: {}
 
 templates:

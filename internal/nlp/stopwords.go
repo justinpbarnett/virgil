@@ -10,8 +10,9 @@ func Stem(word string) string {
 	return word
 }
 
-// LookupStemmed looks up word in m, falling back to its Porter2 stem.
-func LookupStemmed(m map[string]string, word string) (string, bool) {
+// LookupStemmedList looks up word in m, falling back to its Porter2 stem.
+// Returns all matching values (slice) or nil if not found.
+func LookupStemmedList(m map[string][]string, word string) ([]string, bool) {
 	if v, ok := m[word]; ok {
 		return v, true
 	}
@@ -20,7 +21,7 @@ func LookupStemmed(m map[string]string, word string) (string, bool) {
 			return v, true
 		}
 	}
-	return "", false
+	return nil, false
 }
 
 // stopWords contains common English stop words plus application-specific

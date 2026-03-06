@@ -17,6 +17,12 @@ triggers:
     - function
     - module
     - refactor
+    - snippet
+    - class
+    - struct
+    - method
+    - interface
+    - write
   patterns:
     - "code {type}"
     - "generate {type}"
@@ -39,16 +45,16 @@ flags:
 
 vocabulary:
   verbs:
-    code: code
-    generate: code
-    refactor: code.refactor
+    code: [code]
+    generate: [code]
+    refactor: [code.refactor]
   types:
-    function: function
-    func: function
-    module: module
-    package: module
-    test: test
-    refactor: refactor
+    function: [function]
+    func: [function]
+    module: [module]
+    package: [module]
+    test: [test]
+    refactor: [refactor]
   sources: {}
   modifiers: {}
 

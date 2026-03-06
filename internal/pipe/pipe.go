@@ -20,10 +20,10 @@ type Definition struct {
 }
 
 type DefinitionVocabulary struct {
-	Verbs     map[string]string
-	Sources   map[string]string
-	Types     map[string]string
-	Modifiers map[string]string
+	Verbs     map[string][]string
+	Sources   map[string][]string
+	Types     map[string][]string
+	Modifiers map[string][]string
 }
 
 type Triggers struct {
@@ -38,4 +38,3 @@ type Flag struct {
 	Default     string   `yaml:"default" json:"default"`
 	Required    bool     `yaml:"required" json:"required"`
 }
-

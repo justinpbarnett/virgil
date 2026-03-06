@@ -16,6 +16,11 @@ triggers:
     - verify
     - critique
     - assess
+    - check
+    - feedback
+    - inspect
+    - quality
+    - examine
   patterns:
     - "review {type}"
     - "review {source} against {topic}"
@@ -47,19 +52,19 @@ flags:
 
 vocabulary:
   verbs:
-    review: review
-    evaluate: review
-    audit: review
-    critique: review
+    review: [review]
+    evaluate: [review]
+    audit: [review]
+    critique: [review]
   types:
-    code: code
-    spec: spec
-    text: text
-    pr: pr
+    code: [code]
+    spec: [spec]
+    text: [text]
+    pr: [pr]
   sources:
-    pr-diff: pr-diff
-    diff: pr-diff
-    pr: pr-diff
+    pr-diff: [pr-diff]
+    diff: [pr-diff]
+    pr: [pr-diff]
   modifiers: {}
 
 templates:

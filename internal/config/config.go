@@ -327,10 +327,10 @@ type TemplateContrib struct {
 }
 
 type VocabularyConfig struct {
-	Verbs     map[string]string `yaml:"verbs"`
-	Types     map[string]string `yaml:"types"`
-	Sources   map[string]string `yaml:"sources"`
-	Modifiers map[string]string `yaml:"modifiers"`
+	Verbs     map[string][]string `yaml:"verbs"`
+	Types     map[string][]string `yaml:"types"`
+	Sources   map[string][]string `yaml:"sources"`
+	Modifiers map[string][]string `yaml:"modifiers"`
 }
 
 type TemplatesConfig struct {
@@ -346,6 +346,31 @@ type TemplateEntry struct {
 type PlanStep struct {
 	Pipe  string            `yaml:"pipe"`
 	Flags map[string]string `yaml:"flags"`
+}
+
+// LoopConfig declares a repeating loop within a pipeline.
+// The loop executes its named steps in order, evaluates the Until condition
+// after each full iteration, and exits when satisfied or when Max is reached.
+type LoopConfig struct {
+	Name  string   `yaml:"name"`
+	Steps []string `yaml:"steps"`  // step names forming the loop body
+	Until string   `yaml:"until"`  // condition expression evaluated after each iteration
+	Max   int      `yaml:"max"`    // iteration cap; 0 means unlimited (not recommended)
+}
+
+// PipelineStepConfig is a single step in a pipeline.
+type PipelineStepConfig struct {
+	Name      string            `yaml:"name"`
+	Pipe      string            `yaml:"pipe"`
+	Args      map[string]string `yaml:"args"`
+	Condition string            `yaml:"condition"`
+}
+
+// PipelineConfig declares a pipeline: an ordered list of steps with optional loop overlays.
+type PipelineConfig struct {
+	Name  string               `yaml:"name"`
+	Steps []PipelineStepConfig `yaml:"steps"`
+	Loops []LoopConfig         `yaml:"loops"`
 }
 
 func Load(configDir string, pipesDir string) (*Config, error) {
@@ -400,9 +425,7 @@ func Load(configDir string, pipesDir string) (*Config, error) {
 	}
 
 	// Merge vocabulary from all pipes
-	if err := mergeVocabulary(cfg); err != nil {
-		return nil, err
-	}
+	mergeVocabulary(cfg)
 
 	// Merge templates from all pipes
 	mergeTemplates(cfg)
@@ -410,47 +433,26 @@ func Load(configDir string, pipesDir string) (*Config, error) {
 	return cfg, nil
 }
 
-func mergeVocabulary(cfg *Config) error {
+func mergeVocabulary(cfg *Config) {
 	cfg.Vocabulary = VocabularyConfig{
-		Verbs:     make(map[string]string),
-		Types:     make(map[string]string),
-		Sources:   make(map[string]string),
-		Modifiers: make(map[string]string),
+		Verbs:     make(map[string][]string),
+		Types:     make(map[string][]string),
+		Sources:   make(map[string][]string),
+		Modifiers: make(map[string][]string),
 	}
 
-	merge := func(category string, target map[string]string, source map[string]string) error {
-		for word, mapping := range source {
-			if existing, ok := target[word]; ok {
-				if existing != mapping {
-					return fmt.Errorf("vocabulary conflict in %s: word %q mapped to %q and %q by different pipes", category, word, existing, mapping)
-				}
-				// Same mapping is fine (idempotent)
-				continue
-			}
-			target[word] = mapping
+	merge := func(target map[string][]string, source map[string][]string) {
+		for word, mappings := range source {
+			target[word] = append(target[word], mappings...)
 		}
-		return nil
 	}
 
 	for _, pc := range cfg.Pipes {
-		categories := []struct {
-			name   string
-			target map[string]string
-			source map[string]string
-		}{
-			{"verbs", cfg.Vocabulary.Verbs, pc.Vocabulary.Verbs},
-			{"types", cfg.Vocabulary.Types, pc.Vocabulary.Types},
-			{"sources", cfg.Vocabulary.Sources, pc.Vocabulary.Sources},
-			{"modifiers", cfg.Vocabulary.Modifiers, pc.Vocabulary.Modifiers},
-		}
-		for _, c := range categories {
-			if err := merge(c.name, c.target, c.source); err != nil {
-				return err
-			}
-		}
+		merge(cfg.Vocabulary.Verbs, pc.Vocabulary.Verbs)
+		merge(cfg.Vocabulary.Types, pc.Vocabulary.Types)
+		merge(cfg.Vocabulary.Sources, pc.Vocabulary.Sources)
+		merge(cfg.Vocabulary.Modifiers, pc.Vocabulary.Modifiers)
 	}
-
-	return nil
 }
 
 func mergeTemplates(cfg *Config) {
