@@ -42,7 +42,7 @@ func testDefs() []pipe.Definition {
 			Category: "general",
 			Triggers: pipe.Triggers{
 				Exact:    []string{"hey", "hi", "hello", "hey virgil", "hi virgil", "hello virgil"},
-				Keywords: []string{"chat", "talk", "hello", "hi", "hey"},
+				Keywords: []string{"chat", "talk"},
 			},
 		},
 	}
@@ -50,6 +50,7 @@ func testDefs() []pipe.Definition {
 
 func TestLayer1ExactMatch(t *testing.T) {
 	r := NewRouter(testDefs(), nil)
+	defer r.Close()
 	result := r.Route(context.Background(), "check my calendar", parser.ParsedSignal{})
 
 	if result.Pipe != "calendar" {
@@ -65,7 +66,7 @@ func TestLayer1ExactMatch(t *testing.T) {
 
 func TestLayer2KeywordScoring(t *testing.T) {
 	r := NewRouter(testDefs(), nil)
-	// Signal hits 3 of 4 calendar keywords: calendar, schedule, meeting → 75% > 60% threshold
+	defer r.Close()
 	result := r.Route(context.Background(), "show my calendar schedule for the meeting", parser.ParsedSignal{})
 
 	if result.Pipe != "calendar" {
@@ -78,6 +79,7 @@ func TestLayer2KeywordScoring(t *testing.T) {
 
 func TestLayer3CategoryNarrowing(t *testing.T) {
 	r := NewRouter(testDefs(), nil)
+	defer r.Close()
 	parsed := parser.ParsedSignal{
 		Verb:   "memory",
 		Action: "retrieve",
@@ -93,6 +95,7 @@ func TestLayer3CategoryNarrowing(t *testing.T) {
 
 func TestLayer4StubFallback(t *testing.T) {
 	r := NewRouter(testDefs(), nil)
+	defer r.Close()
 	result := r.Route(context.Background(), "xyzzy foobar", parser.ParsedSignal{})
 
 	if result.Pipe != "chat" {
@@ -108,16 +111,13 @@ func TestLayer4StubFallback(t *testing.T) {
 
 func TestLayer4MissMetadataPopulated(t *testing.T) {
 	r := NewRouter(testDefs(), nil)
-	// "calendar" is a keyword match; "xyzzy" and "foobar" are not
-	result := r.Route(context.Background(), "xyzzy calendar foobar", parser.ParsedSignal{})
+	defer r.Close()
 
-	// Should be a keyword match for calendar, not a fallback
-	// Try with completely unknown words to get Layer 4
-	result = r.Route(context.Background(), "xyzzy foobar", parser.ParsedSignal{})
+	result := r.Route(context.Background(), "xyzzy foobar", parser.ParsedSignal{})
 	if result.Layer != LayerFallback {
 		t.Fatalf("expected layer 4 fallback, got layer %d", result.Layer)
 	}
-	// KeywordsNotFound should contain the unknown words
+	// KeywordsNotFound should contain the unknown words (stop-word filtered)
 	if len(result.KeywordsNotFound) == 0 {
 		t.Error("expected KeywordsNotFound to be populated at Layer 4")
 	}
@@ -132,7 +132,6 @@ func TestMissLogStructure(t *testing.T) {
 	}
 	defer missLog.Close()
 
-	// Miss log is now written by the server; test the MissLog.Log API directly
 	_ = missLog.Log(MissEntry{
 		Signal:           "completely unknown input",
 		KeywordsFound:    []string{},
@@ -169,6 +168,7 @@ func TestWhQuestionFallsToChat(t *testing.T) {
 		},
 	})
 	r := NewRouter(defs, nil)
+	defer r.Close()
 
 	// "visualize" appears in the signal as a topic of a question, not as a command
 	parsed := parser.ParsedSignal{Verb: "visualize", IsQuestion: true}
@@ -182,12 +182,9 @@ func TestWhQuestionFallsToChat(t *testing.T) {
 	}
 }
 
-// TestWhQuestionWithSourceRoutesToPipe verifies that a wh-question whose
-// parsed source matches a pipe name routes to that pipe instead of falling
-// through to chat. Regression test: "what's on my calendar today?" was
-// falling to chat → study(source=calendar) → "unsupported source: calendar".
 func TestWhQuestionWithSourceRoutesToPipe(t *testing.T) {
 	r := NewRouter(testDefs(), nil)
+	defer r.Close()
 
 	parsed := parser.ParsedSignal{
 		Source:     "calendar",
@@ -199,13 +196,11 @@ func TestWhQuestionWithSourceRoutesToPipe(t *testing.T) {
 	if result.Pipe != "calendar" {
 		t.Errorf("expected calendar for question with source=calendar, got %s", result.Pipe)
 	}
-	if result.Layer != LayerCategory {
-		t.Errorf("expected layer %d, got %d", LayerCategory, result.Layer)
-	}
 }
 
 func TestGreetingExactMatch(t *testing.T) {
 	r := NewRouter(testDefs(), nil)
+	defer r.Close()
 
 	tests := []struct {
 		signal string
@@ -230,9 +225,8 @@ func TestGreetingExactMatch(t *testing.T) {
 
 func TestShortKeywordSignalMatchesLayer2(t *testing.T) {
 	r := NewRouter(testDefs(), nil)
+	defer r.Close()
 
-	// Single keyword should match even though the pipe has multiple keywords.
-	// Signal coverage: 1/1 = 100% ≥ 60% threshold.
 	result := r.Route(context.Background(), "meeting", parser.ParsedSignal{})
 
 	if result.Pipe != "calendar" {
@@ -245,6 +239,7 @@ func TestShortKeywordSignalMatchesLayer2(t *testing.T) {
 
 func TestExactMatchCaseInsensitive(t *testing.T) {
 	r := NewRouter(testDefs(), nil)
+	defer r.Close()
 	result := r.Route(context.Background(), "Check My Calendar", parser.ParsedSignal{})
 
 	if result.Pipe != "calendar" {
@@ -255,9 +250,67 @@ func TestExactMatchCaseInsensitive(t *testing.T) {
 	}
 }
 
-// TestLayer4FallbackToChat verifies that unrecognized signals default to chat.
+func TestQuestionSingleKeywordRoutes(t *testing.T) {
+	defs := []pipe.Definition{
+		{
+			Name:     "mail",
+			Category: "comms",
+			Triggers: pipe.Triggers{
+				Keywords: []string{"email", "mail", "inbox"},
+			},
+		},
+		{
+			Name:     "chat",
+			Category: "general",
+			Triggers: pipe.Triggers{
+				Keywords: []string{"chat"},
+			},
+		},
+	}
+	r := NewRouter(defs, nil)
+	defer r.Close()
+
+	// "any" is a stop word, so "emails" is the only scoring word.
+	// It stems to "email" which matches mail. Should route, not dampen.
+	result := r.Route(context.Background(), "any emails?", parser.ParsedSignal{IsQuestion: true})
+	if result.Pipe != "mail" {
+		t.Errorf("expected mail for 'any emails?', got %s (layer %d)", result.Pipe, result.Layer)
+	}
+	if result.Layer != LayerKeyword {
+		t.Errorf("expected layer %d, got %d", LayerKeyword, result.Layer)
+	}
+}
+
+func TestQuestionMultiWordStillDampened(t *testing.T) {
+	defs := []pipe.Definition{
+		{
+			Name:     "shell",
+			Category: "dev",
+			Triggers: pipe.Triggers{
+				Keywords: []string{"shell"},
+			},
+		},
+		{
+			Name:     "chat",
+			Category: "general",
+			Triggers: pipe.Triggers{
+				Keywords: []string{"chat"},
+			},
+		},
+	}
+	r := NewRouter(defs, nil)
+	defer r.Close()
+
+	// "shell" matches but "program" doesn't — 1 hit with 2 scoring words.
+	result := r.Route(context.Background(), "shell program?", parser.ParsedSignal{IsQuestion: true})
+	if result.Pipe != "chat" {
+		t.Errorf("expected chat (dampened), got %s", result.Pipe)
+	}
+}
+
 func TestLayer4FallbackToChat(t *testing.T) {
 	r := NewRouter(testDefs(), nil)
+	defer r.Close()
 
 	result := r.Route(context.Background(), "xyzzy foobar totally unmatched", parser.ParsedSignal{})
 

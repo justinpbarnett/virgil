@@ -130,7 +130,7 @@ type aiPlanStep struct {
 // Plan calls the AI provider to produce an execution plan for the given signal.
 // Returns nil, 0.0 on any failure — Layer 4 must never block or panic.
 func (ap *AIPlanner) Plan(signal string, memory PlannerMemory) (*runtime.Plan, float64) {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
 	userMessage := buildPlannerUserMessage(signal, memory)

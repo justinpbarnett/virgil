@@ -203,7 +203,7 @@ func TestPlanInvalidJSON(t *testing.T) {
 
 func TestPlanTimeout(t *testing.T) {
 	provider := &mockProvider{
-		delay:    6 * time.Second, // beyond 5-second timeout
+		delay:    11 * time.Second, // beyond 10-second timeout
 		response: `{"pipe": "calendar", "flags": {}}`,
 	}
 	ap := NewAIPlanner(provider, testDefs(), nil)
@@ -218,9 +218,9 @@ func TestPlanTimeout(t *testing.T) {
 	if conf != 0.0 {
 		t.Errorf("expected confidence 0.0, got %f", conf)
 	}
-	// Should complete within ~5.5s (timeout + small buffer), not 6s
-	if elapsed > 5500*time.Millisecond {
-		t.Errorf("expected timeout to fire within 5.5s, took %v", elapsed)
+	// Should complete within ~10.5s (timeout + small buffer), not 11s
+	if elapsed > 10500*time.Millisecond {
+		t.Errorf("expected timeout to fire within 10.5s, took %v", elapsed)
 	}
 }
 

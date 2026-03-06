@@ -5,6 +5,8 @@ import (
 	"log/slog"
 	"strings"
 
+	"github.com/blevesearch/bleve/v2"
+	"github.com/blevesearch/bleve/v2/mapping"
 	"github.com/justinpbarnett/virgil/internal/nlp"
 	"github.com/justinpbarnett/virgil/internal/parser"
 	"github.com/justinpbarnett/virgil/internal/pipe"
@@ -13,8 +15,8 @@ import (
 // Routing layers, evaluated in order until a match is found.
 const (
 	LayerExact    = 1 // exact phrase match
-	LayerKeyword  = 2 // keyword scoring above threshold
-	LayerCategory = 3 // category narrowing / parsed verb
+	LayerKeyword  = 2 // BM25 keyword scoring above threshold
+	LayerCategory = 3 // parsed verb / source match
 	LayerFallback = 4 // no match, fall back to chat
 )
 
@@ -27,13 +29,17 @@ type RouteResult struct {
 }
 
 type Router struct {
-	exactMap     map[string]string            // signal → pipe name
-	keywordIndex map[string][]string          // stemmed keyword → []pipe names
-	pipeKeywords map[string][]string          // pipe name → []stemmed keywords
-	categories   map[string][]pipe.Definition // category → []definitions
-	definitions  map[string]pipe.Definition
-	threshold    float64
-	logger       *slog.Logger
+	exactMap    map[string]string          // signal → pipe name
+	index       bleve.Index                // BM25 scoring index
+	definitions map[string]pipe.Definition // pipe name → definition
+	pipeTerms   map[string]map[string]bool // pipe → stemmed terms (for dampening)
+	allTerms    map[string]bool            // union of all stemmed terms (for miss logging)
+	logger      *slog.Logger
+}
+
+// pipeDoc is the document type indexed in bleve.
+type pipeDoc struct {
+	Content string `json:"content"`
 }
 
 func NewRouter(defs []pipe.Definition, logger *slog.Logger) *Router {
@@ -41,218 +47,219 @@ func NewRouter(defs []pipe.Definition, logger *slog.Logger) *Router {
 		logger = slog.Default()
 	}
 	r := &Router{
-		exactMap:     make(map[string]string),
-		keywordIndex: make(map[string][]string),
-		pipeKeywords: make(map[string][]string),
-		categories:   make(map[string][]pipe.Definition),
-		definitions:  make(map[string]pipe.Definition),
-		threshold:    0.6,
-		logger:       logger,
+		exactMap:    make(map[string]string),
+		definitions: make(map[string]pipe.Definition),
+		pipeTerms:   make(map[string]map[string]bool),
+		allTerms:    make(map[string]bool),
+		logger:      logger,
 	}
 
+	// Build exact match map
 	for _, def := range defs {
 		r.definitions[def.Name] = def
-
-		// Build exact match map
 		for _, exact := range def.Triggers.Exact {
 			r.exactMap[strings.ToLower(exact)] = def.Name
 		}
-
-		// Build keyword inverted index using stemmed forms so that morphological
-		// variants of a keyword match at query time.
-		stemmed := make([]string, 0, len(def.Triggers.Keywords))
-		seen := make(map[string]bool)
-		for _, kw := range def.Triggers.Keywords {
-			sk := Stem(strings.ToLower(kw))
-			if !seen[sk] {
-				seen[sk] = true
-				stemmed = append(stemmed, sk)
-				r.keywordIndex[sk] = append(r.keywordIndex[sk], def.Name)
-			}
-		}
-		r.pipeKeywords[def.Name] = stemmed
-
-		// Build category map
-		r.categories[def.Category] = append(r.categories[def.Category], def)
 	}
 
-	r.logger.Debug("router built", "pipes", len(defs), "keywords", len(r.keywordIndex))
+	// Precompute routing terms once per pipe for indexing and term tracking
+	pipeWords := make(map[string][]string, len(defs))
+	for _, def := range defs {
+		words := pipeRoutingTerms(def)
+		pipeWords[def.Name] = words
+
+		terms := make(map[string]bool, len(words))
+		for _, w := range words {
+			s := Stem(strings.ToLower(w))
+			terms[s] = true
+			r.allTerms[s] = true
+		}
+		r.pipeTerms[def.Name] = terms
+	}
+
+	// Build bleve index
+	var err error
+	r.index, err = buildIndex(defs, pipeWords)
+	if err != nil {
+		logger.Error("failed to build bleve index, keyword scoring disabled", "error", err)
+	}
+
+	logger.Debug("router built", "pipes", len(defs), "terms", len(r.allTerms))
 	return r
 }
 
-func (r *Router) Route(ctx context.Context, signal string, parsed parser.ParsedSignal) RouteResult {
+// pipeRoutingTerms returns the vocabulary words that should route to this pipe:
+// keywords, source keys, and verb keys whose target matches the pipe name.
+func pipeRoutingTerms(def pipe.Definition) []string {
+	terms := make([]string, 0, len(def.Triggers.Keywords))
+	terms = append(terms, def.Triggers.Keywords...)
+	for word := range def.Vocabulary.Sources {
+		terms = append(terms, word)
+	}
+	for word, target := range def.Vocabulary.Verbs {
+		if target == def.Name || strings.HasPrefix(target, def.Name+".") {
+			terms = append(terms, word)
+		}
+	}
+	return terms
+}
+
+// buildIndex creates an in-memory bleve index with one document per pipe.
+// Each document's content is composed of routing terms and description.
+// Uses the English analyzer (unicode tokenize → lowercase → stop words → Porter stem)
+// for BM25 scoring.
+func buildIndex(defs []pipe.Definition, pipeWords map[string][]string) (bleve.Index, error) {
+	indexMapping := bleve.NewIndexMapping()
+
+	// Use English analyzer for BM25 with stemming and stop words
+	docMapping := mapping.NewDocumentMapping()
+	contentField := mapping.NewTextFieldMapping()
+	contentField.Analyzer = "en"
+	docMapping.AddFieldMappingsAt("content", contentField)
+	indexMapping.DefaultMapping = docMapping
+	indexMapping.DefaultAnalyzer = "en"
+
+	index, err := bleve.NewMemOnly(indexMapping)
+	if err != nil {
+		return nil, err
+	}
+
+	for _, def := range defs {
+		parts := append([]string(nil), pipeWords[def.Name]...)
+		if def.Description != "" {
+			parts = append(parts, def.Description)
+		}
+		doc := pipeDoc{Content: strings.Join(parts, " ")}
+		if err := index.Index(def.Name, doc); err != nil {
+			return nil, err
+		}
+	}
+
+	return index, nil
+}
+
+func (r *Router) Route(_ context.Context, signal string, parsed parser.ParsedSignal) RouteResult {
 	lower := strings.ToLower(signal)
 
 	// Layer 1: Exact match
 	if pipeName, ok := r.exactMap[lower]; ok {
-		result := RouteResult{Pipe: pipeName, Confidence: 1.0, Layer: LayerExact}
-		r.logger.Info("routed", "pipe", result.Pipe, "layer", result.Layer)
-		return result
+		r.logger.Info("routed", "pipe", pipeName, "layer", LayerExact)
+		return RouteResult{Pipe: pipeName, Confidence: 1.0, Layer: LayerExact}
 	}
 
-	// Layer 2: Keyword scoring with stemming and synonym expansion.
-	// Score by signal coverage: what fraction of the user's meaningful words
-	// are keywords for each pipe? This works better than pipe coverage
-	// (hits / pipe_keywords) for short signals like "hey" or "check calendar".
+	// Tokenize once for layers 2 and 4
 	words := tokenize(lower)
 	scoringWords := nlp.Filter(words)
-	scores := make(map[string]int)
-	var keywordsFound []string
 
-	for _, w := range scoringWords {
-		for _, form := range StemAndExpand(w) {
-			if pipes, ok := r.keywordIndex[form]; ok {
-				keywordsFound = append(keywordsFound, w)
-				for _, p := range pipes {
-					scores[p]++
-				}
-				break // only count each signal word once even if it expands to multiple hits
-			}
-		}
-	}
-
-	bestPipe := ""
-	bestScore := 0.0
-	if len(scoringWords) > 0 {
-		for pipeName, hits := range scores {
-			score := float64(hits) / float64(len(scoringWords))
-			if score > bestScore {
-				bestScore = score
-				bestPipe = pipeName
-			}
-		}
-	}
-
-	r.logger.Debug("keyword scoring", "scores", scores, "keywords_found", keywordsFound, "best", bestPipe, "best_score", bestScore)
-
-	// Wh-questions need stronger keyword evidence — a single keyword hit
-	// (e.g. "run" in "how do I run it?") produces a misleadingly high score
-	// because all other words are stop words. Require at least 2 keyword
-	// hits to route a question via keywords.
-	if parsed.IsQuestion && bestScore >= r.threshold {
-		totalHits := 0
-		for _, h := range scores {
-			totalHits += h
-		}
-		if totalHits < 2 {
-			r.logger.Debug("question dampened", "best", bestPipe, "hits", totalHits)
-			bestScore = 0
-			bestPipe = ""
-		}
-	}
-
-	if bestScore >= r.threshold {
-		result := RouteResult{Pipe: bestPipe, Confidence: bestScore, Layer: LayerKeyword}
-		r.logger.Info("routed", "pipe", result.Pipe, "layer", result.Layer)
-		return result
-	}
-
-	// Wh-questions skip category narrowing and verb matching: the verb
-	// match is too aggressive for questions (e.g. "what would be cool to
-	// visualize?" matched visualize via verb). Source matching is still
-	// allowed since it reflects an explicit data source reference
-	// (e.g. "what's on my calendar?" → source=calendar).
-	if !parsed.IsQuestion {
-		// Layer 3: Category narrowing
+	// Layer 2: BM25 keyword scoring via bleve
+	if r.index != nil {
+		bestPipe, confidence := r.searchBM25(lower, scoringWords, parsed)
 		if bestPipe != "" {
-			def := r.definitions[bestPipe]
-			categoryPipes := r.categories[def.Category]
-
-			for _, cp := range categoryPipes {
-				// Score using parsed components
-				confidence := r.scoreParsedMatch(cp, parsed)
-				if confidence > bestScore {
-					bestScore = confidence
-					bestPipe = cp.Name
-				}
-			}
-
-			if bestScore >= r.threshold {
-				result := RouteResult{Pipe: bestPipe, Confidence: bestScore, Layer: LayerCategory}
-				r.logger.Info("routed", "pipe", result.Pipe, "layer", result.Layer)
-				return result
-			}
-		}
-
-		// Also try parsed verb directly if it matches a pipe.
-		if parsed.Verb != "" {
-			if _, ok := r.definitions[parsed.Verb]; ok {
-				result := RouteResult{Pipe: parsed.Verb, Confidence: 0.8, Layer: LayerCategory}
-				r.logger.Info("routed", "pipe", result.Pipe, "layer", result.Layer)
-				return result
-			}
+			r.logger.Info("routed", "pipe", bestPipe, "layer", LayerKeyword, "confidence", confidence)
+			return RouteResult{Pipe: bestPipe, Confidence: confidence, Layer: LayerKeyword}
 		}
 	}
 
-	// Source-based routing applies to all signals (including questions):
-	// "what's on my calendar?" should route to calendar, not fall through.
+	// Layer 3: Parsed verb / source matching
+	if !parsed.IsQuestion && parsed.Verb != "" {
+		if _, ok := r.definitions[parsed.Verb]; ok {
+			r.logger.Info("routed", "pipe", parsed.Verb, "layer", LayerCategory)
+			return RouteResult{Pipe: parsed.Verb, Confidence: 0.8, Layer: LayerCategory}
+		}
+	}
+
+	// Source-based routing for all signals including questions
 	if parsed.Source != "" {
 		if _, ok := r.definitions[parsed.Source]; ok {
-			result := RouteResult{Pipe: parsed.Source, Confidence: 0.8, Layer: LayerCategory}
-			r.logger.Info("routed", "pipe", result.Pipe, "layer", result.Layer)
-			return result
+			r.logger.Info("routed", "pipe", parsed.Source, "layer", LayerCategory)
+			return RouteResult{Pipe: parsed.Source, Confidence: 0.8, Layer: LayerCategory}
 		}
 	}
 
-	// Layer 4: Deterministic fallback — return chat and let the server handle AI planning.
-	var keywordsNotFound []string
-	for _, w := range words {
+	// Layer 4: Fallback — return chat and let the server handle AI planning
+	return r.buildFallback(lower, scoringWords)
+}
+
+// searchBM25 queries the bleve index with the signal and returns the best matching
+// pipe name and a normalized confidence score. Returns ("", 0) if no match qualifies.
+func (r *Router) searchBM25(lower string, scoringWords []string, parsed parser.ParsedSignal) (string, float64) {
+	query := bleve.NewMatchQuery(lower)
+	searchReq := bleve.NewSearchRequest(query)
+	searchReq.Size = 3
+
+	results, err := r.index.Search(searchReq)
+	if err != nil || results.Total == 0 {
+		return "", 0
+	}
+
+	top := results.Hits[0]
+	score := top.Score
+
+	// Normalize BM25 score to [0, 1) using sigmoid: score / (score + k)
+	// k=1 means a BM25 score of 1.0 maps to confidence 0.5
+	confidence := score / (score + 1.0)
+
+	// Question dampening: for questions, require stronger evidence.
+	// Count how many of the user's meaningful words hit the top pipe's terms.
+	if parsed.IsQuestion && len(scoringWords) > 1 {
+		hits := r.countPipeHits(scoringWords, top.ID)
+		if hits < 2 {
+			r.logger.Debug("question dampened", "best", top.ID, "hits", hits, "scoring_words", len(scoringWords))
+			return "", 0
+		}
+	}
+
+	// Require minimum confidence
+	if confidence < 0.3 {
+		return "", 0
+	}
+
+	return top.ID, confidence
+}
+
+// countPipeHits counts how many scoring words match the given pipe's term set.
+func (r *Router) countPipeHits(scoringWords []string, pipeName string) int {
+	terms := r.pipeTerms[pipeName]
+	hits := 0
+	for _, w := range scoringWords {
 		stemmed := Stem(w)
-		if _, ok := r.keywordIndex[stemmed]; !ok {
+		if terms[stemmed] {
+			hits++
+		}
+	}
+	return hits
+}
+
+// buildFallback constructs a Layer 4 fallback result with miss metadata.
+func (r *Router) buildFallback(lower string, scoringWords []string) RouteResult {
+	var keywordsFound []string
+	var keywordsNotFound []string
+	for _, w := range scoringWords {
+		stemmed := Stem(w)
+		if r.allTerms[stemmed] {
+			keywordsFound = append(keywordsFound, w)
+		} else {
 			keywordsNotFound = append(keywordsNotFound, w)
 		}
 	}
 
-	r.logger.Warn("miss", "signal", signal)
-	result := RouteResult{
+	r.logger.Warn("miss", "signal", lower)
+	r.logger.Info("routed", "pipe", "chat", "layer", LayerFallback)
+	return RouteResult{
 		Pipe:             "chat",
 		Confidence:       0.0,
 		Layer:            LayerFallback,
 		KeywordsFound:    keywordsFound,
 		KeywordsNotFound: keywordsNotFound,
 	}
-	r.logger.Info("routed", "pipe", result.Pipe, "layer", result.Layer)
-	return result
 }
 
-func (r *Router) scoreParsedMatch(def pipe.Definition, parsed parser.ParsedSignal) float64 {
-	score := 0.0
-	checks := 0.0
-
-	// Check if parsed verb matches this pipe
-	if parsed.Verb != "" {
-		checks++
-		if parsed.Verb == def.Name {
-			score++
-		}
+// Close releases the bleve index resources.
+func (r *Router) Close() error {
+	if r.index != nil {
+		return r.index.Close()
 	}
-
-	// Check if source references this pipe
-	if parsed.Source != "" {
-		checks++
-		if parsed.Source == def.Name {
-			score++
-		}
-	}
-
-	// Check keywords from parsed topic
-	if parsed.Topic != "" {
-		topicWords := tokenize(parsed.Topic)
-		for _, tw := range topicWords {
-			for _, kw := range r.pipeKeywords[def.Name] {
-				if tw == kw {
-					score += 0.5
-					break
-				}
-			}
-		}
-		checks++
-	}
-
-	if checks == 0 {
-		return 0
-	}
-	return score / checks
+	return nil
 }
 
 // tokenize splits s into cleaned tokens. Callers must pass a lowercased string.
@@ -263,4 +270,3 @@ func tokenize(s string) []string {
 	}
 	return fields
 }
-
