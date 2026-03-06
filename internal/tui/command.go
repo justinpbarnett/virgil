@@ -74,6 +74,10 @@ func NewCommandRegistry() *CommandRegistry {
 		return CommandResult{Output: display + "\n" + strings.Join(lines, "\n")}
 	})
 
+	r.Register("logs", func(args string) CommandResult {
+		return r.commands["log"](args)
+	})
+
 	r.Register("help", func(args string) CommandResult {
 		names := r.List()
 		var b strings.Builder
