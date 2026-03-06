@@ -48,29 +48,12 @@ func NewCommandRegistry() *CommandRegistry {
 	})
 
 	r.Register("log", func(args string) CommandResult {
-		n := 20
-		if args != "" {
-			if parsed, err := strconv.Atoi(args); err == nil && parsed > 0 {
-				n = parsed
-			}
-		}
-		path := ServerLogPath()
-		lines, err := tailFile(path, n)
-		if err != nil {
-			// Today's log doesn't exist yet — fall back to most recent server log.
-			if matches, _ := filepath.Glob(filepath.Join(config.LogDir(), "server-*.log")); len(matches) > 0 {
-				sort.Strings(matches)
-				path = matches[len(matches)-1]
-				lines, err = tailFile(path, n)
-			}
-		}
+		n := parseLogLines(args)
+		lines, path, err := fetchLogLines(n)
 		if err != nil {
 			return CommandResult{Output: fmt.Sprintf("no log file: %v", err)}
 		}
-		display := path
-		if home, err := os.UserHomeDir(); err == nil {
-			display = strings.Replace(path, home, "~", 1)
-		}
+		display := formatLogPath(path)
 		return CommandResult{Output: display + "\n" + strings.Join(lines, "\n")}
 	})
 
@@ -156,6 +139,50 @@ func tailFile(path string, n int) ([]string, error) {
 		lines = lines[len(lines)-n:]
 	}
 	return lines, nil
+}
+
+// parseLogLines parses the argument string into a line count, defaulting to 20.
+func parseLogLines(args string) int {
+	if args == "" {
+		return 20
+	}
+	n, err := strconv.Atoi(args)
+	if err != nil || n <= 0 {
+		return 20
+	}
+	return n
+}
+
+// fetchLogLines retrieves the last n lines from the server log.
+// It tries today's log first, falling back to the most recent log if needed.
+func fetchLogLines(n int) ([]string, string, error) {
+	path := ServerLogPath()
+	lines, err := tailFile(path, n)
+	if err == nil {
+		return lines, path, nil
+	}
+
+	// Today's log doesn't exist yet — fall back to most recent server log.
+	matches, _ := filepath.Glob(filepath.Join(config.LogDir(), "server-*.log"))
+	if len(matches) == 0 {
+		return nil, "", err
+	}
+	sort.Strings(matches)
+	path = matches[len(matches)-1]
+	lines, err = tailFile(path, n)
+	if err != nil {
+		return nil, "", err
+	}
+	return lines, path, nil
+}
+
+// formatLogPath returns a display-friendly path with ~ for home directory.
+func formatLogPath(path string) string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return path
+	}
+	return strings.Replace(path, home, "~", 1)
 }
 
 // ParseCommand trims the leading ":" from input and splits on the first
