@@ -224,8 +224,8 @@ func handleRemove(s *store.Store, input envelope.Envelope, flags map[string]stri
 		return out
 	}
 
-	logger.Info("removed todo", "id", todo.ID)
-	out.Content = map[string]any{"status": "removed", "id": todo.ID}
+	logger.Info("removed todo", "id", todo.ID, "title", todo.Title)
+	out.Content = map[string]any{"action": "remove", "status": "removed", "id": todo.ID, "title": todo.Title}
 	out.ContentType = envelope.ContentStructured
 	return out
 }
@@ -297,7 +297,7 @@ func handleReorder(s *store.Store, _ envelope.Envelope, flags map[string]string,
 	}
 
 	logger.Info("reordered todo", "id", id, "priority", priority)
-	out.Content = map[string]any{"status": "reordered", "id": id, "priority": priority}
+	out.Content = map[string]any{"action": "reorder", "status": "reordered", "id": id, "priority": priority}
 	out.ContentType = envelope.ContentStructured
 	return out
 }
@@ -355,13 +355,45 @@ func fuzzyFind(s *store.Store, search string, status string) (store.Todo, error)
 		return store.Todo{}, fmt.Errorf("failed to search todos: %v", err)
 	}
 	lower := strings.ToLower(search)
+	searchWords := strings.Fields(lower)
+
+	// Single pass: try exact substring match first, accumulate word-overlap as fallback
+	var bestTodo store.Todo
+	bestHits := 0
 	for _, t := range todos {
 		titleLower := strings.ToLower(t.Title)
-		// Match if title contains search OR search contains title (handles full-signal inputs)
 		if strings.Contains(titleLower, lower) || strings.Contains(lower, titleLower) {
 			return t, nil
 		}
+
+		if len(searchWords) == 0 {
+			continue
+		}
+		titleWords := strings.Fields(titleLower)
+		hits := 0
+		for _, sw := range searchWords {
+			for _, tw := range titleWords {
+				if sw == tw || strings.Contains(tw, sw) || strings.Contains(sw, tw) {
+					hits++
+					break
+				}
+			}
+		}
+		if hits > bestHits {
+			bestHits = hits
+			bestTodo = t
+		}
 	}
+
+	// Require at least 2 word hits (or all words if fewer than 2)
+	minRequired := 2
+	if len(searchWords) < minRequired {
+		minRequired = len(searchWords)
+	}
+	if bestHits >= minRequired {
+		return bestTodo, nil
+	}
+
 	return store.Todo{}, fmt.Errorf("no %s todo found matching %q", status, search)
 }
 

@@ -76,7 +76,7 @@ format:
     Source: {{.external_id}}{{end}}{{if .details}}
 
     {{.details}}{{else}}
-    No details available.{{end}}{{else if eq .action "done"}}✓ Completed: {{.title}}{{else if eq .action "undone"}}↺ Restored: {{.title}}{{else}}+ Added: {{.title}}{{end}}{{if and (ne .action "detail") .due_date}} — due {{.due_date}}{{end}}{{if ne .action "detail"}} · p{{.priority}}{{end}}
+    No details available.{{end}}{{else if eq .action "done"}}✓ Completed: {{.title}}{{else if eq .action "undone"}}↺ Restored: {{.title}}{{else if eq .action "remove"}}✗ Removed: {{.title}}{{else}}+ Added: {{.title}}{{end}}{{if and (ne .action "detail") (ne .action "remove") .due_date}} — due {{.due_date}}{{end}}{{if and (ne .action "detail") (ne .action "remove")}} · p{{.priority}}{{end}}
 
 memory:
   disabled: true
@@ -86,6 +86,7 @@ vocabulary:
     todo: [todo]
     task: [todo]
     show: [todo]
+    view: [todo.list]
     list: [todo.list]
     add: [todo.add]
     create: [todo.add]
@@ -96,14 +97,18 @@ vocabulary:
     check: [todo.done]
     uncheck: [todo.undone]
     undo: [todo.undone]
+    restore: [todo.undone]
     remove: [todo.remove]
     delete: [todo.remove]
+    drop: [todo.remove]
     rm: [todo.remove]
     prioritize: [todo.reorder]
     reorder: [todo.reorder]
     move: [todo.reorder]
     edit: [todo.edit]
     update: [todo.edit]
+    change: [todo.edit]
+    modify: [todo.edit]
     detail: [todo.detail]
     details: [todo.detail]
     expand: [todo.detail]
@@ -112,6 +117,8 @@ vocabulary:
   sources:
     todos: [todo]
     tasks: [todo]
+    checklist: [todo]
+    backlog: [todo]
   modifiers: {}
 
 templates:

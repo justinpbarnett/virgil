@@ -241,6 +241,33 @@ func TestHandleRemove(t *testing.T) {
 	}
 }
 
+func TestHandleRemoveWordOverlapMatch(t *testing.T) {
+	s := setupStore(t)
+	h := NewHandler(s, nil)
+
+	h(textEnvelope(""), map[string]string{"action": "add", "title": "new event 4p-6:30p friends coming visit"}) //nolint:errcheck
+
+	// Topic extracted from "delete the new event todo item" would be "new event item"
+	// Substring match fails, but word-overlap should find it (2/3 words match)
+	out := h(textEnvelope(""), map[string]string{"action": "remove", "topic": "new event item"})
+	if out.Error != nil {
+		t.Fatalf("expected word-overlap match, got error: %s", out.Error.Message)
+	}
+}
+
+func TestHandleRemoveWordOverlapNoFalsePositive(t *testing.T) {
+	s := setupStore(t)
+	h := NewHandler(s, nil)
+
+	h(textEnvelope(""), map[string]string{"action": "add", "title": "buy groceries"}) //nolint:errcheck
+
+	// Single-word overlap ("item" matches nothing) should not match
+	out := h(textEnvelope(""), map[string]string{"action": "remove", "topic": "random item"})
+	if out.Error == nil {
+		t.Fatal("expected no match for unrelated search")
+	}
+}
+
 func TestHandleRemoveMissingID(t *testing.T) {
 	s := setupStore(t)
 	h := NewHandler(s, nil)
