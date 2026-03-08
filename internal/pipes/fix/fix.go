@@ -137,7 +137,13 @@ func preparePrompt(compiled map[string]*template.Template, pipeConfig config.Pip
 	// Parse the structured verify output from the input envelope.
 	failures, lintErrors, err := parseVerifyOutput(input.Content)
 	if err != nil {
-		return "", "", envelope.FatalError(fmt.Sprintf("failed to parse verify output: %v", err))
+		// Standalone invocation (not piped from verify) — use the raw
+		// signal text as the user prompt so the AI can act on it directly.
+		signal := envelope.ContentToText(input.Content, input.ContentType)
+		if signal == "" {
+			return "", "", envelope.FatalError(fmt.Sprintf("failed to parse verify output: %v", err))
+		}
+		return pipeConfig.Prompts.System, signal, nil
 	}
 
 	// If nothing to fix, signal early return.

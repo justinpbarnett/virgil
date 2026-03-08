@@ -401,24 +401,26 @@ func TestFixProviderError(t *testing.T) {
 }
 
 func TestFixMalformedInput(t *testing.T) {
-	provider := &testutil.MockProvider{Response: "should not be called"}
+	provider := &testutil.MockProvider{Response: "Fixed the described issue"}
 	handler := NewHandler(provider, testConfig(), nil)
 
-	// Input content is a string instead of structured map.
+	// Input content is a string instead of structured map — standalone invocation.
+	// The fix pipe should fall back to using the raw text as the user prompt.
 	input := envelope.New("verify", "check")
 	input.Content = "this is just a string, not structured"
 	input.ContentType = envelope.ContentText
 
 	result := handler(input, map[string]string{})
 
-	if result.Error == nil {
-		t.Fatal("expected error for malformed input")
+	if result.Error != nil {
+		t.Fatalf("unexpected error: %v", result.Error)
 	}
-	if result.Error.Severity != envelope.SeverityFatal {
-		t.Errorf("expected severity=fatal, got %s", result.Error.Severity)
+	out, ok := result.Content.(FixOutput)
+	if !ok {
+		t.Fatalf("expected FixOutput, got %T", result.Content)
 	}
-	if !strings.Contains(result.Error.Message, "not a structured object") {
-		t.Errorf("expected error about structured object, got: %s", result.Error.Message)
+	if out.Summary != "Fixed the described issue" {
+		t.Errorf("expected provider response in summary, got: %s", out.Summary)
 	}
 }
 
