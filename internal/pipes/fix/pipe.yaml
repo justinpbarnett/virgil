@@ -12,18 +12,12 @@ triggers:
     - "fix failures"
   keywords:
     - fix
-    - repair
-    - correct
-    - patch
     - debug
     - bug
     - broken
     - error
-    - issue
     - problem
     - failure
-    - resolve
-    - solve
     - crash
     - exception
   patterns:
@@ -48,6 +42,9 @@ vocabulary:
     repair: [fix]
     correct: [fix]
     patch: [fix]
+    debug: [fix]
+    resolve: [fix]
+    solve: [fix]
   types: {}
   sources: {}
   modifiers: {}
