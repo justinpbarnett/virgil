@@ -62,7 +62,7 @@ func NewHandler(client CalendarClient, logger *slog.Logger) pipe.Handler {
 			return handleCreate(client, input, flags, logger)
 		case "update":
 			return handleUpdate(client, input, flags, logger)
-		case "delete":
+		case "delete", "remove":
 			return handleDelete(client, input, flags, logger)
 		default:
 			out := envelope.New("calendar", action)
@@ -155,7 +155,11 @@ func handleCreate(client CalendarClient, _ envelope.Envelope, flags map[string]s
 	}
 
 	logger.Info("created event", "id", event.ID)
-	out.Content = event
+	out.Content = map[string]any{
+		"action": "create",
+		"title":  event.Title,
+		"time":   event.Time,
+	}
 	out.ContentType = envelope.ContentStructured
 	out.Duration = time.Since(out.Timestamp)
 	return out
@@ -199,7 +203,11 @@ func handleUpdate(client CalendarClient, _ envelope.Envelope, flags map[string]s
 	}
 
 	logger.Info("updated event", "id", event.ID)
-	out.Content = event
+	out.Content = map[string]any{
+		"action": "update",
+		"title":  event.Title,
+		"time":   event.Time,
+	}
 	out.ContentType = envelope.ContentStructured
 	out.Duration = time.Since(out.Timestamp)
 	return out
@@ -228,9 +236,9 @@ func handleDelete(client CalendarClient, _ envelope.Envelope, flags map[string]s
 	}
 
 	logger.Info("deleted event", "id", eventID)
-	out.Content = map[string]string{
-		"status":   "deleted",
-		"event_id": eventID,
+	out.Content = map[string]any{
+		"action": "delete",
+		"status": "deleted",
 	}
 	out.ContentType = envelope.ContentStructured
 	out.Duration = time.Since(out.Timestamp)

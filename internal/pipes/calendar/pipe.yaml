@@ -20,15 +20,6 @@ triggers:
     - tomorrow
     - agenda
     - appt
-    - add
-    - create
-    - cancel
-    - delete
-    - update
-    - move
-    - reschedule
-    - remind
-    - reminder
     - availability
     - busy
     - free
@@ -44,7 +35,7 @@ triggers:
 flags:
   action:
     description: Which calendar operation to perform.
-    values: [list, create, update, delete]
+    values: [list, create, update, delete, remove]
     default: list
   range:
     description: Time range to query (for list action).
@@ -77,7 +68,7 @@ format:
     {{if eq .Count 0}}Your calendar is clear.{{else}}You have {{.Count}} event{{if gt .Count 1}}s{{end}}{{if eq .Range "tomorrow"}} tomorrow{{else if eq .Range "this-week"}} this week{{else if eq .Range "next"}} coming up{{else}} today{{end}}:{{range .Items}}
     - {{.title}}{{if .time}} — {{.time}}{{end}}{{if .location}} ({{.location}}){{end}}{{end}}{{end}}
   structured: |-
-    {{if .status}}{{.status}}{{end}}{{if .id}} [{{.id}}]{{end}}{{if .title}} — {{.title}}{{end}}
+    {{if eq .action "create"}}+ Created: {{.title}}{{if .time}} — {{.time}}{{end}}{{else if eq .action "update"}}↻ Updated: {{.title}}{{if .time}} — {{.time}}{{end}}{{else if eq .action "delete"}}✗ Deleted event{{else}}{{.title}}{{if .time}} — {{.time}}{{end}}{{end}}
 
 memory:
   disabled: true
@@ -85,12 +76,26 @@ memory:
 vocabulary:
   verbs:
     show: [calendar]
-    schedule: [calendar]
-    cancel: [calendar]
-    reschedule: [calendar]
+    check: [calendar]
+    view: [calendar]
+    schedule: [calendar.create]
+    book: [calendar.create]
+    add: [calendar.create]
+    create: [calendar.create]
+    cancel: [calendar.delete]
+    remove: [calendar.delete]
+    delete: [calendar.delete]
+    drop: [calendar.delete]
+    reschedule: [calendar.update]
+    move: [calendar.update]
+    update: [calendar.update]
+    change: [calendar.update]
+    edit: [calendar.update]
   types: {}
   sources:
     calendar: [calendar]
+    schedule: [calendar]
+    agenda: [calendar]
   modifiers:
     next: [next]
     recent: [latest]
