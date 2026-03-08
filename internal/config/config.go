@@ -409,7 +409,7 @@ type PipelineConfig struct {
 	Cycles      []CycleConfig        `yaml:"cycles"`
 }
 
-func Load(configDir string, pipesDir string) (*Config, error) {
+func Load(configDir string, pipeDirs ...string) (*Config, error) {
 	cfg := &Config{
 		ConfigDir: configDir,
 		Server:    ServerConfig{Host: "localhost", Port: 7890},
@@ -432,54 +432,61 @@ func Load(configDir string, pipesDir string) (*Config, error) {
 		cfg.DatabasePath = expandHome(cfg.DatabasePath)
 	}
 
-	// Resolve pipesDir to absolute once (avoids os.Getwd per pipe in filepath.Abs)
-	absPipesDir, err := filepath.Abs(pipesDir)
-	if err != nil {
-		return nil, fmt.Errorf("resolving pipes directory: %w", err)
-	}
-
-	// Load pipe definitions from pipesDir/*/pipe.yaml
-	entries, err := os.ReadDir(absPipesDir)
-	if err != nil {
-		return nil, fmt.Errorf("reading pipes directory: %w", err)
-	}
-
-	for _, entry := range entries {
-		if !entry.IsDir() {
-			continue
+	// Load pipe definitions from each pipe directory
+	for _, pipesDir := range pipeDirs {
+		absPipesDir, err := filepath.Abs(pipesDir)
+		if err != nil {
+			return nil, fmt.Errorf("resolving pipes directory %s: %w", pipesDir, err)
 		}
-		pipeDir := filepath.Join(absPipesDir, entry.Name())
-		pipeYAML := filepath.Join(pipeDir, "pipe.yaml")
-		var pc PipeConfig
-		if err := loadYAML(pipeYAML, &pc); err != nil {
+
+		entries, err := os.ReadDir(absPipesDir)
+		if err != nil {
 			if os.IsNotExist(err) {
+				continue // optional directory (e.g., cloud pipes may not exist)
+			}
+			return nil, fmt.Errorf("reading pipes directory %s: %w", pipesDir, err)
+		}
+
+		for _, entry := range entries {
+			if !entry.IsDir() {
 				continue
 			}
-			return nil, fmt.Errorf("loading pipe config %s: %w", entry.Name(), err)
+			pipeDir := filepath.Join(absPipesDir, entry.Name())
+			pipeYAML := filepath.Join(pipeDir, "pipe.yaml")
+			var pc PipeConfig
+			if err := loadYAML(pipeYAML, &pc); err != nil {
+				if os.IsNotExist(err) {
+					continue
+				}
+				return nil, fmt.Errorf("loading pipe config %s: %w", entry.Name(), err)
+			}
+			pc.Dir = pipeDir
+			cfg.Pipes[pc.Name] = pc
 		}
-		pc.Dir = pipeDir
-		cfg.Pipes[pc.Name] = pc
 	}
 
-	// Load pipeline definitions from pipelines/*/pipeline.yaml (sibling to pipesDir)
-	pipelinesDir := filepath.Join(filepath.Dir(absPipesDir), "pipelines")
-	pipelineEntries, err := os.ReadDir(pipelinesDir)
-	if err != nil && !os.IsNotExist(err) {
-		return nil, fmt.Errorf("reading pipelines directory: %w", err)
-	}
-	for _, entry := range pipelineEntries {
-		if !entry.IsDir() {
-			continue
+	// Load pipeline definitions from pipelines/*/pipeline.yaml (sibling to first pipesDir)
+	if len(pipeDirs) > 0 {
+		absPipesDir, _ := filepath.Abs(pipeDirs[0])
+		pipelinesDir := filepath.Join(filepath.Dir(absPipesDir), "pipelines")
+		pipelineEntries, err := os.ReadDir(pipelinesDir)
+		if err != nil && !os.IsNotExist(err) {
+			return nil, fmt.Errorf("reading pipelines directory: %w", err)
 		}
-		plYAML := filepath.Join(pipelinesDir, entry.Name(), "pipeline.yaml")
-		var pc PipelineConfig
-		if err := loadYAML(plYAML, &pc); err != nil {
-			if os.IsNotExist(err) {
+		for _, entry := range pipelineEntries {
+			if !entry.IsDir() {
 				continue
 			}
-			return nil, fmt.Errorf("loading pipeline config %s: %w", entry.Name(), err)
+			plYAML := filepath.Join(pipelinesDir, entry.Name(), "pipeline.yaml")
+			var pc PipelineConfig
+			if err := loadYAML(plYAML, &pc); err != nil {
+				if os.IsNotExist(err) {
+					continue
+				}
+				return nil, fmt.Errorf("loading pipeline config %s: %w", entry.Name(), err)
+			}
+			cfg.Pipelines[pc.Name] = pc
 		}
-		cfg.Pipelines[pc.Name] = pc
 	}
 
 	// Validate each loaded pipeline against known pipe names.

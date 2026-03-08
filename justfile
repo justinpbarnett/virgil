@@ -12,6 +12,7 @@ build-if-changed:
 build-pipes:
     #!/usr/bin/env sh
     for cmd in internal/pipes/*/cmd; do
+        [ -d "$cmd" ] || continue
         pipe_dir="$(dirname "$cmd")"
         echo "building $pipe_dir/run"
         go build -o "$pipe_dir/run" "./$cmd"

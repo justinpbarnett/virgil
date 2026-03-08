@@ -27,7 +27,7 @@ import (
 	"github.com/justinpbarnett/virgil/internal/voice"
 )
 
-const defaultPipesDir = "internal/pipes"
+var defaultPipeDirs = []string{"internal/pipes"}
 
 func main() {
 	configDir := flag.String("config", "", "config directory path")
@@ -73,7 +73,7 @@ func main() {
 	args := flag.Args()
 
 	// Load config to get server address
-	cfg, err := config.Load(cfgDir, defaultPipesDir)
+	cfg, err := config.Load(cfgDir, defaultPipeDirs...)
 	if err != nil {
 		logger.Error("failed to load config", "error", err)
 		os.Exit(1)
@@ -128,7 +128,7 @@ func runVoiceDaemon(cfgDir string, logger *slog.Logger) error {
 		return err
 	}
 
-	cfg, err := config.Load(cfgDir, defaultPipesDir)
+	cfg, err := config.Load(cfgDir, defaultPipeDirs...)
 	if err != nil {
 		return fmt.Errorf("loading config: %w", err)
 	}
@@ -154,7 +154,7 @@ func runVoiceDaemon(cfgDir string, logger *slog.Logger) error {
 
 func runServer(cfgDir string) error {
 	// 1. Load configuration
-	cfg, err := config.Load(cfgDir, defaultPipesDir)
+	cfg, err := config.Load(cfgDir, defaultPipeDirs...)
 	if err != nil {
 		return fmt.Errorf("loading config: %w", err)
 	}
