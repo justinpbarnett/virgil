@@ -65,7 +65,17 @@ git log origin/<base-branch>..HEAD --oneline
 
 If a spec path is provided as an argument, read the spec file to enrich the PR body.
 
-### Step 4: Generate PR Content
+### Step 4: Check Cross-Repo Impact
+
+Check if any commits touch `pkg/` (the public API consumed by [virgil-cloud](https://github.com/justinpbarnett/virgil-cloud)):
+
+```bash
+git diff origin/<base-branch>..HEAD --name-only | grep '^pkg/'
+```
+
+If `pkg/` files are changed, note this for the PR body — changes to the public API may require corresponding updates in the virgil-cloud repo.
+
+### Step 5: Generate PR Content
 
 **Title:** Derive from the commit history. If there is a single commit, use its message. If there are multiple commits, summarize the overall change. Keep under 70 characters.
 
@@ -81,9 +91,17 @@ If a spec path is provided as an argument, read the spec file to enrich the PR b
 - [1-3 bullet points describing what changed and why]
 ```
 
+If `pkg/` files changed, add:
+
+```markdown
+## Cross-repo impact
+
+- [List which `pkg/` packages changed and what virgil-cloud consumers should update]
+```
+
 If a spec path was provided, add a `## Spec` section referencing it.
 
-### Step 5: Push and Create PR
+### Step 6: Push and Create PR
 
 Push the branch to origin:
 
@@ -102,7 +120,7 @@ EOF
 )"
 ```
 
-### Step 6: Report
+### Step 7: Report
 
 Print the PR URL returned by `gh pr create`.
 
@@ -111,9 +129,10 @@ Print the PR URL returned by `gh pr create`.
 1. **Base branch** — Detect the default branch (main/master/etc.)
 2. **Validate** — Confirm feature branch, no uncommitted changes, commits ahead of base
 3. **Gather** — Fetch latest base, collect commit log, read spec if provided
-4. **Generate** — Create conventional title and structured body
-5. **Push** — Push branch to origin with tracking, create PR
-6. **Report** — Return the PR URL
+4. **Cross-repo** — Check if `pkg/` changed and note impact on virgil-cloud
+5. **Generate** — Create conventional title and structured body
+6. **Push** — Push branch to origin with tracking, create PR
+7. **Report** — Return the PR URL
 
 ## Cookbook
 

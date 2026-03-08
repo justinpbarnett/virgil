@@ -57,6 +57,7 @@ Analyze the diff and group changed files by logical concern, then immediately ex
 - Formatting or lint fixes are their own commit, separate from behavioral changes
 - Test additions/changes accompany the code they test, unless they are standalone test improvements
 - Config changes group with the feature they support, or stand alone if independent
+- `pkg/` changes are the public API consumed by [virgil-cloud](https://github.com/justinpbarnett/virgil-cloud) (separate private repo at `../virgil-cloud`). Group `pkg/` changes with the `internal/` changes that motivate them, but note when a commit touches `pkg/` since it may require corresponding updates in virgil-cloud
 
 **Revert test:** "Could this commit be reverted independently without breaking the other changes?" If yes, it should be its own commit.
 
@@ -107,6 +108,9 @@ Then run `git status --short` to confirm the working tree is clean (or show any 
 
 <If: the diff alone does not make the purpose clear>
 <Then: read file contents to understand the change before grouping>
+
+<If: changes touch `pkg/` (public API types, pipehost, store, envelope, etc.)>
+<Then: after committing, warn the user that virgil-cloud (`../virgil-cloud`) may need updates to match the new API. Breaking changes to `pkg/` types, function signatures, or behavior require coordinated updates.>
 
 ## Validation
 

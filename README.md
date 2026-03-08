@@ -34,6 +34,18 @@ The real substance of this project lives in the specs:
 
 If you're here to understand the ideas, start with `virgil.md`. If you're here to understand the engineering, start with `architecture.md`.
 
+## Project structure
+
+```
+cmd/virgil/          # main binary (server + TUI client)
+internal/            # core engine: router, runtime, bridge, store, pipes
+pkg/                 # public API types for building on Virgil
+docs/                # architecture and design documentation
+specs/               # feature specifications
+```
+
+Premium integrations (Slack, Jira, Mail) and hosted infrastructure live in the separate [virgil-cloud](https://github.com/justinpbarnett/virgil-cloud) repo.
+
 ## Stack
 
 - **Server:** Go
