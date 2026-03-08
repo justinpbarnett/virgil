@@ -11,13 +11,8 @@ triggers:
     - "analyze this"
   keywords:
     - analyze
-    - scope
-    - assess
-    - decompose
     - analysis
-    - investigate
     - breakdown
-    - examine
     - evaluation
     - risk
     - technical
@@ -42,6 +37,9 @@ vocabulary:
     scope: [analyze]
     assess: [analyze]
     decompose: [analyze]
+    evaluate: [analyze]
+    examine: [analyze]
+    investigate: [analyze]
   types: {}
   sources: {}
   modifiers:

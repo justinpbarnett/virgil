@@ -8,11 +8,8 @@ triggers:
   keywords:
     - worktree
     - branch
-    - isolate
     - checkout
     - sandbox
-    - git
-    - development
   patterns:
     - "create worktree for {topic}"
     - "worktree {topic}"

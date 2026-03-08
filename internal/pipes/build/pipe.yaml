@@ -10,13 +10,9 @@ triggers:
     - "implement feature"
   keywords:
     - build
-    - implement
-    - construct
-    - compile
     - feature
     - develop
     - development
-    - create
   patterns:
     - "build {topic}"
     - "implement {topic}"

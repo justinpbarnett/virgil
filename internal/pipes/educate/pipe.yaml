@@ -11,19 +11,12 @@ triggers:
     - "teach me"
     - "tutor me"
   keywords:
-    - teach
-    - learn
-    - educate
-    - tutor
-    - explain
-    - understand
     - lesson
     - guide
     - tutorial
     - concept
     - training
     - practice
-    - how
   patterns:
     - "teach me {topic}"
     - "explain {topic}"

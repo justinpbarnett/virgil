@@ -14,8 +14,6 @@ triggers:
   keywords:
     - spec
     - specification
-    - requirements
-    - design document
   patterns:
     - "spec out {topic}"
     - "spec {topic}"

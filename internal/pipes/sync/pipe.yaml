@@ -12,9 +12,6 @@ triggers:
     - "sync jira and slack"
   keywords:
     - sync
-    - synchronize
-    - pull
-    - import
     - aggregate
   patterns:
     - "sync my {topic}"

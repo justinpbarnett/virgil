@@ -16,7 +16,6 @@ triggers:
     - tagged
     - thread
     - channel
-    - message
   patterns:
     - "check slack for {topic}"
     - "slack mentions about {topic}"
@@ -49,6 +48,7 @@ format:
 vocabulary:
   verbs:
     slack: [slack.mentions]
+    check: [slack.mentions]
   types: {}
   sources:
     slack: [slack]

@@ -11,16 +11,9 @@ triggers:
     - "review this"
   keywords:
     - review
-    - evaluate
-    - audit
-    - verify
-    - critique
-    - assess
-    - check
     - feedback
     - inspect
     - quality
-    - examine
   patterns:
     - "review {type}"
     - "review {source} against {topic}"
@@ -56,6 +49,7 @@ vocabulary:
     evaluate: [review]
     audit: [review]
     critique: [review]
+    inspect: [review]
   types:
     code: [code]
     spec: [spec]

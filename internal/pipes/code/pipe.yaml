@@ -13,16 +13,13 @@ triggers:
     - "write a function"
   keywords:
     - code
-    - generate
     - function
     - module
-    - refactor
     - snippet
     - class
     - struct
     - method
     - interface
-    - write
   patterns:
     - "code {type}"
     - "generate {type}"

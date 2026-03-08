@@ -10,14 +10,12 @@ triggers:
     - "create pr"
   keywords:
     - publish
-    - push
     - pr
     - pull request
     - merge
     - release
     - commit
     - deploy
-    - ship
     - upload
   patterns:
     - "publish {topic}"
@@ -44,6 +42,8 @@ vocabulary:
     publish: [publish]
     push: [publish]
     ship: [publish]
+    deploy: [publish]
+    release: [publish]
   types:
     changes: [changes]
   sources: {}

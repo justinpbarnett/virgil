@@ -14,12 +14,8 @@ triggers:
     - notes
     - know
     - forget
-    - save
-    - store
     - log
     - history
-    - knowledge
-    - information
     - lookup
   patterns:
     - "remember {topic}"
@@ -61,8 +57,13 @@ format:
 vocabulary:
   verbs:
     remember: [memory.store]
+    save: [memory.store]
+    store: [memory.store]
     recall: [memory.retrieve]
     know: [memory.retrieve]
+    lookup: [memory.retrieve]
+    search: [memory.retrieve]
+    forget: [memory]
   types: {}
   sources:
     notes: [memory]

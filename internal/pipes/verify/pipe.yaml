@@ -11,13 +11,9 @@ triggers:
   keywords:
     - verify
     - test
-    - validate
-    - check
-    - lint
     - tests
+    - lint
     - compile
-    - assert
-    - ensure
   patterns:
     - "verify {topic}"
     - "test {topic}"
@@ -43,6 +39,8 @@ vocabulary:
     verify: [verify]
     validate: [verify]
     check: [verify]
+    test: [verify]
+    lint: [verify]
   types:
     tests: [tests]
     lint: [lint]

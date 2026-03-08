@@ -16,22 +16,13 @@ triggers:
     - ticket
     - issue
     - sprint
-    - backlog
     - story
     - epic
     - bug
-    - task
     - project
     - board
     - blocker
-    - work
-    - report
     - assigned
-    - description
-    - mine
-    - my
-    - status
-    - progress
   patterns:
     - "get {topic}"
     - "update {topic}"
@@ -103,8 +94,11 @@ format:
 vocabulary:
   verbs:
     jira: [jira.get]
+    get: [jira.get]
     search: [jira.search]
     find: [jira.search]
+    comment: [jira.comment]
+    update: [jira.update]
     move: [jira.transition]
     transition: [jira.transition]
   types:

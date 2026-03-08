@@ -13,17 +13,10 @@ triggers:
   keywords:
     - file
     - files
-    - read
-    - write
-    - list
     - directory
     - folder
     - path
     - glob
-    - open
-    - view
-    - find
-    - search
     - dir
     - mkdir
   patterns:

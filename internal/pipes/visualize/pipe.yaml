@@ -13,16 +13,12 @@ triggers:
     - "create a visualization"
   keywords:
     - visualize
-    - animate
     - animation
-    - illustrate
     - diagram
     - visualization
     - manim
     - chart
     - graph
-    - render
-    - draw
     - figure
   patterns:
     - "visualize {topic}"
@@ -54,6 +50,9 @@ vocabulary:
     visualize: [visualize]
     animate: [visualize]
     illustrate: [visualize]
+    render: [visualize]
+    draw: [visualize]
+    plot: [visualize]
   types:
     animation: [animation]
     video: [video]

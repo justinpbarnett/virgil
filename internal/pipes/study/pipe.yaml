@@ -12,14 +12,8 @@ triggers:
   keywords:
     - study
     - context
-    - gather
-    - understand
     - codebase
     - research
-    - explore
-    - investigate
-    - summarize
-    - analysis
   patterns:
     - "study {source}"
     - "study {source} for {topic}"
@@ -65,7 +59,8 @@ vocabulary:
     study: [study]
     gather: [study]
     understand: [study]
-    investigate: [study]
+    explore: [study]
+    research: [study]
   types: {}
   sources:
     codebase: [codebase]

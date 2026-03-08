@@ -13,7 +13,6 @@ triggers:
     - terminal
     - script
     - cmd
-    - execute
   patterns:
     - "run {type}"
     - "execute {type}"
@@ -37,9 +36,6 @@ vocabulary:
   verbs:
     run: [shell]
     execute: [shell]
-    test: [shell]
-    vet: [shell]
-    lint: [shell]
   types:
     build: [build]
     vet: [vet]

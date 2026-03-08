@@ -15,15 +15,9 @@ triggers:
     - mail
     - inbox
     - gmail
-    - message
-    - send
     - thread
-    - reply
-    - forward
     - unread
-    - compose
     - attachment
-    - draft
     - recipient
     - sender
   patterns:
@@ -83,6 +77,14 @@ vocabulary:
   verbs:
     email: [mail]
     mail: [mail]
+    send: [mail.send]
+    reply: [mail.send]
+    forward: [mail.send]
+    compose: [mail.send]
+    read: [mail.read]
+    search: [mail.search]
+    archive: [mail.archive]
+    trash: [mail.trash]
   types:
     email: [email]
     mail: [email]

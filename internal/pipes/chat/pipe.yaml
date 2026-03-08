@@ -29,12 +29,8 @@ triggers:
   keywords:
     - chat
     - talk
-    - ask
-    - question
     - discuss
     - conversation
-    - help
-    - answer
   patterns: []
 
 flags:

@@ -12,18 +12,12 @@ triggers:
     - "draft this"
   keywords:
     - draft
-    - compose
-    - write
     - author
     - msg
-    - message
     - letter
     - document
     - article
     - blog
-    - content
-    - note
-    - text
   patterns:
     - "draft {type}"
     - "write {type} about {topic}"
@@ -63,8 +57,6 @@ vocabulary:
     compose: [draft]
     summarize: [draft]
     summary: [draft]
-    spec: [draft]
-    specify: [draft]
   types:
     blog: [blog]
     email: [email]
