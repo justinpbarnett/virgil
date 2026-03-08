@@ -15,9 +15,15 @@ import (
 // Routing layers, evaluated in order until a match is found.
 const (
 	LayerExact    = 1 // exact phrase match
-	LayerKeyword  = 2 // BM25 keyword scoring above threshold
-	LayerCategory = 3 // parsed verb / source match
+	LayerParsed   = 2 // parsed verb / source match
+	LayerKeyword  = 3 // BM25 keyword scoring above threshold
 	LayerFallback = 4 // no match, fall back to chat
+)
+
+// BM25 scoring thresholds.
+const (
+	minBM25Confidence = 0.3  // minimum sigmoid-normalized confidence to accept a BM25 match
+	maxAmbiguityRatio = 0.85 // reject if second-best score / best score exceeds this
 )
 
 type RouteResult struct {
@@ -150,32 +156,32 @@ func (r *Router) Route(_ context.Context, signal string, parsed parser.ParsedSig
 		return RouteResult{Pipe: pipeName, Confidence: 1.0, Layer: LayerExact}
 	}
 
-	// Tokenize once for layers 2 and 4
-	words := tokenize(lower)
-	scoringWords := nlp.Filter(words)
-
-	// Layer 2: BM25 keyword scoring via bleve
-	if r.index != nil {
-		bestPipe, confidence := r.searchBM25(lower, scoringWords, parsed)
-		if bestPipe != "" {
-			r.logger.Info("routed", "pipe", bestPipe, "layer", LayerKeyword, "confidence", confidence)
-			return RouteResult{Pipe: bestPipe, Confidence: confidence, Layer: LayerKeyword}
-		}
-	}
-
-	// Layer 3: Parsed verb / source matching
+	// Layer 2: Parsed verb / source matching — precise, deterministic
 	if !parsed.IsQuestion && parsed.Verb != "" {
 		if _, ok := r.definitions[parsed.Verb]; ok {
-			r.logger.Info("routed", "pipe", parsed.Verb, "layer", LayerCategory)
-			return RouteResult{Pipe: parsed.Verb, Confidence: 0.8, Layer: LayerCategory}
+			r.logger.Info("routed", "pipe", parsed.Verb, "layer", LayerParsed)
+			return RouteResult{Pipe: parsed.Verb, Confidence: 0.8, Layer: LayerParsed}
 		}
 	}
 
 	// Source-based routing for all signals including questions
 	if parsed.Source != "" {
 		if _, ok := r.definitions[parsed.Source]; ok {
-			r.logger.Info("routed", "pipe", parsed.Source, "layer", LayerCategory)
-			return RouteResult{Pipe: parsed.Source, Confidence: 0.8, Layer: LayerCategory}
+			r.logger.Info("routed", "pipe", parsed.Source, "layer", LayerParsed)
+			return RouteResult{Pipe: parsed.Source, Confidence: 0.8, Layer: LayerParsed}
+		}
+	}
+
+	// Tokenize once for layers 3 and 4
+	words := tokenize(lower)
+	scoringWords := nlp.Filter(words)
+
+	// Layer 3: BM25 keyword scoring via bleve — fuzzy fallback
+	if r.index != nil {
+		bestPipe, confidence := r.searchBM25(lower, scoringWords, parsed)
+		if bestPipe != "" {
+			r.logger.Info("routed", "pipe", bestPipe, "layer", LayerKeyword, "confidence", confidence)
+			return RouteResult{Pipe: bestPipe, Confidence: confidence, Layer: LayerKeyword}
 		}
 	}
 
@@ -200,7 +206,7 @@ func (r *Router) searchBM25(lower string, scoringWords []string, parsed parser.P
 
 	// Normalize BM25 score to [0, 1) using sigmoid: score / (score + k)
 	// k=1 means a BM25 score of 1.0 maps to confidence 0.5
-	confidence := score / (score + 1.0)
+	confidence := sigmoid(score)
 
 	// Question dampening: for questions, require stronger evidence.
 	// Count how many of the user's meaningful words hit the top pipe's terms.
@@ -212,13 +218,28 @@ func (r *Router) searchBM25(lower string, scoringWords []string, parsed parser.P
 		}
 	}
 
+	// Ambiguity dampening: if the second-best result scores close to the top,
+	// the signal is too ambiguous for BM25 to reliably distinguish.
+	// Uses raw score ratio instead of absolute confidence gap, since BM25
+	// magnitudes vary widely with corpus size and document length.
 	// Require minimum confidence
-	if confidence < 0.3 {
+	if confidence < minBM25Confidence {
 		return "", 0
+	}
+
+	if len(results.Hits) >= 2 {
+		ratio := results.Hits[1].Score / top.Score
+		if ratio > maxAmbiguityRatio {
+			r.logger.Debug("ambiguous BM25 dampened", "first", top.ID, "second", results.Hits[1].ID, "ratio", ratio)
+			return "", 0
+		}
 	}
 
 	return top.ID, confidence
 }
+
+// sigmoid normalizes a BM25 score to [0, 1).
+func sigmoid(score float64) float64 { return score / (score + 1.0) }
 
 // countPipeHits counts how many scoring words match the given pipe's term set.
 func (r *Router) countPipeHits(scoringWords []string, pipeName string) int {

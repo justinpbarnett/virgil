@@ -64,7 +64,7 @@ func TestLayer1ExactMatch(t *testing.T) {
 	}
 }
 
-func TestLayer2KeywordScoring(t *testing.T) {
+func TestLayer3KeywordScoring(t *testing.T) {
 	r := NewRouter(testDefs(), nil)
 	defer r.Close()
 	result := r.Route(context.Background(), "show my calendar schedule for the meeting", parser.ParsedSignal{})
@@ -77,7 +77,7 @@ func TestLayer2KeywordScoring(t *testing.T) {
 	}
 }
 
-func TestLayer3CategoryNarrowing(t *testing.T) {
+func TestLayer2ParsedVerbRouting(t *testing.T) {
 	r := NewRouter(testDefs(), nil)
 	defer r.Close()
 	parsed := parser.ParsedSignal{
@@ -329,6 +329,99 @@ func TestQuestionMultiWordStillDampened(t *testing.T) {
 	result := r.Route(context.Background(), "shell program?", parser.ParsedSignal{IsQuestion: true})
 	if result.Pipe != "chat" {
 		t.Errorf("expected chat (dampened), got %s", result.Pipe)
+	}
+}
+
+func TestAmbiguousVerbDampened(t *testing.T) {
+	defs := []pipe.Definition{
+		{
+			Name:     "calendar",
+			Category: "time",
+			Triggers: pipe.Triggers{
+				Keywords: []string{"calendar", "schedule", "meeting", "event"},
+			},
+			Vocabulary: pipe.DefinitionVocabulary{
+				Verbs: map[string][]string{
+					"delete": {"calendar.delete"},
+				},
+			},
+		},
+		{
+			Name:     "todo",
+			Category: "general",
+			Triggers: pipe.Triggers{
+				Keywords: []string{"todo", "task", "todos"},
+			},
+			Vocabulary: pipe.DefinitionVocabulary{
+				Verbs: map[string][]string{
+					"delete": {"todo.remove"},
+				},
+			},
+		},
+		{
+			Name:     "chat",
+			Category: "general",
+			Triggers: pipe.Triggers{
+				Keywords: []string{"chat"},
+			},
+		},
+	}
+	r := NewRouter(defs, nil)
+	defer r.Close()
+
+	// "delete that" — "that" is a stop word, so only "delete" scores.
+	// Both calendar and todo have "delete", so BM25 is ambiguous.
+	result := r.Route(context.Background(), "delete that", parser.ParsedSignal{
+		Verbs:   []string{"calendar", "todo"},
+		Actions: map[string]string{"calendar": "delete", "todo": "remove"},
+	})
+
+	if result.Pipe == "calendar" {
+		t.Errorf("expected ambiguous verb to NOT route to calendar, got %s (layer %d)", result.Pipe, result.Layer)
+	}
+}
+
+func TestKeywordWithCompetingTermsRoutesCorrectly(t *testing.T) {
+	defs := []pipe.Definition{
+		{
+			Name:        "spec",
+			Description: "Interactive specification collaboration — generates, updates, and manages spec files.",
+			Triggers: pipe.Triggers{
+				Keywords: []string{"spec", "specification"},
+			},
+			Vocabulary: pipe.DefinitionVocabulary{
+				Verbs: map[string][]string{
+					"spec":    {"spec"},
+					"specify": {"spec"},
+				},
+			},
+		},
+		{
+			Name:        "study",
+			Description: "Gathers and compresses relevant context from a source within a token budget.",
+			Triggers: pipe.Triggers{
+				Keywords: []string{"study", "context", "codebase", "research"},
+			},
+		},
+		{
+			Name:     "chat",
+			Category: "general",
+			Triggers: pipe.Triggers{
+				Keywords: []string{"chat"},
+			},
+		},
+	}
+	r := NewRouter(defs, nil)
+	defer r.Close()
+
+	// "spec" is the verb (action) even though "research" (topic) matches study.
+	// Parsed verb routing (layer 2) should catch this before BM25.
+	result := r.Route(context.Background(), "let's spec a research pipe for virgil", parser.ParsedSignal{Verb: "spec"})
+	if result.Pipe != "spec" {
+		t.Errorf("expected spec, got %s (layer %d)", result.Pipe, result.Layer)
+	}
+	if result.Layer != LayerParsed {
+		t.Errorf("expected layer %d, got %d", LayerParsed, result.Layer)
 	}
 }
 
