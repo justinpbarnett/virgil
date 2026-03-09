@@ -53,36 +53,12 @@ func failHandler() pipe.StreamHandler {
 	}
 }
 
-// slowPassHandler sleeps for d before succeeding. Respects context cancellation.
-func slowPassHandler(d time.Duration) pipe.StreamHandler {
-	return func(ctx context.Context, input envelope.Envelope, flags map[string]string, sink func(string)) envelope.Envelope {
-		select {
-		case <-time.After(d):
-		case <-ctx.Done():
-			return envelope.NewFatalError("test-pipe", "cancelled")
-		}
-		out := envelope.New("test-pipe", "run")
-		out.Content = "ok"
-		out.ContentType = envelope.ContentText
-		return out
-	}
-}
-
 // newRegistry creates a registry with a single StreamHandler registered under
 // the given pipe name.
 func newRegistry(pipeName string, handler pipe.StreamHandler) *pipe.Registry {
 	reg := pipe.NewRegistry()
 	reg.RegisterStream(pipeName, handler)
 	return reg
-}
-
-// makeConfig returns a GraphConfig with the given pipe name and failure mode.
-func makeConfig(pipeName, onFailure string) GraphConfig {
-	return GraphConfig{
-		Pipe:          pipeName,
-		OnTaskFailure: onFailure,
-		MaxParallel:   1, // sequential by default in tests unless overridden
-	}
 }
 
 func seedEnvelope() envelope.Envelope {
