@@ -11,14 +11,18 @@ import (
 	"github.com/justinpbarnett/virgil/internal/config"
 	"github.com/justinpbarnett/virgil/internal/envelope"
 	"github.com/justinpbarnett/virgil/internal/pipe"
+	"github.com/justinpbarnett/virgil/internal/pipeutil"
 	"github.com/justinpbarnett/virgil/internal/store"
+	"github.com/justinpbarnett/virgil/internal/webscrape"
 )
 
 // Config holds the dependencies for the study pipe handler.
 type Config struct {
-	Provider   bridge.Provider // may be nil — Tier 3 disabled
-	Store      *store.Store    // for memory source
-	WorkDir    string          // workspace root for codebase/file sources
+	Provider   bridge.Provider    // may be nil — AI compression disabled
+	Store      *store.Store       // for memory source
+	WorkDir    string             // workspace root for codebase/file sources
+	Fetcher    *webscrape.Fetcher // for web source; nil disables web
+	Searcher   webscrape.Searcher // for web query discovery; nil = URL-only mode
 	PipeConfig config.PipeConfig
 	Logger     *slog.Logger
 }
@@ -34,11 +38,11 @@ func NewHandler(cfg Config) pipe.Handler {
 		out := envelope.New("study", "gather")
 		out.Args = flags
 
-		source := flagOrDefault(flags, "source", "codebase")
-		role := flagOrDefault(flags, "role", "general")
-		depth := flagOrDefault(flags, "depth", "normal")
+		source := pipeutil.FlagOrDefault(flags, "source", "codebase")
+		role := pipeutil.FlagOrDefault(flags, "role", "general")
+		depth := pipeutil.FlagOrDefault(flags, "depth", "normal")
 		entry := flags["entry"]
-		compression := flagOrDefault(flags, "compression", "ai")
+		compression := pipeutil.FlagOrDefault(flags, "compression", "ai")
 
 		budget := 8000
 		if b, err := strconv.Atoi(flags["budget"]); err == nil && b > 0 {
@@ -68,6 +72,8 @@ func NewHandler(cfg Config) pipe.Handler {
 			provider:     cfg.Provider,
 			store:        cfg.Store,
 			workDir:      cfg.WorkDir,
+			fetcher:      cfg.Fetcher,
+			searcher:     cfg.Searcher,
 			logger:       logger,
 		})
 		if err != nil {
@@ -95,6 +101,8 @@ type studyParams struct {
 	provider     bridge.Provider
 	store        *store.Store
 	workDir      string
+	fetcher      *webscrape.Fetcher
+	searcher     webscrape.Searcher
 	logger       *slog.Logger
 }
 
@@ -237,7 +245,10 @@ func selectBackend(p studyParams) (SourceBackend, error) {
 		return newFileBackend(p.workDir, p.logger), nil
 
 	case "web":
-		return nil, fmt.Errorf("web source not yet implemented")
+		if p.fetcher == nil {
+			return nil, fmt.Errorf("web source requires an HTTP fetcher (not configured)")
+		}
+		return newWebBackend(p.fetcher, p.searcher, p.logger), nil
 
 	default:
 		return nil, fmt.Errorf("unsupported source: %s", p.source)
@@ -264,6 +275,8 @@ func buildDiscoveryStats(candidates []Candidate) DiscoveryStats {
 			stats.LSPCandidates++
 		case "memory":
 			stats.IndexCandidates++
+		case "web":
+			stats.WebCandidates++
 		}
 	}
 	return stats
@@ -282,13 +295,6 @@ func countUniquePaths(items []OutputItem) int {
 		seen[item.Path] = struct{}{}
 	}
 	return len(seen)
-}
-
-func flagOrDefault(flags map[string]string, key, defaultVal string) string {
-	if v, ok := flags[key]; ok && v != "" {
-		return v
-	}
-	return defaultVal
 }
 
 // SearchCodebase runs a structural codebase search for the given query and

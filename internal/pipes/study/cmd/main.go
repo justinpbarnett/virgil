@@ -2,17 +2,20 @@ package main
 
 import (
 	"fmt"
+	"net/http"
 	"os"
+	"time"
 
 	"github.com/justinpbarnett/virgil/internal/pipehost"
 	"github.com/justinpbarnett/virgil/internal/pipes/study"
 	"github.com/justinpbarnett/virgil/internal/store"
+	"github.com/justinpbarnett/virgil/internal/webscrape"
 )
 
 func main() {
 	logger := pipehost.NewPipeLogger("study")
 
-	// Provider is optional — Tiers 0-2 work without it
+	// Provider is optional — AI compression (Tier 3) works without it
 	provider, providerErr := pipehost.BuildProviderFromEnvWithLogger(logger)
 	if providerErr != nil {
 		logger.Warn("AI provider unavailable, Tier 3 compression disabled", "error", providerErr)
@@ -44,10 +47,30 @@ func main() {
 		}
 	}
 
+	// Build HTTP client and web fetcher for the web source
+	httpClient := &http.Client{
+		Timeout: 30 * time.Second,
+	}
+	fetcher := webscrape.New(httpClient, logger)
+	defer fetcher.Close()
+
+	if key := os.Getenv("VIRGIL_BRIGHTDATA_KEY"); key != "" {
+		fetcher.SetBrightDataKey(key)
+	}
+
+	// SearXNG searcher is optional — enabled only when VIRGIL_SEARXNG_URL is set
+	var searcher webscrape.Searcher
+	if searxngURL := os.Getenv("VIRGIL_SEARXNG_URL"); searxngURL != "" {
+		searcher = webscrape.NewSearXNGSearcher(searxngURL, httpClient, logger)
+		logger.Info("web search configured", "searxng_url", searxngURL)
+	}
+
 	handler := study.NewHandler(study.Config{
 		Provider:   provider,
 		Store:      s,
 		WorkDir:    workDir,
+		Fetcher:    fetcher,
+		Searcher:   searcher,
 		PipeConfig: pc,
 		Logger:     logger,
 	})

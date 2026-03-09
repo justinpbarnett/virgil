@@ -14,11 +14,16 @@ triggers:
     - context
     - codebase
     - research
+    - scrape
+    - fetch
+    - webpage
   patterns:
     - "study {source}"
     - "study {source} for {topic}"
     - "gather context from {source} about {topic}"
     - "understand {topic} in {source}"
+    - "research {topic} online"
+    - "fetch {entry}"
 
 flags:
   source:
@@ -61,6 +66,8 @@ vocabulary:
     understand: [study]
     explore: [study]
     research: [study]
+    scrape: [study]
+    fetch: [study]
   types: {}
   sources:
     codebase: [codebase]
@@ -69,6 +76,11 @@ vocabulary:
     files: [files]
     docs: [files]
     notes: [memory]
+    web: [web]
+    url: [web]
+    site: [web]
+    page: [web]
+    article: [web]
   modifiers:
     shallow: [shallow]
     deep: [deep]

@@ -101,6 +101,7 @@ type DiscoveryStats struct {
 	TextCandidates    int `json:"text_candidates"`
 	IndexCandidates   int `json:"index_candidates"`
 	LSPCandidates     int `json:"lsp_candidates"`
+	WebCandidates     int `json:"web_candidates"`
 	DeduplicatedTotal int `json:"deduplicated_total"`
 }
 

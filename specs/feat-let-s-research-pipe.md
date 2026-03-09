@@ -1,26 +1,32 @@
+# Feature: Progressive Web Source for Study Pipe
 
+## Metadata
 
-I need to understand the existing pipe infrastructure before speccing a research pipe. Let me examine the codebase.
-
-```md
 type: `feat`
 task_id: `research-pipe`
-prompt: Add a research pipe that retrieves, synthesizes, and caches external information for use in Virgil's processing pipeline.
-```
-
----
+prompt: Implement the study pipe's web source backend using a progressive four-tier scraping strategy — start simple, escalate intelligently, only use advanced resources when necessary.
 
 ## Feature Description
 
-A research pipe that accepts a query, searches for relevant information across configured sources, synthesizes findings into a structured result, and caches responses to avoid redundant lookups. It operates as a standard pipe — one envelope in, one envelope out — composable with any other pipe in the system.
+The study pipe already declares `source: web` but returns "web source not yet implemented." This feature implements the web source backend using Daniel Miessler's progressive web scraping pattern: a four-tier fallback system that starts with the cheapest/fastest method and escalates only when simpler tiers fail.
 
-The research pipe is the system's interface to external knowledge. When the router determines that a query requires information Virgil doesn't have in memory or local store, the research pipe fetches it.
+The progressive scraper is reusable infrastructure. It lives in its own package (`internal/webscrape/`) so any pipe — study, chat, spec, or future pipes — can fetch web content without duplicating scraping logic.
+
+The study pipe's existing discover → extract → rank → compress pipeline stays unchanged. The web backend simply implements the `SourceBackend` interface, using the progressive scraper internally to fetch and extract content from URLs.
+
+### Why Not a Separate Research Pipe?
+
+The study pipe already owns the research domain:
+- `pipe.yaml` declares `source: web` as a valid flag value
+- The "research" keyword routes to study (`vocabulary.verbs.research: [study]`)
+- The discover → extract → rank → compress pipeline is exactly the flow research needs
+- A separate pipe would duplicate infrastructure and conflict with routing
 
 ## User Story
 
-As a **Virgil user**, I want to ask questions that require external research so that I get synthesized answers without leaving the TUI.
+As a **Virgil user**, I want to say "study web for {topic}" or "research {topic}" so that Virgil retrieves, scrapes, and synthesizes web content into compressed context — the same way it does for codebase or memory sources.
 
-As a **pipeline author**, I want a composable research pipe so that I can include information retrieval in any workflow.
+As a **pipeline author**, I want a reusable `webscrape.Fetch(url)` function so that any pipe can reliably extract content from a URL without knowing the scraping details.
 
 ## Relevant Files
 
@@ -28,287 +34,381 @@ As a **pipeline author**, I want a composable research pipe so that I can includ
 
 | File | Why |
 |---|---|
-| `cmd/virgil/main.go` | Register the research pipe alongside the existing study pipe in the execution pipeline setup |
-| `internal/pipe/` | Understand the pipe interface contract — research pipe must conform to it |
-| `internal/pipehost/` | Register research pipe in the host so it's discoverable by the router and planner |
-| `internal/router/` | Add routing rules so research-intent signals dispatch to the research pipe |
-| `internal/planner/` | Planner needs to know when to include research steps in execution plans |
-| `internal/store/` | Research cache reads/writes go through the store interface |
+| `internal/pipes/study/study.go` | Wire the new `webBackend` into `selectBackend()` — replace the `"web source not yet implemented"` error |
+| `internal/pipes/study/discover.go` | Contains the `SourceBackend` interface that the web backend must implement |
+| `internal/pipes/study/cmd/main.go` | Pass HTTP client and optional API keys to the study handler config |
+| `internal/pipes/study/pipe.yaml` | Add web-specific vocabulary (sources: web, url, site, page; verbs: scrape, fetch) |
 
 ### New Files — Create
 
 | File | Purpose |
 |---|---|
-| `internal/pipe/research/research.go` | Pipe handler: orchestrates search → filter → synthesize flow |
-| `internal/pipe/research/research_test.go` | Unit tests |
-| `internal/pipe/research/source.go` | Source interface and built-in source implementations |
-| `internal/pipe/research/source_test.go` | Source adapter tests |
-| `internal/pipe/research/cache.go` | Cache layer — TTL-based, keyed by normalized query |
-| `internal/pipe/research/cache_test.go` | Cache tests |
-| `internal/pipe/research/synthesizer.go` | Takes raw source results, produces a single coherent answer |
-| `internal/pipe/research/synthesizer_test.go` | Synthesizer tests |
-| `internal/pipe/research/pipe.toml` | [?] Pipe definition file — depends on existing pipe definition schema |
+| `internal/webscrape/webscrape.go` | Progressive scraper: `Fetch(ctx, url) → (content, tier, error)` — tries tiers 1→4 sequentially |
+| `internal/webscrape/webscrape_test.go` | Unit tests with httptest servers simulating each tier's failure modes |
+| `internal/webscrape/tier_curl.go` | Tier 2: HTTP GET with full browser header simulation |
+| `internal/webscrape/tier_browser.go` | Tier 3: Headless browser via `chromedp` — full JS rendering |
+| `internal/webscrape/tier_brightdata.go` | Tier 4: Bright Data MCP — residential proxies, CAPTCHA solving |
+| `internal/webscrape/ssrf.go` | URL validation — block private/internal IP ranges (RFC 1918, localhost, link-local) |
+| `internal/webscrape/ssrf_test.go` | SSRF validation tests |
+| `internal/webscrape/html.go` | HTML→text extraction: readability-style content extraction from raw HTML |
+| `internal/webscrape/html_test.go` | HTML extraction tests |
+| `internal/webscrape/search.go` | `Searcher` interface + `SearXNGSearcher` implementation |
+| `internal/webscrape/search_test.go` | Search integration tests |
+| `internal/pipes/study/web.go` | `webBackend` implementing `SourceBackend` — uses `webscrape.Fetch()` + search API for discovery |
+| `internal/pipes/study/web_test.go` | Web backend tests |
 
 ## Implementation Plan
 
-### Phase 1 — Foundation
+### Phase 1: Progressive Scraper Package (Tiers 1-2)
 
-Define the research pipe's types, interfaces, and cache layer. No external calls yet. Everything is testable with stubs.
+Build `internal/webscrape/` with Tier 1 (simple GET) and Tier 2 (browser-header GET), plus SSRF protection and HTML→text extraction. No pipe integration yet. Fully testable in isolation.
 
-### Phase 2 — Core
+### Phase 2: Advanced Tiers (3-4)
 
-Implement source adapters (starting with one concrete source), the synthesizer, and the main pipe handler that wires them together.
+Add Tier 3 (headless browser via `chromedp` — JS rendering for SPAs) and Tier 4 (Bright Data MCP — residential proxies, CAPTCHA solving for hardened sites).
 
-### Phase 3 — Integration
+### Phase 3: Study Pipe Web Backend
 
-Register in pipehost, wire routing rules, connect to store for persistent cache, verify end-to-end through TUI.
+Implement `webBackend` conforming to `SourceBackend`, wire it into the study pipe's `selectBackend()` switch.
+
+### Phase 4: Search-Based Discovery
+
+Add SearXNG integration so `source: web` can discover URLs from a query (not just scrape a given URL). Zero-cost, self-hosted.
 
 ## Step by Step Tasks
 
-### Phase 1 — Foundation
+IMPORTANT: Execute every step in order, top to bottom.
 
-**1. Define core types**
-File: `internal/pipe/research/research.go`
+### 1. Define the progressive scraper types and Fetch function
+
+File: `internal/webscrape/webscrape.go`
+
+- Define `Result` struct: `Content string`, `ContentType string` (html, text, markdown), `Tier int`, `URL string`, `StatusCode int`, `Duration time.Duration`
+- Define `FetchOption` functional options: `WithTimeout(d)`, `WithMaxTier(n)`, `WithHeaders(map[string]string)`
+- Define `Fetcher` struct holding an `*http.Client` and config
+- Implement `func (f *Fetcher) Fetch(ctx context.Context, url string, opts ...FetchOption) (*Result, error)`:
+  - Validate URL (must be http/https, pass SSRF check)
+  - Try Tier 1 (simple GET), if success → return
+  - Try Tier 2 (curl-style headers), if success → return
+  - Try Tier 3 (chromedp headless browser), if success → return
+  - Try Tier 4 (Bright Data MCP), if success → return
+  - Return `Result` with the tier that succeeded
+  - Each tier only attempted if `maxTier` config allows it
+- "Success" means: HTTP 200, response body > 100 bytes, content-type is text/html or text/plain
+- Non-200 status codes, empty bodies, or connection errors trigger escalation to next tier
 
 ```go
-// Query is the research pipe's input, extracted from the envelope.
-type Query struct {
-    Text       string
-    MaxSources int
-    MaxAge     time.Duration // accept cached results up to this old
-}
-
-// Finding represents one piece of retrieved information.
-type Finding struct {
-    Source    string
-    Content  string
-    URL      string
-    Retrieved time.Time
-    Confidence float64 // 0.0–1.0, source-determined
-}
-
-// Result is the research pipe's output, written back to the envelope.
 type Result struct {
-    Query     string
-    Synthesis string
-    Findings  []Finding
-    Cached    bool
-    Duration  time.Duration
+    Content     string
+    ContentType string        // "html", "text", "markdown"
+    Tier        int           // which tier succeeded (1-4)
+    URL         string        // final URL after redirects
+    StatusCode  int
+    Duration    time.Duration
 }
+
+type Fetcher struct {
+    client       *http.Client
+    logger       *slog.Logger
+    maxTier      int    // default 4 — all tiers enabled
+    brightDataKey string // Tier 4 API key, empty disables Tier 4
+}
+
+func New(client *http.Client, logger *slog.Logger) *Fetcher
+func (f *Fetcher) Fetch(ctx context.Context, url string) (*Result, error)
 ```
 
-Conform to the existing pipe handler contract. [?] Need to verify the exact handler signature — likely `func(ctx context.Context, env *envelope.Envelope) (*envelope.Envelope, error)` or similar.
+### 2. Implement Tier 1: Simple GET
 
-**2. Define the Source interface**
-File: `internal/pipe/research/source.go`
+File: `internal/webscrape/webscrape.go` (inside `Fetch`)
+
+- Plain `http.Get` with the fetcher's client
+- Minimal headers: just `Accept: text/html`
+- 10-second timeout (from context)
+- Read body up to 2MB limit
+- Check success criteria: status 200, body length > 100 bytes
+
+### 3. Implement Tier 2: Browser-Header GET
+
+File: `internal/webscrape/tier_curl.go`
+
+- Same HTTP client, but with full browser header set:
+  ```
+  User-Agent: Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 ...
+  Accept: text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8
+  Accept-Language: en-US,en;q=0.9
+  Accept-Encoding: gzip, deflate, br
+  Sec-Fetch-Dest: document
+  Sec-Fetch-Mode: navigate
+  Sec-Fetch-Site: none
+  Sec-Fetch-User: ?1
+  Upgrade-Insecure-Requests: 1
+  ```
+- Handle gzip/br decompression
+- Follow redirects (up to 5)
+- Same 2MB body limit and success criteria
+
+### 4. Implement SSRF protection
+
+File: `internal/webscrape/ssrf.go`
+
+- `func ValidateURL(rawURL string) (string, error)` — parse, normalize, and validate
+- Block schemes other than `http` and `https`
+- Resolve hostname to IP, block if IP falls in:
+  - RFC 1918: `10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`
+  - Loopback: `127.0.0.0/8`, `::1`
+  - Link-local: `169.254.0.0/16`, `fe80::/10`
+  - Multicast, broadcast, unspecified (`0.0.0.0`)
+- Return normalized URL on success
+- Called at the top of `Fetcher.Fetch()` before any tier attempts
+
+### 5. Write SSRF protection tests
+
+File: `internal/webscrape/ssrf_test.go`
+
+- Valid public URLs pass
+- `http://127.0.0.1`, `http://localhost`, `http://[::1]` → rejected
+- `http://10.0.0.1`, `http://192.168.1.1`, `http://172.16.0.1` → rejected
+- `http://169.254.169.254` (cloud metadata) → rejected
+- `ftp://`, `file://`, `javascript:` schemes → rejected
+- DNS rebinding: hostname that resolves to private IP → rejected (resolved at validation time)
+- Valid HTTPS URLs pass
+
+### 6. Implement Tier 3: Headless Browser
+
+File: `internal/webscrape/tier_browser.go`
+
+- Uses `chromedp` for full headless Chrome execution
+- `func (f *Fetcher) fetchTier3(ctx context.Context, url string) (*Result, error)`
+- Create a new browser context with 20-second timeout
+- Navigate to URL, wait for `document.readyState === "complete"` or `networkIdle`
+- Extract rendered DOM via `document.documentElement.outerHTML`
+- Return HTML content with `Tier: 3`
+- Handles: JavaScript-rendered SPAs (React, Vue, Angular), cookie consent walls, lazy-loaded content
+- Graceful degradation: if Chrome/Chromium not installed, log warning and skip to Tier 4
+
+### 7. Implement Tier 4: Bright Data MCP
+
+File: `internal/webscrape/tier_brightdata.go`
+
+- `func (f *Fetcher) fetchTier4(ctx context.Context, url string) (*Result, error)`
+- Calls Bright Data's Web Scraper API (REST):
+  - `POST https://api.brightdata.com/request` with API key header
+  - Body: `{"url": url, "format": "raw"}`
+  - Response: scraped HTML content
+- If `brightDataKey` is empty, skip tier (return sentinel error to continue escalation)
+- 15-second timeout
+- Return HTML content with `Tier: 4`
+- Log cost/usage info from response headers for observability
+
+### 8. Implement HTML→text extraction
+
+File: `internal/webscrape/html.go`
+
+- `func ExtractText(htmlContent string) (string, error)` — readability-style extraction
+- Use `golang.org/x/net/html` to parse the DOM
+- Remove `<script>`, `<style>`, `<nav>`, `<header>`, `<footer>`, `<aside>` elements
+- Extract text from `<article>`, `<main>`, `<p>`, `<h1>`-`<h6>`, `<li>`, `<td>`, `<blockquote>`, `<pre>`, `<code>`
+- Preserve heading hierarchy (prefix with `# `, `## `, etc.)
+- Preserve code blocks (wrap in triple backticks)
+- Collapse whitespace, trim empty lines
+- If `<article>` or `<main>` exists, prefer its content over full-page extraction
+- Return clean text suitable for tokenization and ranking
+
+### 9. Write HTML extraction tests
+
+File: `internal/webscrape/html_test.go`
+
+- Article extraction: `<article>` content preferred over sidebar/nav
+- Script/style removal: no JavaScript or CSS in output
+- Heading preservation: `<h2>Title</h2>` → `## Title`
+- Code block preservation: `<pre><code>...</code></pre>` → fenced code block
+- Whitespace normalization: no runs of blank lines
+- Empty/minimal HTML: returns empty string, no error
+- Malformed HTML: graceful degradation (best-effort extraction)
+
+### 10. Write progressive scraper tests
+
+File: `internal/webscrape/webscrape_test.go`
+
+- Tier 1 success: simple server returns HTML → Tier 1 result
+- Tier 1 fail, Tier 2 success: server checks User-Agent, rejects basic requests → Tier 2 result
+- Tier 1+2 fail, Tier 3 success: JS-rendered content only available via headless browser
+- All free tiers fail, Tier 4 success: Bright Data returns content
+- All tiers fail: returns error with last tier's status
+- SSRF rejection: private IP URLs rejected before any tier runs
+- Redirect handling: 301 → final URL recorded in result
+- Body size limit: 5MB response → only first 2MB read
+- Context cancellation: returns context error immediately
+- Empty body: triggers escalation
+- Non-HTML content type: still returns content (for text/plain, application/json)
+- `maxTier` respected: `maxTier=2` skips Tiers 3-4 even on failure
+
+### 11. Implement the web SourceBackend for study pipe
+
+File: `internal/pipes/study/web.go`
+
+- `webBackend` struct: holds `*webscrape.Fetcher`, optional `webscrape.Searcher`, `*slog.Logger`
+- Max 3 concurrent URL fetches via `errgroup` with semaphore
+- Implement `SourceBackend` interface:
+  - `Discover(ctx, query, entry, depth)`:
+    - If `entry` is a URL → single candidate from that URL
+    - If `entry` is empty and `query` is provided → use Searcher to find URLs
+    - If Searcher is nil and no URL entry → return error "web search not configured; provide a URL via entry flag"
+    - Return `[]Candidate` with Source="web", Location.Path=URL
+  - `Extract(ctx, candidates, role)`:
+    - For each candidate URL, call `webscrape.Fetch(ctx, url)`
+    - Run `webscrape.ExtractText()` on HTML results
+    - Return `[]ExtractedItem` with content, token count, metadata
+    - Parallel extraction with `errgroup`, max 3 concurrent, per-URL timeout
+    - Individual failures logged but non-fatal (skip that URL)
 
 ```go
-// Source retrieves findings for a query from a single external provider.
-type Source interface {
-    Name() string
-    Search(ctx context.Context, query string, limit int) ([]Finding, error)
-}
-```
-
-Implement a `StubSource` in test files for Phase 1 testing.
-
-**3. Implement the cache layer**
-File: `internal/pipe/research/cache.go`
-
-- Key: normalized query string (lowercase, trimmed, collapsed whitespace)
-- Value: `Result` with TTL
-- Backend: in-memory `sync.Map` with lazy expiration, backed by store for persistence
-- Methods:
-  - `Get(query string, maxAge time.Duration) (*Result, bool)`
-  - `Put(query string, result *Result)`
-  - `Invalidate(query string)`
-  - `Clear()`
-
-**4. Write cache tests**
-File: `internal/pipe/research/cache_test.go`
-
-- Cache miss returns `nil, false`
-- Cache hit within TTL returns result
-- Cache hit beyond TTL returns `nil, false`
-- `Invalidate` removes entry
-- `Clear` empties all entries
-- Concurrent read/write safety
-
-### Phase 2 — Core
-
-**5. Implement the synthesizer**
-File: `internal/pipe/research/synthesizer.go`
-
-```go
-type Synthesizer struct {
-    // Uses the bridge package for AI synthesis when multiple findings need merging.
-    // Falls back to returning the highest-confidence finding verbatim when:
-    //   - only one finding exists
-    //   - all findings come from the same source
+type webBackend struct {
+    fetcher  *webscrape.Fetcher
+    searcher webscrape.Searcher // nil = URL-only mode
+    logger   *slog.Logger
 }
 
-func (s *Synthesizer) Synthesize(ctx context.Context, query string, findings []Finding) (string, error)
+func newWebBackend(fetcher *webscrape.Fetcher, searcher webscrape.Searcher, logger *slog.Logger) *webBackend
+
+func (b *webBackend) Discover(ctx context.Context, query, entry, depth string) ([]Candidate, error)
+func (b *webBackend) Extract(ctx context.Context, candidates []Candidate, role string) ([]ExtractedItem, error)
 ```
 
-Deterministic-first pattern: if one finding with confidence ≥ 0.9, return it directly. Multiple findings or ambiguity → use bridge for AI synthesis. Log when AI is invoked so the pattern can be analyzed.
+### 12. Write web backend tests
 
-**6. Implement first concrete source adapter**
-File: `internal/pipe/research/source.go`
+File: `internal/pipes/study/web_test.go`
 
-[?] Which source first? Options:
-- **Web search API** (Brave Search, SearXNG, Tavily) — broadest utility
-- **Local file search** — searches the store/memory for relevant past interactions
-- **Documentation scraper** — fetches and parses a URL
+- URL entry: `entry="https://example.com"` → discovers 1 candidate → extracts content
+- Query with searcher: `query="golang concurrency"` → searcher returns URLs → discovers candidates
+- Query without searcher: returns clear error message
+- Empty query and entry: returns error
+- Fetch failure: candidate skipped, no error if other candidates succeed
+- All fetches fail: returns error
+- HTML extraction: raw HTML → clean text in ExtractedItem.Content
+- Token counting: content has accurate token estimate
+- Concurrency limit: 10 URLs → max 3 fetched in parallel
 
-Recommendation: Start with a **local memory source** (searches the store) and a **web source interface** with one concrete implementation. Local-first matches the project philosophy.
+### 13. Wire webBackend into selectBackend
 
-```go
-// MemorySource searches the local store for relevant past results.
-type MemorySource struct {
-    store store.Store
-}
+File: `internal/pipes/study/study.go`
 
-// WebSource searches an external API.
-type WebSource struct {
-    client  *http.Client
-    baseURL string
-    apiKey  string
-}
-```
+- Replace the `case "web": return nil, fmt.Errorf("web source not yet implemented")` with:
+  ```go
+  case "web":
+      return newWebBackend(cfg.Fetcher, cfg.Searcher, p.logger), nil
+  ```
+- Add `Fetcher *webscrape.Fetcher` and `Searcher webscrape.Searcher` to the `Config` struct
 
-**7. Implement the pipe handler**
-File: `internal/pipe/research/research.go`
+### 14. Update study pipe cmd/main.go
 
-```go
-func New(sources []Source, cache *Cache, synth *Synthesizer) *Pipe
+File: `internal/pipes/study/cmd/main.go`
 
-// Handle is the pipe contract method.
-func (p *Pipe) Handle(ctx context.Context, env *envelope.Envelope) (*envelope.Envelope, error) {
-    // 1. Extract Query from envelope
-    // 2. Check cache → return early if hit
-    // 3. Fan out to sources (parallel, context-bounded)
-    // 4. Collect findings, sort by confidence
-    // 5. Synthesize
-    // 6. Cache result
-    // 7. Write Result to envelope, return
-}
-```
+- Create `http.Client` with 30s timeout
+- Create `webscrape.Fetcher` with the client, maxTier=4
+- Read `VIRGIL_BRIGHTDATA_KEY` env var → pass to fetcher config
+- Optionally create `SearXNGSearcher` if `VIRGIL_SEARXNG_URL` is set (default: not configured)
+- Pass fetcher and searcher to `study.Config`
 
-Fan-out uses `errgroup` with the envelope's context. Individual source failures are logged but non-fatal — the pipe succeeds if at least one source returns results. All sources failing is an error.
+### 15. Update study pipe.yaml vocabulary
 
-**8. Write pipe handler tests**
-File: `internal/pipe/research/research_test.go`
+File: `internal/pipes/study/pipe.yaml`
 
-- Cache hit skips sources entirely
-- Single source, single finding — no synthesizer call
-- Multiple sources — findings merged, synthesizer called
-- Source timeout — other sources still return
-- All sources fail — returns error
-- Result is cached after successful research
-- Envelope in/out contract is maintained
+- Add to vocabulary.sources: `web: [web]`, `url: [web]`, `site: [web]`, `page: [web]`, `article: [web]`
+- Add to triggers.patterns: `"research {topic} online"`, `"fetch {entry}"`
+- Add to triggers.keywords: `scrape`, `fetch`, `webpage`
 
-### Phase 3 — Integration
+### 16. Implement search-based URL discovery
 
-**9. Register the research pipe in pipehost**
-File: modify `internal/pipehost/` (exact file TBD after reading pipehost structure)
+File: `internal/webscrape/search.go`
 
-Register `research` as a known pipe. Inject dependencies: store (for MemorySource + cache persistence), bridge (for synthesizer), configured web source credentials.
-
-**10. Add routing rules**
-File: modify `internal/router/`
-
-Research intent signals:
-- Explicit: "research", "look up", "find out", "what is", "search for"
-- Contextual: queries about facts, current events, or topics not in memory
-
-The router should check memory first. Research pipe fires when memory has insufficient results. [?] Does the router currently support "try X, fall back to Y" patterns, or does this need to be a pipeline (memory pipe → conditional → research pipe)?
-
-**11. Create pipe definition**
-File: `internal/pipe/research/pipe.toml` [?]
-
-```toml
-[pipe]
-name = "research"
-description = "Retrieves and synthesizes information from configured sources"
-input = "query"
-output = "research-result"
-
-[config]
-max_sources = 3
-cache_ttl = "1h"
-source_timeout = "10s"
-```
-
-Schema depends on existing pipe definition format — verify against existing pipes (study pipe).
-
-**12. Wire into main.go**
-File: `cmd/virgil/main.go`
-
-Add research pipe to the pipe initialization block alongside the study pipe. Pass config, store, and bridge dependencies.
+- `Searcher` interface: `Search(ctx, query, limit) ([]SearchResult, error)`
+- `SearchResult`: `Title string`, `URL string`, `Snippet string`
+- Implement `SearXNGSearcher` — queries a self-hosted SearXNG instance (JSON API)
+  - Configurable base URL (default `http://localhost:8888`)
+  - `/search?q={query}&format=json&engines=google,duckduckgo`
+  - Zero-cost, no API keys
+- Update `webBackend.Discover()`: when no URL entry is provided, use Searcher to find URLs from the query
+- Searcher is optional — if nil, URL-only mode (must provide entry)
 
 ## Testing Strategy
 
 ### Unit Tests
 
-| Test | Verifies |
+| Test File | Covers |
 |---|---|
-| Cache get/put/expire/invalidate | TTL logic, concurrent safety |
-| Source interface with stubs | Contract compliance |
-| Synthesizer with single finding | Deterministic passthrough |
-| Synthesizer with multiple findings | AI bridge invocation |
-| Handler cache hit path | Sources not called |
-| Handler all-sources-fail path | Error propagation |
-| Handler partial-source-fail path | Graceful degradation |
-| Query normalization | Consistent cache keys |
+| `internal/webscrape/webscrape_test.go` | Progressive 4-tier escalation, maxTier config, timeout, redirect, body limits |
+| `internal/webscrape/ssrf_test.go` | Private IP blocking, scheme validation, DNS rebinding |
+| `internal/webscrape/html_test.go` | HTML→text extraction, script removal, heading preservation |
+| `internal/webscrape/search_test.go` | SearXNG integration, query formatting, result parsing |
+| `internal/pipes/study/web_test.go` | SourceBackend contract, URL discovery, parallel extraction, concurrency limits |
 
 ### Integration Tests
 
-- End-to-end: envelope in → research pipe → envelope out with MemorySource backed by test store
-- Pipeline composition: research pipe chained with another pipe
+- End-to-end: `source=web, entry=https://example.com` → study pipe returns structured output with web content
+- Pipeline composition: study(source=web) → chat — web context feeds into conversation
 
 ### Edge Cases
 
-- Empty query → clear error, not a source call
-- Query that matches cache key but different MaxAge → respects caller's freshness requirement
-- Source returns zero findings → not an error, but synthesizer gets nothing → result says "no findings"
-- Context cancellation mid-research → clean shutdown, partial results not cached
+- URL with JavaScript-only content → Tiers 1/2 return near-empty body → Tier 3 (chromedp) renders JS and extracts
+- URL returns 429 (rate limit) → escalation to next tier
+- URL returns massive page (>2MB) → truncated, still extracted
+- HTTPS certificate error → logged, candidate skipped
+- Redirect loop → max 5 redirects, then error
+- Non-English content → extracted as-is, no language filtering
+- PDF/binary URL → content-type check, skip extraction (return raw URL as reference)
 
 ## Risk Assessment
 
 | Risk | Impact | Mitigation |
 |---|---|---|
-| External API rate limits / costs | Web source becomes unavailable or expensive | Cache aggressively, local source first, configurable TTL |
-| Slow sources block the pipe | TUI feels unresponsive | Per-source timeout via context, progressive results if pipeline supports it |
-| Cache grows unbounded | Memory pressure | LRU eviction or max-size cap on in-memory cache, persist to store |
-| AI synthesizer hallucination | Incorrect research results | Include raw findings in Result so the user or downstream pipe can verify |
-| Envelope contract mismatch | Pipe won't compose | [?] Need to read existing pipe/envelope code to confirm exact contract |
+| Sites blocking Tier 1/2 → no content | Query returns empty results | Tier 3 (chromedp) handles JS-rendered sites; Tier 4 (Bright Data) handles anti-bot |
+| Bright Data costs accumulate | Unexpected bills | Tier 4 is last resort — only reached when 3 free tiers fail. Log usage for monitoring. |
+| chromedp requires Chrome/Chromium installed | Tier 3 fails on minimal systems | Graceful skip — log warning, continue to Tier 4. Document Chrome as optional dependency. |
+| Slow pages increase study pipe latency | TUI feels unresponsive for web source | Per-URL timeout (10s per tier), total backend timeout (30s), max 3 concurrent fetches |
+| HTML extraction misses main content | Poor quality context in study output | Prefer `<article>`/`<main>`, fallback to full body; improve heuristics iteratively |
+| Large pages consume token budget | Other study items crowded out | 2MB body cap, study pipe's existing rank/compress handles budget allocation |
+| SearXNG unavailable | Query-based web discovery fails | Graceful degradation: error message suggests using `entry` flag with direct URL |
+| SSRF via user-provided URLs | Internal network exposure | Block RFC 1918, loopback, link-local, and cloud metadata IPs before any fetch |
 
 ## Validation Commands
 
-```bash
-# Unit tests
-go test ./internal/pipe/research/... -v
+The build skill runs these commands as its final validation step before reporting.
 
-# Race detector (concurrent cache access)
-go test ./internal/pipe/research/... -race
+```bash
+# Unit tests for new packages
+go test ./internal/webscrape/... -v -count=1
+
+# Study pipe tests (existing + new web backend)
+go test ./internal/pipes/study/... -v -count=1
+
+# Race detector for parallel extraction
+go test ./internal/pipes/study/... -race -count=1
+
+# Full test suite
+just test
 
 # Build verification
-go build ./cmd/virgil/...
+just build
 
-# Vet
-go vet ./...
-
-# Full test suite (if make/just target exists)
-just check  # or make check
+# Lint
+just lint
 ```
 
-## Open Questions
+## Open Questions (Unresolved)
 
-| # | Question | Why It Matters | Recommended Answer |
-|---|---|---|---|
-| 1 | What is the exact pipe handler interface signature? | Research pipe must conform to it | Read `internal/pipe/` before implementation — do not guess |
-| 2 | How does the existing envelope carry typed data? | Determines how Query/Result are serialized into the envelope | Likely a `map[string]any` or typed field — follow the study pipe's pattern |
-| 3 | Which web search API to integrate first? | Affects dependencies, API key management, cost | Brave Search or SearXNG (self-hosted) — both have simple REST APIs. SearXNG if zero-cost is priority. |
-| 4 | Does the router support conditional fallback (try memory → research)? | Determines whether this is a single pipe or a mini-pipeline | If not, build as a pipeline: memory check → conditional branch → research. The pipe itself shouldn't own routing logic. |
-| 5 | Does `pipe.toml` exist as a convention? | Affects how the pipe is defined and discovered | Follow whatever the study pipe uses. If no definition file exists, skip this and register programmatically. |
-| 6 | Should research results feed back into memory/store permanently? | Affects whether Virgil "learns" from research | Yes — store research results so the same question is answered from memory next time. This is the "deterministic layers learn from AI misses" pattern from the README. |
+All questions resolved:
+
+| # | Question | Decision |
+|---|---|---|
+| 1 | Tier 3 (chromedp headless browser)? | **Yes** — included in Phase 2. Handles JS-rendered SPAs. Graceful skip if Chrome not installed. |
+| 2 | Tier 4 (Bright Data MCP)? | **Yes** — included in Phase 2. Last-resort tier. Requires `VIRGIL_BRIGHTDATA_KEY` env var; skipped if not set. |
+| 3 | Search engine for URL discovery? | **SearXNG** (self-hosted). Configured via `VIRGIL_SEARXNG_URL`. URL-only mode if not configured. |
+| 4 | Cache scraped content? | **Yes** — 24h TTL, keyed by normalized URL. Follow-up task after core scraper ships. |
+| 5 | Block private IP ranges? | **Yes** — SSRF protection in `internal/webscrape/ssrf.go`. Blocks RFC 1918, loopback, link-local, cloud metadata. |
+| 6 | Max concurrent fetches? | **3** concurrent URL fetches via `errgroup` semaphore. |
+
+## Sub-Tasks
+
+Single task — no decomposition needed. All four phases are sequential and tightly coupled.
