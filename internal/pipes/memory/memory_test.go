@@ -42,7 +42,7 @@ func TestStoreAction(t *testing.T) {
 
 func TestRetrieveAction(t *testing.T) {
 	s := testStore(t)
-	s.Save("OAuth uses short-lived tokens", nil)
+	s.Save("OAuth uses short-lived tokens", nil, nil)
 
 	handler := NewHandler(s, nil)
 	input := envelope.New("input", "test")

@@ -225,6 +225,124 @@ func TestTraverseFrom_EmptyAnchors(t *testing.T) {
 	}
 }
 
+// --- Two-hop traversal tests ---
+
+func TestTraverseFrom_TwoHop(t *testing.T) {
+	s := tempDB(t)
+
+	// Chain: A → B → C (via edges)
+	idA, _ := s.SaveInvocation("educate", "node A", "answer A")
+	idB, _ := s.SaveInvocation("educate", "node B", "answer B")
+	idC, _ := s.SaveInvocation("educate", "node C", "answer C")
+
+	s.CreateEdge(Edge{SourceID: idA, TargetID: idB, Relation: "co_occurred"})
+	s.CreateEdge(Edge{SourceID: idB, TargetID: idC, Relation: "co_occurred"})
+
+	// One-hop from A: only B
+	hop1, err := s.TraverseFrom([]string{idA}, []string{"co_occurred"}, 10)
+	if err != nil {
+		t.Fatalf("TraverseFrom depth=1: %v", err)
+	}
+	if len(hop1) != 1 || hop1[0].ID != idB {
+		t.Errorf("expected only B at depth=1, got %d results", len(hop1))
+	}
+
+	// Two-hop from A: B and C
+	both, err := s.TraverseFrom([]string{idA}, []string{"co_occurred"}, 10, 2)
+	if err != nil {
+		t.Fatalf("TraverseFrom depth=2: %v", err)
+	}
+
+	ids := map[string]bool{}
+	for _, m := range both {
+		ids[m.ID] = true
+	}
+	if !ids[idB] {
+		t.Error("expected B in two-hop results")
+	}
+	if !ids[idC] {
+		t.Error("expected C in two-hop results (two hops from A via B)")
+	}
+}
+
+func TestTraverseFrom_TwoHop_Dedup(t *testing.T) {
+	s := tempDB(t)
+
+	// A→B, A→C, B→C: C is reachable in one hop (A→C) and two hops (A→B→C)
+	idA, _ := s.SaveInvocation("educate", "node A", "answer A")
+	idB, _ := s.SaveInvocation("educate", "node B", "answer B")
+	idC, _ := s.SaveInvocation("educate", "node C", "answer C")
+
+	s.CreateEdge(Edge{SourceID: idA, TargetID: idB, Relation: "co_occurred"})
+	s.CreateEdge(Edge{SourceID: idA, TargetID: idC, Relation: "co_occurred"})
+	s.CreateEdge(Edge{SourceID: idB, TargetID: idC, Relation: "co_occurred"})
+
+	both, err := s.TraverseFrom([]string{idA}, []string{"co_occurred"}, 10, 2)
+	if err != nil {
+		t.Fatalf("TraverseFrom depth=2: %v", err)
+	}
+
+	// C should appear only once (from first-hop, closer position)
+	cCount := 0
+	for _, m := range both {
+		if m.ID == idC {
+			cCount++
+		}
+	}
+	if cCount != 1 {
+		t.Errorf("expected C exactly once in results (dedup), got %d times", cCount)
+	}
+}
+
+func TestTraverseFrom_DefaultDepth(t *testing.T) {
+	s := tempDB(t)
+
+	// Chain: A→B→C
+	idA, _ := s.SaveInvocation("educate", "node A", "answer A")
+	idB, _ := s.SaveInvocation("educate", "node B", "answer B")
+	idC, _ := s.SaveInvocation("educate", "node C", "answer C")
+
+	s.CreateEdge(Edge{SourceID: idA, TargetID: idB, Relation: "co_occurred"})
+	s.CreateEdge(Edge{SourceID: idB, TargetID: idC, Relation: "co_occurred"})
+
+	// No maxDepth arg: default is depth=1, so C should not appear
+	results, err := s.TraverseFrom([]string{idA}, []string{"co_occurred"}, 10)
+	if err != nil {
+		t.Fatalf("TraverseFrom default depth: %v", err)
+	}
+
+	for _, m := range results {
+		if m.ID == idC {
+			t.Error("C should not appear at default depth=1")
+		}
+	}
+}
+
+func TestTraverseFrom_TwoHop_Limit(t *testing.T) {
+	s := tempDB(t)
+
+	// A connects to B, C (hop1); B connects to D, E (hop2)
+	idA, _ := s.SaveInvocation("educate", "node A", "answer A")
+	idB, _ := s.SaveInvocation("educate", "node B", "answer B")
+	idC, _ := s.SaveInvocation("educate", "node C", "answer C")
+	idD, _ := s.SaveInvocation("educate", "node D", "answer D")
+	idE, _ := s.SaveInvocation("educate", "node E", "answer E")
+
+	s.CreateEdge(Edge{SourceID: idA, TargetID: idB, Relation: "co_occurred"})
+	s.CreateEdge(Edge{SourceID: idA, TargetID: idC, Relation: "co_occurred"})
+	s.CreateEdge(Edge{SourceID: idB, TargetID: idD, Relation: "co_occurred"})
+	s.CreateEdge(Edge{SourceID: idB, TargetID: idE, Relation: "co_occurred"})
+
+	// Limit=3: should return at most 3 results across both hops
+	results, err := s.TraverseFrom([]string{idA}, []string{"co_occurred"}, 3, 2)
+	if err != nil {
+		t.Fatalf("TraverseFrom limit test: %v", err)
+	}
+	if len(results) > 3 {
+		t.Errorf("expected at most 3 results with limit=3, got %d", len(results))
+	}
+}
+
 func TestOnDeleteCascade(t *testing.T) {
 	s := tempDB(t)
 

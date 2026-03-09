@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -29,6 +30,8 @@ type Memory struct {
 	Signal     string
 	Content    string
 	Tags       []string
+	Confidence float64
+	ValidUntil *time.Time // nil = never expires
 }
 
 // Entry represents an explicit memory entry (kind='explicit').
@@ -69,10 +72,10 @@ type Store struct {
 	db *sql.DB
 
 	// prepared statements for hot-path queries
-	listAllStateStmt       *sql.Stmt
-	searchRankStmt         *sql.Stmt
-	searchInvStmt          *sql.Stmt     // no pipe, no since
-	searchInvSinceStmt     *sql.Stmt     // no pipe, with since
+	listAllStateStmt   *sql.Stmt
+	searchRankStmt     *sql.Stmt
+	searchInvStmt      *sql.Stmt // no pipe, no since
+	searchInvSinceStmt *sql.Stmt // no pipe, with since
 }
 
 func newID() string {
@@ -102,8 +105,8 @@ func Open(path string) (*Store, error) {
 		db.Close()
 		return nil, fmt.Errorf("setting busy timeout: %w", err)
 	}
-	db.Exec("PRAGMA synchronous=NORMAL")  //nolint:errcheck
-	db.Exec("PRAGMA cache_size=-8000")    //nolint:errcheck
+	db.Exec("PRAGMA synchronous=NORMAL") //nolint:errcheck
+	db.Exec("PRAGMA cache_size=-8000")   //nolint:errcheck
 
 	db.SetMaxOpenConns(1)
 	db.SetMaxIdleConns(1)
@@ -126,7 +129,7 @@ func (s *Store) prepareStatements() error {
 	var err error
 
 	s.listAllStateStmt, err = s.db.Prepare(
-		"SELECT id, content, updated_at FROM memories WHERE kind = 'working_state' ORDER BY updated_at DESC LIMIT 100",
+		"SELECT id, content, updated_at FROM memories WHERE kind = 'working_state' AND (valid_until IS NULL OR valid_until > ?) ORDER BY updated_at DESC LIMIT 100",
 	)
 	if err != nil {
 		return fmt.Errorf("listAllState: %w", err)
@@ -137,6 +140,7 @@ func (s *Store) prepareStatements() error {
 		FROM memories_fts f
 		JOIN memories m ON m.rowid = f.rowid
 		WHERE memories_fts MATCH ? AND m.kind = 'explicit'
+		  AND (m.valid_until IS NULL OR m.valid_until > ?)
 		ORDER BY rank
 		LIMIT ?
 	`)
@@ -149,6 +153,7 @@ func (s *Store) prepareStatements() error {
 		FROM memories_fts f
 		JOIN memories m ON m.rowid = f.rowid
 		WHERE memories_fts MATCH ? AND m.kind = 'invocation'
+		  AND (m.valid_until IS NULL OR m.valid_until > ?)
 		ORDER BY rank
 		LIMIT ?
 	`)
@@ -161,6 +166,7 @@ func (s *Store) prepareStatements() error {
 		FROM memories_fts f
 		JOIN memories m ON m.rowid = f.rowid
 		WHERE memories_fts MATCH ? AND m.kind = 'invocation' AND m.created_at >= ?
+		  AND (m.valid_until IS NULL OR m.valid_until > ?)
 		ORDER BY rank
 		LIMIT ?
 	`)
@@ -337,36 +343,184 @@ func (s *Store) Close() error {
 	return s.db.Close()
 }
 
-// Save inserts an explicit memory entry.
-func (s *Store) Save(content string, tags []string) error {
+// Save inserts an explicit memory entry with optional expiry.
+func (s *Store) Save(content string, tags []string, validUntil *time.Time) error {
 	tagStr := strings.Join(tags, ",")
 	now := time.Now()
+	id := newID()
+
+	var validUntilNano any
+	if validUntil != nil {
+		validUntilNano = validUntil.UnixNano()
+	}
+
 	_, err := s.db.Exec(
-		"INSERT INTO memories (id, created_at, updated_at, kind, content, tags) VALUES (?, ?, ?, 'explicit', ?, ?)",
-		newID(), now.UnixNano(), now.UnixNano(), content, tagStr,
+		"INSERT INTO memories (id, created_at, updated_at, kind, content, tags, confidence, valid_until) VALUES (?, ?, ?, 'explicit', ?, ?, ?, ?)",
+		id, now.UnixNano(), now.UnixNano(), content, tagStr, ConfidenceExplicit, validUntilNano,
 	)
-	return err
+	if err != nil {
+		return err
+	}
+
+	return s.detectSupersession(id, content, tags)
+}
+
+// detectSupersession checks for existing explicit memories that may be
+// contradicted by the new memory. If found, creates refined_from edges and
+// halves the old memory's confidence. At most 3 supersessions per save.
+func (s *Store) detectSupersession(newID, content string, tags []string) error {
+	now := time.Now().UnixNano()
+
+	type candidate struct {
+		id      string
+		content string
+	}
+	seen := make(map[string]bool)
+	var candidates []candidate
+
+	// Find candidates via tag overlap
+	if len(tags) > 0 {
+		conds := make([]string, len(tags))
+		args := make([]any, 0, len(tags)+2)
+		args = append(args, newID, now)
+		for i, tag := range tags {
+			conds[i] = "','||tags||',' LIKE '%,'||?||',%'"
+			args = append(args, tag)
+		}
+		args = append(args, 3)
+
+		query := fmt.Sprintf(`
+			SELECT id, content FROM memories
+			WHERE kind = 'explicit'
+			  AND id != ?
+			  AND (valid_until IS NULL OR valid_until > ?)
+			  AND (%s)
+			LIMIT ?
+		`, strings.Join(conds, " OR "))
+
+		rows, err := s.db.Query(query, args...)
+		if err == nil {
+			for rows.Next() {
+				var id, c string
+				if rows.Scan(&id, &c) == nil && !seen[id] {
+					seen[id] = true
+					candidates = append(candidates, candidate{id, c})
+				}
+			}
+			rows.Close()
+		}
+	}
+
+	// FTS search for similar content (best-effort; FTS errors are silently ignored).
+	// Quote as FTS phrase to avoid syntax errors from operator chars in content.
+	ftsPhrase := `"` + strings.ReplaceAll(content, `"`, `""`) + `"`
+	ftsRows, err := s.db.Query(`
+		SELECT m.id, m.content
+		FROM memories_fts f
+		JOIN memories m ON m.rowid = f.rowid
+		WHERE memories_fts MATCH ?
+		  AND m.kind = 'explicit'
+		  AND m.id != ?
+		  AND (m.valid_until IS NULL OR m.valid_until > ?)
+		ORDER BY rank
+		LIMIT 3
+	`, ftsPhrase, newID, now)
+	if err == nil {
+		for ftsRows.Next() {
+			var id, c string
+			if ftsRows.Scan(&id, &c) == nil && !seen[id] {
+				seen[id] = true
+				candidates = append(candidates, candidate{id, c})
+			}
+		}
+		ftsRows.Close()
+	}
+
+	// Process candidates (at most 3 supersessions per save)
+	processed := 0
+	for _, cand := range candidates {
+		if processed >= 3 {
+			break
+		}
+		if cand.content == content {
+			continue // identical content — duplicate, not contradiction
+		}
+
+		if err := s.CreateEdge(Edge{
+			SourceID: newID,
+			TargetID: cand.id,
+			Relation: RelationRefinedFrom,
+		}); err != nil {
+			continue
+		}
+
+		s.db.Exec( //nolint:errcheck
+			"UPDATE memories SET confidence = MAX(confidence * 0.5, 0.01) WHERE id = ?",
+			cand.id,
+		)
+		processed++
+	}
+
+	return nil
+}
+
+// supersededIDs returns the set of memory IDs (from the given list) that are
+// targets of a refined_from edge (i.e., they have been superseded).
+func (s *Store) supersededIDs(ids []string) (map[string]bool, error) {
+	if len(ids) == 0 {
+		return nil, nil
+	}
+
+	query := fmt.Sprintf(`
+		SELECT DISTINCT target_id FROM memory_edges
+		WHERE relation = 'refined_from'
+		  AND target_id IN (%s)
+	`, placeholders(len(ids)))
+
+	args := make([]any, len(ids))
+	for i, id := range ids {
+		args[i] = id
+	}
+
+	rows, err := s.db.Query(query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	result := make(map[string]bool)
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		result[id] = true
+	}
+	return result, rows.Err()
 }
 
 // Search performs an FTS search on explicit memory entries.
-func (s *Store) Search(query string, limit int, sort string) ([]Entry, error) {
+func (s *Store) Search(query string, limit int, sortOrder string) ([]Entry, error) {
 	if limit <= 0 {
 		limit = 10
 	}
 
+	now := time.Now().UnixNano()
+
 	var rows *sql.Rows
 	var err error
-	if sort == "recent" {
+	if sortOrder == "recent" {
 		rows, err = s.db.Query(`
 			SELECT m.rowid, m.content, m.tags, m.created_at, m.updated_at
 			FROM memories_fts f
 			JOIN memories m ON m.rowid = f.rowid
 			WHERE memories_fts MATCH ? AND m.kind = 'explicit'
+			  AND (m.valid_until IS NULL OR m.valid_until > ?)
 			ORDER BY m.created_at DESC
 			LIMIT ?
-		`, query, limit)
+		`, query, now, limit)
 	} else {
-		rows, err = s.searchRankStmt.Query(query, limit)
+		rows, err = s.searchRankStmt.Query(query, now, limit)
 	}
 	if err != nil {
 		return nil, err
@@ -396,12 +550,12 @@ func (s *Store) PutState(namespace, key, content string) error {
 	compositeID := namespace + "/" + key
 	now := time.Now()
 	_, err := s.db.Exec(`
-		INSERT INTO memories (id, created_at, updated_at, kind, content)
-		VALUES (?, ?, ?, 'working_state', ?)
+		INSERT INTO memories (id, created_at, updated_at, kind, content, confidence)
+		VALUES (?, ?, ?, 'working_state', ?, ?)
 		ON CONFLICT(id) DO UPDATE SET
 			content = excluded.content,
 			updated_at = excluded.updated_at
-	`, compositeID, now.UnixNano(), now.UnixNano(), content)
+	`, compositeID, now.UnixNano(), now.UnixNano(), content, ConfidenceWorkingState)
 	return err
 }
 
@@ -410,8 +564,8 @@ func (s *Store) GetState(namespace, key string) (string, bool, error) {
 	compositeID := namespace + "/" + key
 	var content string
 	err := s.db.QueryRow(
-		"SELECT content FROM memories WHERE id = ? AND kind = 'working_state'",
-		compositeID,
+		"SELECT content FROM memories WHERE id = ? AND kind = 'working_state' AND (valid_until IS NULL OR valid_until > ?)",
+		compositeID, time.Now().UnixNano(),
 	).Scan(&content)
 	if err == sql.ErrNoRows {
 		return "", false, nil
@@ -436,8 +590,8 @@ func (s *Store) DeleteState(namespace, key string) error {
 func (s *Store) ListState(namespace string) ([]StateEntry, error) {
 	prefix := namespace + "/"
 	rows, err := s.db.Query(
-		"SELECT id, content, updated_at FROM memories WHERE kind = 'working_state' AND id LIKE ? ORDER BY updated_at DESC LIMIT 100",
-		prefix+"%",
+		"SELECT id, content, updated_at FROM memories WHERE kind = 'working_state' AND id LIKE ? AND (valid_until IS NULL OR valid_until > ?) ORDER BY updated_at DESC LIMIT 100",
+		prefix+"%", time.Now().UnixNano(),
 	)
 	if err != nil {
 		return nil, err
@@ -464,8 +618,8 @@ func (s *Store) SaveInvocation(pipe, signal, output string) (string, error) {
 	id := newID()
 	now := time.Now()
 	_, err := s.db.Exec(
-		"INSERT INTO memories (id, created_at, updated_at, kind, source_pipe, signal, content) VALUES (?, ?, ?, 'invocation', ?, ?, ?)",
-		id, now.UnixNano(), now.UnixNano(), pipe, signal, output,
+		"INSERT INTO memories (id, created_at, updated_at, kind, source_pipe, signal, content, confidence) VALUES (?, ?, ?, 'invocation', ?, ?, ?, ?)",
+		id, now.UnixNano(), now.UnixNano(), pipe, signal, output, ConfidenceInvocation,
 	)
 	if err != nil {
 		return "", err
@@ -479,15 +633,17 @@ func (s *Store) SearchInvocations(query, pipeName string, limit int, since time.
 		limit = 10
 	}
 
+	now := time.Now().UnixNano()
+
 	var rows *sql.Rows
 	var err error
 
 	// Use prepared statements for the common no-pipe-filter cases
 	if pipeName == "" {
 		if since.IsZero() {
-			rows, err = s.searchInvStmt.Query(query, limit)
+			rows, err = s.searchInvStmt.Query(query, now, limit)
 		} else {
-			rows, err = s.searchInvSinceStmt.Query(query, since.UnixNano(), limit)
+			rows, err = s.searchInvSinceStmt.Query(query, since.UnixNano(), now, limit)
 		}
 	}
 
@@ -503,6 +659,8 @@ func (s *Store) SearchInvocations(query, pipeName string, limit int, since time.
 			conds = append(conds, "m.created_at >= ?")
 			args = append(args, since.UnixNano())
 		}
+		conds = append(conds, "(m.valid_until IS NULL OR m.valid_until > ?)")
+		args = append(args, now)
 		args = append(args, limit)
 
 		rows, err = s.db.Query(fmt.Sprintf(`
@@ -550,9 +708,10 @@ func (s *Store) RecentInvocations(limit int) ([]InvocationEntry, error) {
 		SELECT id, source_pipe, signal, content, created_at
 		FROM memories
 		WHERE kind = 'invocation'
+		  AND (valid_until IS NULL OR valid_until > ?)
 		ORDER BY created_at DESC
 		LIMIT ?
-	`, limit)
+	`, time.Now().UnixNano(), limit)
 	if err != nil {
 		return nil, err
 	}
@@ -825,7 +984,7 @@ func parseStateID(id string) (namespace, key string) {
 
 // listAllState returns the most recent working state entries across all namespaces.
 func (s *Store) listAllState() ([]StateEntry, error) {
-	rows, err := s.listAllStateStmt.Query()
+	rows, err := s.listAllStateStmt.Query(time.Now().UnixNano())
 	if err != nil {
 		return nil, err
 	}
@@ -889,15 +1048,13 @@ func parseDepth(depth string) time.Time {
 
 // RetrieveContext assembles relevant memory entries for a pipe based on context requests.
 // Budget is expressed in approximate tokens (4 chars ≈ 1 token).
-// Relational requests are processed last, using anchor IDs from prior retrievals.
+// Results are gathered from all sources, scored with a composite function, and
+// selected by score until the budget is exhausted.
 func (s *Store) RetrieveContext(query string, requests []ContextRequest, budget int) ([]envelope.MemoryEntry, error) {
 	if budget <= 0 {
 		budget = 500
 	}
 	charBudget := budget * 4
-	var results []envelope.MemoryEntry
-	usedChars := 0
-	seenIDs := make(map[string]bool)
 
 	var standardReqs, relationalReqs []ContextRequest
 	for _, req := range requests {
@@ -908,13 +1065,11 @@ func (s *Store) RetrieveContext(query string, requests []ContextRequest, budget 
 		}
 	}
 
-	for i, req := range standardReqs {
-		if usedChars >= charBudget {
-			break
-		}
-		remaining := len(standardReqs) - i
-		share := (charBudget - usedChars) / max(1, remaining)
+	// Phase 1: Gather candidates from all standard sources.
+	var candidates []ScoredMemory
+	seenIDs := make(map[string]bool)
 
+	for _, req := range standardReqs {
 		switch req.Type {
 		case "topic_history":
 			if query == "" {
@@ -926,14 +1081,16 @@ func (s *Store) RetrieveContext(query string, requests []ContextRequest, budget 
 				continue
 			}
 			for _, e := range entries {
-				text := e.Signal + " → " + e.Output
-				if usedChars+len(text) > charBudget {
-					break
+				if seenIDs[e.ID] {
+					continue
 				}
-				text = truncateRunes(text, share)
-				results = append(results, envelope.MemoryEntry{ID: e.ID, Type: "topic_history", Content: text})
+				text := e.Signal + " → " + e.Output
+				candidates = append(candidates, ScoredMemory{
+					Memory:      Memory{ID: e.ID, CreatedAt: e.CreatedAt, Kind: "invocation", Content: text, Confidence: ConfidenceInvocation},
+					HopDistance: 0,
+					SourceType:  "topic_history",
+				})
 				seenIDs[e.ID] = true
-				usedChars += len(text)
 			}
 
 		case "working_state":
@@ -942,18 +1099,17 @@ func (s *Store) RetrieveContext(query string, requests []ContextRequest, budget 
 				continue
 			}
 			for _, e := range entries {
-				if usedChars >= charBudget {
-					break
+				id := e.Namespace + "/" + e.Key
+				if seenIDs[id] {
+					continue
 				}
 				text := e.Namespace + "/" + e.Key + ": " + e.Content
-				text = truncateRunes(text, share)
-				if usedChars+len(text) > charBudget {
-					break
-				}
-				id := e.Namespace + "/" + e.Key
-				results = append(results, envelope.MemoryEntry{ID: id, Type: "working_state", Content: text})
+				candidates = append(candidates, ScoredMemory{
+					Memory:      Memory{ID: id, CreatedAt: e.UpdatedAt, Kind: "working_state", Content: text, Confidence: ConfidenceWorkingState},
+					HopDistance: 0,
+					SourceType:  "working_state",
+				})
 				seenIDs[id] = true
-				usedChars += len(text)
 			}
 
 		case "recent_history":
@@ -966,13 +1122,12 @@ func (s *Store) RetrieveContext(query string, requests []ContextRequest, budget 
 					continue
 				}
 				text := e.Signal + " → " + e.Output
-				text = truncateRunes(text, share)
-				if usedChars+len(text) > charBudget {
-					break
-				}
-				results = append(results, envelope.MemoryEntry{ID: e.ID, Type: "recent_history", Content: text})
+				candidates = append(candidates, ScoredMemory{
+					Memory:      Memory{ID: e.ID, CreatedAt: e.CreatedAt, Kind: "invocation", Content: text, Confidence: ConfidenceInvocation},
+					HopDistance: 0,
+					SourceType:  "recent_history",
+				})
 				seenIDs[e.ID] = true
-				usedChars += len(text)
 			}
 
 		case "user_preferences":
@@ -984,30 +1139,34 @@ func (s *Store) RetrieveContext(query string, requests []ContextRequest, budget 
 				continue
 			}
 			var parts []string
+			var firstCreatedAt time.Time
 			for _, e := range entries {
 				parts = append(parts, e.Content)
+				if firstCreatedAt.IsZero() {
+					firstCreatedAt = e.CreatedAt
+				}
 			}
 			text := strings.Join(parts, "\n")
 			if text == "" {
 				continue
 			}
-			text = truncateRunes(text, share)
-			if usedChars+len(text) <= charBudget {
-				results = append(results, envelope.MemoryEntry{Type: "user_preferences", Content: text})
-				usedChars += len(text)
+			if firstCreatedAt.IsZero() {
+				firstCreatedAt = time.Now()
 			}
+			candidates = append(candidates, ScoredMemory{
+				Memory:      Memory{CreatedAt: firstCreatedAt, Kind: "explicit", Content: text, Confidence: ConfidenceExplicit},
+				HopDistance: 0,
+				SourceType:  "user_preferences",
+			})
 		}
 	}
 
+	// Process relational requests using anchor IDs from gathered candidates.
 	for _, req := range relationalReqs {
-		if usedChars >= charBudget {
-			break
-		}
-
 		var anchorIDs []string
-		for _, m := range results {
-			if m.ID != "" {
-				anchorIDs = append(anchorIDs, m.ID)
+		for _, c := range candidates {
+			if c.ID != "" {
+				anchorIDs = append(anchorIDs, c.ID)
 			}
 		}
 		if len(anchorIDs) == 0 {
@@ -1019,24 +1178,67 @@ func (s *Store) RetrieveContext(query string, requests []ContextRequest, budget 
 			relations = []string{RelationCoOccurred, RelationProducedBy, RelationRefinedFrom}
 		}
 
-		connected, err := s.TraverseFrom(anchorIDs, relations, 10)
+		hop1, hop2, err := s.TraverseHops(anchorIDs, relations, 10)
 		if err != nil {
 			continue
 		}
 
-		share := charBudget - usedChars
-		for _, m := range connected {
+		for _, m := range hop1 {
 			if seenIDs[m.ID] {
 				continue
 			}
-			text := truncateRunes(m.Content, share)
-			if usedChars+len(text) > charBudget {
-				break
-			}
-			results = append(results, envelope.MemoryEntry{ID: m.ID, Type: "relational", Content: text})
+			candidates = append(candidates, ScoredMemory{
+				Memory:      m,
+				HopDistance: 1,
+				SourceType:  "relational",
+			})
 			seenIDs[m.ID] = true
-			usedChars += len(text)
 		}
+		for _, m := range hop2 {
+			if seenIDs[m.ID] {
+				continue
+			}
+			candidates = append(candidates, ScoredMemory{
+				Memory:      m,
+				HopDistance: 2,
+				SourceType:  "relational",
+			})
+			seenIDs[m.ID] = true
+		}
+	}
+
+	// Phase 2: Score — look up superseded IDs and apply composite scoring.
+	var candidateIDs []string
+	for _, c := range candidates {
+		if c.ID != "" {
+			candidateIDs = append(candidateIDs, c.ID)
+		}
+	}
+	superseded, _ := s.supersededIDs(candidateIDs)
+
+	for i := range candidates {
+		if superseded[candidates[i].ID] {
+			candidates[i].Confidence *= 0.5
+		}
+		candidates[i].ComputeScore(defaultRelevance(candidates[i].SourceType))
+	}
+
+	// Phase 3: Select — sort by score and trim to budget.
+	sort.Slice(candidates, func(i, j int) bool {
+		return candidates[i].Score > candidates[j].Score
+	})
+
+	// Phase 4: Format — convert to MemoryEntry slice.
+	var results []envelope.MemoryEntry
+	usedChars := 0
+
+	for _, c := range candidates {
+		if usedChars >= charBudget {
+			break
+		}
+		text := truncateRunes(c.Content, charBudget-usedChars)
+		results = append(results, envelope.MemoryEntry{ID: c.ID, Type: c.SourceType, Content: text})
+		usedChars += len(text)
 	}
 
 	return results, nil

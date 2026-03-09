@@ -419,10 +419,10 @@ func testStore(t *testing.T) *store.Store {
 
 func TestMemoryBackendDiscover(t *testing.T) {
 	s := testStore(t)
-	if err := s.Save("authentication flow uses OAuth2 tokens", nil); err != nil {
+	if err := s.Save("authentication flow uses OAuth2 tokens", nil, nil); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.Save("database uses SQLite with FTS5 indexing", nil); err != nil {
+	if err := s.Save("database uses SQLite with FTS5 indexing", nil, nil); err != nil {
 		t.Fatal(err)
 	}
 
@@ -494,7 +494,7 @@ func TestHandlerCodebaseSource(t *testing.T) {
 
 func TestHandlerMemorySource(t *testing.T) {
 	s := testStore(t)
-	if err := s.Save("the auth system uses JWT tokens for session management", nil); err != nil {
+	if err := s.Save("the auth system uses JWT tokens for session management", nil, nil); err != nil {
 		t.Fatal(err)
 	}
 

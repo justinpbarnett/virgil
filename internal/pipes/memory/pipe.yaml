@@ -22,6 +22,8 @@ triggers:
     - "recall {topic}"
     - "what do I know about {topic}"
     - "forget {topic}"
+    - "remember {topic} until {modifier}"
+    - "remember {topic} for {modifier}"
 
 flags:
   action:
@@ -48,6 +50,9 @@ flags:
     description: Working state sub-operation.
     values: [put, get, delete, list]
     default: get
+  expires:
+    description: When this memory expires (e.g., "tomorrow", "in 3 days", "next friday", "2026-03-15").
+    default: ""
 
 format:
   list: |

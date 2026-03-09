@@ -32,7 +32,6 @@ type Edge struct {
 	Context   string
 }
 
-
 // CreateEdge inserts or increments an edge. Self-referential edges are silently ignored.
 func (s *Store) CreateEdge(edge Edge) error {
 	if edge.SourceID == edge.TargetID {
@@ -100,10 +99,14 @@ func (s *Store) CreateEdges(edges []Edge) error {
 	return tx.Commit()
 }
 
-// TraverseFrom performs a one-hop graph traversal from the given anchor memory IDs.
-// Returns connected memories (not the anchors themselves), deduplicated and sorted by
-// edge strength descending.
-func (s *Store) TraverseFrom(anchorIDs []string, relations []string, limit int) ([]Memory, error) {
+// TraverseFrom performs a graph traversal from the given anchor memory IDs.
+// By default (no maxDepth arg, or maxDepth=1) it performs a one-hop traversal.
+// Pass maxDepth=2 to also retrieve second-hop neighbors.
+// Returns connected memories (not the anchors themselves), deduplicated and
+// ordered hop-first (first-hop results before second-hop results), then by
+// edge strength descending within each hop. The combined limit applies across
+// both hops.
+func (s *Store) TraverseFrom(anchorIDs []string, relations []string, limit int, maxDepth ...int) ([]Memory, error) {
 	if len(anchorIDs) == 0 {
 		return nil, nil
 	}
@@ -111,37 +114,131 @@ func (s *Store) TraverseFrom(anchorIDs []string, relations []string, limit int) 
 		limit = 10
 	}
 
+	depth := 1
+	if len(maxDepth) > 0 && maxDepth[0] >= 2 {
+		depth = 2
+	}
+
+	now := time.Now().UnixNano()
+
+	// First hop: traverse from original anchors, excluding anchors from results.
+	hop1, err := s.traverseHop(anchorIDs, anchorIDs, relations, limit, now)
+	if err != nil {
+		return nil, err
+	}
+
+	if depth < 2 || len(hop1) == 0 {
+		return hop1, nil
+	}
+
+	// Second hop: traverse from first-hop IDs, excluding both original anchors
+	// and first-hop IDs from results.
+	hop1IDs := make([]string, len(hop1))
+	for i, m := range hop1 {
+		hop1IDs[i] = m.ID
+	}
+
+	excludeIDs := make([]string, 0, len(anchorIDs)+len(hop1IDs))
+	excludeIDs = append(excludeIDs, anchorIDs...)
+	excludeIDs = append(excludeIDs, hop1IDs...)
+
+	hop2, err := s.traverseHop(hop1IDs, excludeIDs, relations, limit, now)
+	if err != nil {
+		return nil, err
+	}
+
+	// Combine hop1 and hop2, then apply limit across both.
+	result := append(hop1, hop2...)
+	if len(result) > limit {
+		result = result[:limit]
+	}
+
+	return result, nil
+}
+
+// TraverseHops performs a two-hop traversal and returns results split by hop.
+// hop1 contains first-hop neighbors; hop2 contains second-hop neighbors.
+// Both are deduplicated and ordered by edge strength within each hop.
+func (s *Store) TraverseHops(anchorIDs []string, relations []string, limit int) (hop1, hop2 []Memory, err error) {
+	if len(anchorIDs) == 0 {
+		return nil, nil, nil
+	}
+	if limit <= 0 {
+		limit = 10
+	}
+
+	now := time.Now().UnixNano()
+
+	hop1, err = s.traverseHop(anchorIDs, anchorIDs, relations, limit, now)
+	if err != nil || len(hop1) == 0 {
+		return hop1, nil, err
+	}
+
+	hop1IDs := make([]string, len(hop1))
+	for i, m := range hop1 {
+		hop1IDs[i] = m.ID
+	}
+
+	excludeIDs := make([]string, 0, len(anchorIDs)+len(hop1IDs))
+	excludeIDs = append(excludeIDs, anchorIDs...)
+	excludeIDs = append(excludeIDs, hop1IDs...)
+
+	hop2, err = s.traverseHop(hop1IDs, excludeIDs, relations, limit, now)
+	if err != nil {
+		return hop1, nil, err
+	}
+
+	// Apply combined limit.
+	total := len(hop1) + len(hop2)
+	if total > limit {
+		remaining := limit - len(hop1)
+		if remaining <= 0 {
+			return hop1[:limit], nil, nil
+		}
+		hop2 = hop2[:remaining]
+	}
+
+	return hop1, hop2, nil
+}
+
+// traverseHop executes a single-hop graph query from anchorIDs, excluding
+// excludeIDs from the result set. Filters expired memories via now (UnixNano).
+func (s *Store) traverseHop(anchorIDs []string, excludeIDs []string, relations []string, limit int, now int64) ([]Memory, error) {
 	anchorPlaceholders := placeholders(len(anchorIDs))
+	excludePlaceholders := placeholders(len(excludeIDs))
 
 	relationFilter := ""
 	if len(relations) > 0 {
 		relationFilter = fmt.Sprintf("AND e.relation IN (%s)", placeholders(len(relations)))
 	}
 
-	// Args must match SQL placeholder order:
-	// 1. source_id IN (%s) — JOIN ON clause
-	// 2. target_id IN (%s) — JOIN ON clause
-	// 3. NOT IN (%s)       — WHERE clause
-	// 4. relation IN (%s)  — WHERE clause (inside relationFilter)
-	// 5. LIMIT ?
+	// Arg order must match SQL placeholder positions:
+	// 1. source_id IN (anchorIDs)
+	// 2. target_id IN (anchorIDs)
+	// 3. m.id NOT IN (excludeIDs)
+	// 4. valid_until > now
+	// 5. e.relation IN (relations)  [if any]
+	// 6. LIMIT
 	args := make([]any, 0)
 	for _, id := range anchorIDs {
-		args = append(args, id) // source_id IN
+		args = append(args, id)
 	}
 	for _, id := range anchorIDs {
-		args = append(args, id) // target_id IN
+		args = append(args, id)
 	}
-	for _, id := range anchorIDs {
-		args = append(args, id) // NOT IN
+	for _, id := range excludeIDs {
+		args = append(args, id)
 	}
+	args = append(args, now)
 	for _, r := range relations {
-		args = append(args, r) // relation IN
+		args = append(args, r)
 	}
 	args = append(args, limit)
 
 	query := fmt.Sprintf(`
 		SELECT m.id, m.created_at, m.updated_at, m.kind,
 		       COALESCE(m.source_pipe, ''), COALESCE(m.signal, ''), m.content, COALESCE(m.tags, ''),
+		       m.confidence,
 		       MAX(e.strength) as max_strength
 		FROM memory_edges e
 		JOIN memories m ON (
@@ -150,11 +247,12 @@ func (s *Store) TraverseFrom(anchorIDs []string, relations []string, limit int) 
 		    (e.target_id IN (%s) AND e.source_id = m.id)
 		)
 		WHERE m.id NOT IN (%s)
+		  AND (m.valid_until IS NULL OR m.valid_until > ?)
 		%s
 		GROUP BY m.id
 		ORDER BY max_strength DESC
 		LIMIT ?
-	`, anchorPlaceholders, anchorPlaceholders, anchorPlaceholders, relationFilter)
+	`, anchorPlaceholders, anchorPlaceholders, excludePlaceholders, relationFilter)
 
 	rows, err := s.db.Query(query, args...)
 	if err != nil {
@@ -165,18 +263,19 @@ func (s *Store) TraverseFrom(anchorIDs []string, relations []string, limit int) 
 	var memories []Memory
 	for rows.Next() {
 		var m Memory
-		var createdUnix, updatedUnix int64
+		var createdNano, updatedNano int64
 		var tagStr string
 		var maxStrength float64
 		if err := rows.Scan(
-			&m.ID, &createdUnix, &updatedUnix, &m.Kind,
+			&m.ID, &createdNano, &updatedNano, &m.Kind,
 			&m.SourcePipe, &m.Signal, &m.Content, &tagStr,
+			&m.Confidence,
 			&maxStrength,
 		); err != nil {
 			return nil, err
 		}
-		m.CreatedAt = time.Unix(createdUnix, 0)
-		m.UpdatedAt = time.Unix(updatedUnix, 0)
+		m.CreatedAt = time.Unix(0, createdNano)
+		m.UpdatedAt = time.Unix(0, updatedNano)
 		if tagStr != "" {
 			m.Tags = strings.Split(tagStr, ",")
 		}

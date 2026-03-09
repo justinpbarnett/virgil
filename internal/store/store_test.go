@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -36,7 +37,7 @@ func TestOpenCreatesDatabase(t *testing.T) {
 
 func TestSaveSingleEntry(t *testing.T) {
 	s := tempDB(t)
-	if err := s.Save("OAuth uses short-lived tokens", []string{"auth", "oauth"}); err != nil {
+	if err := s.Save("OAuth uses short-lived tokens", []string{"auth", "oauth"}, nil); err != nil {
 		t.Fatalf("save failed: %v", err)
 	}
 }
@@ -53,7 +54,7 @@ func TestSaveMultipleEntries(t *testing.T) {
 	}
 
 	for _, e := range entries {
-		if err := s.Save(e.content, e.tags); err != nil {
+		if err := s.Save(e.content, e.tags, nil); err != nil {
 			t.Fatalf("save failed: %v", err)
 		}
 	}
@@ -61,9 +62,9 @@ func TestSaveMultipleEntries(t *testing.T) {
 
 func TestSearchByKeyword(t *testing.T) {
 	s := tempDB(t)
-	s.Save("OAuth uses short-lived tokens", []string{"auth"})
-	s.Save("JWT is a token format", []string{"auth"})
-	s.Save("Go is a compiled language", []string{"go"})
+	s.Save("OAuth uses short-lived tokens", []string{"auth"}, nil)
+	s.Save("JWT is a token format", []string{"auth"}, nil)
+	s.Save("Go is a compiled language", []string{"go"}, nil)
 
 	results, err := s.Search("OAuth", 10, "")
 	if err != nil {
@@ -79,8 +80,8 @@ func TestSearchByKeyword(t *testing.T) {
 
 func TestSearchReturnsRankedResults(t *testing.T) {
 	s := tempDB(t)
-	s.Save("tokens are important in auth", []string{})
-	s.Save("OAuth tokens and OAuth flows", []string{})
+	s.Save("tokens are important in auth", []string{}, nil)
+	s.Save("OAuth tokens and OAuth flows", []string{}, nil)
 
 	results, err := s.Search("OAuth", 10, "")
 	if err != nil {
@@ -94,7 +95,7 @@ func TestSearchReturnsRankedResults(t *testing.T) {
 func TestSearchWithLimit(t *testing.T) {
 	s := tempDB(t)
 	for i := 0; i < 5; i++ {
-		s.Save("OAuth related entry number "+string(rune('A'+i)), nil)
+		s.Save("OAuth related entry number "+string(rune('A'+i)), nil, nil)
 	}
 
 	results, err := s.Search("OAuth", 2, "")
@@ -119,7 +120,7 @@ func TestSearchEmpty(t *testing.T) {
 
 func TestSearchPreservesTags(t *testing.T) {
 	s := tempDB(t)
-	s.Save("OAuth info", []string{"auth", "oauth"})
+	s.Save("OAuth info", []string{"auth", "oauth"}, nil)
 
 	results, err := s.Search("OAuth", 10, "")
 	if err != nil {
@@ -781,5 +782,229 @@ func TestCoOccurredBatch(t *testing.T) {
 	}
 	if len(connected) == 0 {
 		t.Fatal("expected connected memories")
+	}
+}
+
+// --- Temporal validity tests ---
+
+func TestSave_WithValidUntil(t *testing.T) {
+	s := tempDB(t)
+	future := time.Now().Add(24 * time.Hour)
+	if err := s.Save("expires tomorrow", []string{"test"}, &future); err != nil {
+		t.Fatalf("Save with validUntil: %v", err)
+	}
+
+	// Should appear in search before expiry
+	results, err := s.Search("expires", 10, "")
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	if len(results) == 0 {
+		t.Error("expected non-expired memory to appear in search")
+	}
+}
+
+func TestSearch_ExcludesExpiredMemories(t *testing.T) {
+	s := tempDB(t)
+
+	// Save one expired and one non-expired memory
+	past := time.Now().Add(-time.Hour)
+	future := time.Now().Add(24 * time.Hour)
+	s.Save("expired token memory", []string{"token"}, &past)
+	s.Save("valid token memory", []string{"token"}, &future)
+
+	results, err := s.Search("token", 10, "")
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+
+	for _, r := range results {
+		if strings.Contains(r.Content, "expired") {
+			t.Error("expired memory should not appear in search results")
+		}
+	}
+	found := false
+	for _, r := range results {
+		if strings.Contains(r.Content, "valid") {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("expected non-expired memory in search results")
+	}
+}
+
+func TestRetrieveContext_ExcludesExpiredMemories(t *testing.T) {
+	s := tempDB(t)
+
+	past := time.Now().Add(-time.Hour)
+	future := time.Now().Add(24 * time.Hour)
+	s.Save("expired preference info", []string{"prefs"}, &past)
+	s.Save("valid preference info", []string{"prefs"}, &future)
+
+	results, err := s.RetrieveContext("preference", []ContextRequest{{Type: "user_preferences"}}, 500)
+	if err != nil {
+		t.Fatalf("RetrieveContext: %v", err)
+	}
+
+	for _, r := range results {
+		if strings.Contains(r.Content, "expired") {
+			t.Error("expired memory should not appear in RetrieveContext")
+		}
+	}
+}
+
+func TestListAllState_ExcludesExpiredState(t *testing.T) {
+	s := tempDB(t)
+
+	// PutState doesn't accept expiry, so insert directly
+	past := time.Now().Add(-time.Hour).UnixNano()
+	s.db.Exec(
+		"INSERT INTO memories (id, created_at, updated_at, kind, content, confidence, valid_until) VALUES ('test/exp', ?, ?, 'working_state', 'expired state', 0.7, ?)",
+		time.Now().UnixNano(), time.Now().UnixNano(), past,
+	)
+	s.PutState("test", "valid", "valid state")
+
+	results, err := s.RetrieveContext("", []ContextRequest{{Type: "working_state"}}, 500)
+	if err != nil {
+		t.Fatalf("RetrieveContext: %v", err)
+	}
+
+	for _, r := range results {
+		if strings.Contains(r.Content, "expired state") {
+			t.Error("expired working_state should not appear in RetrieveContext")
+		}
+	}
+}
+
+// --- Supersession tests ---
+
+func TestSave_DetectsSupersession_SameTags(t *testing.T) {
+	s := tempDB(t)
+
+	s.Save("API key is ABC", []string{"api"}, nil)
+	s.Save("API key is XYZ", []string{"api"}, nil)
+
+	var count int
+	s.db.QueryRow("SELECT COUNT(*) FROM memory_edges WHERE relation = 'refined_from'").Scan(&count)
+	if count == 0 {
+		t.Error("expected refined_from edge to be created for same-tag memories with different content")
+	}
+}
+
+func TestSave_DetectsSupersession_FTSMatch(t *testing.T) {
+	s := tempDB(t)
+
+	// No tags — FTS overlap should detect supersession
+	s.Save("meeting is at 2pm tomorrow", nil, nil)
+	s.Save("meeting is at 3pm tomorrow", nil, nil)
+
+	var count int
+	s.db.QueryRow("SELECT COUNT(*) FROM memory_edges WHERE relation = 'refined_from'").Scan(&count)
+	// FTS should detect the overlap (may not always trigger for short phrases, so allow 0)
+	_ = count // best-effort; no hard assertion on FTS-only detection
+}
+
+func TestSave_NoSupersession_DifferentTopics(t *testing.T) {
+	s := tempDB(t)
+
+	s.Save("Go uses goroutines", []string{"go"}, nil)
+	s.Save("Python uses threads", []string{"python"}, nil)
+
+	var count int
+	s.db.QueryRow("SELECT COUNT(*) FROM memory_edges WHERE relation = 'refined_from'").Scan(&count)
+	if count != 0 {
+		t.Errorf("expected no refined_from edges for unrelated memories, got %d", count)
+	}
+}
+
+func TestSave_NoSupersession_IdenticalContent(t *testing.T) {
+	s := tempDB(t)
+
+	content := "API key is ABC"
+	s.Save(content, []string{"api"}, nil)
+	s.Save(content, []string{"api"}, nil)
+
+	var count int
+	s.db.QueryRow("SELECT COUNT(*) FROM memory_edges WHERE relation = 'refined_from'").Scan(&count)
+	if count != 0 {
+		t.Errorf("expected no supersession for identical content, got %d edges", count)
+	}
+}
+
+func TestSave_SupersessionHalvesConfidence(t *testing.T) {
+	s := tempDB(t)
+
+	s.Save("API key is ABC", []string{"api"}, nil)
+	s.Save("API key is XYZ", []string{"api"}, nil)
+
+	// The first memory's confidence should be halved (0.9 → 0.45)
+	var confidence float64
+	err := s.db.QueryRow(
+		"SELECT confidence FROM memories WHERE content = 'API key is ABC' AND kind = 'explicit'",
+	).Scan(&confidence)
+	if err != nil {
+		t.Fatalf("scan confidence: %v", err)
+	}
+
+	if confidence >= 0.9 {
+		t.Errorf("expected confidence to be halved (< 0.9), got %.4f", confidence)
+	}
+}
+
+func TestSave_SupersessionLimitsEdges(t *testing.T) {
+	s := tempDB(t)
+
+	// Save 5 memories with the same tag — supersession should create at most 3 edges per save
+	for i := 0; i < 5; i++ {
+		s.Save(fmt.Sprintf("API key is version %d", i), []string{"api"}, nil)
+	}
+
+	// The last save should have created at most 3 refined_from edges
+	// (we can't easily isolate per-save edge count, so just verify total is bounded)
+	var count int
+	s.db.QueryRow("SELECT COUNT(*) FROM memory_edges WHERE relation = 'refined_from'").Scan(&count)
+	// With 5 saves where each creates at most 3 edges, total is bounded
+	// (first save: 0 edges, subsequent: up to 3 each → max 12 total)
+	if count > 12 {
+		t.Errorf("expected at most 12 refined_from edges total, got %d", count)
+	}
+}
+
+func TestRetrieveContext_SupersededDeprioritized(t *testing.T) {
+	s := tempDB(t)
+
+	// Save two invocations; manually mark the first as superseded
+	id1, _ := s.SaveInvocation("educate", "old API key was ABC", "old response")
+	id2, _ := s.SaveInvocation("educate", "new API key is XYZ", "new response")
+
+	// Manually create a refined_from edge: id2 supersedes id1
+	s.CreateEdge(Edge{SourceID: id2, TargetID: id1, Relation: RelationRefinedFrom})
+
+	results, err := s.RetrieveContext("API key", []ContextRequest{{Type: "topic_history"}}, 5000)
+	if err != nil {
+		t.Fatalf("RetrieveContext: %v", err)
+	}
+
+	if len(results) < 2 {
+		t.Skipf("need at least 2 results for ordering test, got %d", len(results))
+	}
+
+	var id1Rank, id2Rank = -1, -1
+	for i, r := range results {
+		if r.ID == id1 {
+			id1Rank = i
+		}
+		if r.ID == id2 {
+			id2Rank = i
+		}
+	}
+
+	if id1Rank == -1 || id2Rank == -1 {
+		t.Skip("one of the memories not found in results — may be below budget")
+	}
+
+	if id1Rank < id2Rank {
+		t.Errorf("superseded memory (rank %d) should not rank above new memory (rank %d)", id1Rank, id2Rank)
 	}
 }

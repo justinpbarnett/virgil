@@ -4,12 +4,23 @@ import (
 	"fmt"
 	"log/slog"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/justinpbarnett/virgil/internal/envelope"
 	"github.com/justinpbarnett/virgil/internal/pipe"
 	"github.com/justinpbarnett/virgil/internal/store"
 )
+
+var weekdayNames = map[string]time.Weekday{
+	"monday":    time.Monday,
+	"tuesday":   time.Tuesday,
+	"wednesday": time.Wednesday,
+	"thursday":  time.Thursday,
+	"friday":    time.Friday,
+	"saturday":  time.Saturday,
+	"sunday":    time.Sunday,
+}
 
 func NewHandler(s *store.Store, logger *slog.Logger) pipe.Handler {
 	if logger == nil {
@@ -39,7 +50,18 @@ func handleStore(s *store.Store, input envelope.Envelope, flags map[string]strin
 		return out
 	}
 
-	if err := s.Save(content, nil); err != nil {
+	var validUntil *time.Time
+	if expiresStr := flags["expires"]; expiresStr != "" {
+		t, err := parseExpiry(expiresStr)
+		if err != nil {
+			out.Error = envelope.FatalError(fmt.Sprintf("invalid expires value %q: %v", expiresStr, err))
+			logger.Error("store failed", "error", err)
+			return out
+		}
+		validUntil = t
+	}
+
+	if err := s.Save(content, nil, validUntil); err != nil {
 		out.Error = envelope.FatalError(fmt.Sprintf("failed to save: %v", err))
 		logger.Error("store failed", "error", err)
 		return out
@@ -49,6 +71,63 @@ func handleStore(s *store.Store, input envelope.Envelope, flags map[string]strin
 	out.Content = "Remembered: " + content
 	out.ContentType = envelope.ContentText
 	return out
+}
+
+// parseExpiry converts a human-readable expiry string into a *time.Time.
+// Supported formats:
+//   - "tomorrow"
+//   - "in N days" / "in N hours" / "in N weeks"
+//   - "next monday" ... "next sunday"
+//   - ISO date "2006-01-02"
+func parseExpiry(s string) (*time.Time, error) {
+	s = strings.TrimSpace(strings.ToLower(s))
+	now := time.Now()
+
+	if s == "tomorrow" {
+		t := now.AddDate(0, 0, 1)
+		return &t, nil
+	}
+
+	// "in N days/hours/weeks"
+	if strings.HasPrefix(s, "in ") {
+		parts := strings.Fields(s)
+		if len(parts) == 3 {
+			n, err := strconv.Atoi(parts[1])
+			if err == nil && n > 0 {
+				switch parts[2] {
+				case "day", "days":
+					t := now.AddDate(0, 0, n)
+					return &t, nil
+				case "hour", "hours":
+					t := now.Add(time.Duration(n) * time.Hour)
+					return &t, nil
+				case "week", "weeks":
+					t := now.AddDate(0, 0, n*7)
+					return &t, nil
+				}
+			}
+		}
+	}
+
+	// "next monday" ... "next sunday"
+	if strings.HasPrefix(s, "next ") {
+		dayName := strings.TrimPrefix(s, "next ")
+		if target, ok := weekdayNames[dayName]; ok {
+			daysUntil := int(target - now.Weekday())
+			if daysUntil <= 0 {
+				daysUntil += 7
+			}
+			t := now.AddDate(0, 0, daysUntil)
+			return &t, nil
+		}
+	}
+
+	// ISO date "2006-01-02"
+	if t, err := time.ParseInLocation("2006-01-02", s, now.Location()); err == nil {
+		return &t, nil
+	}
+
+	return nil, fmt.Errorf("unrecognized expiry format %q; use 'tomorrow', 'in N days/hours/weeks', 'next <weekday>', or 'YYYY-MM-DD'", s)
 }
 
 func handleRetrieve(s *store.Store, input envelope.Envelope, flags map[string]string, logger *slog.Logger) envelope.Envelope {
