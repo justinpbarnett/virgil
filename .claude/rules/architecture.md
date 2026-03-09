@@ -1,0 +1,5 @@
+- Core loop: signal -> classify -> plan -> execute -> output
+- 4-layer router: exact match -> parsed verb -> BM25 keywords -> AI fallback (deterministic first, AI as fallback)
+- 22 atomic pipes that compose but don't integrate
+- Memory: working state, explicit memory, invocation history with tiered summarization (raw -> daily -> weekly -> monthly)
+- Core vs Cloud separation -- core runs fully offline except AI calls

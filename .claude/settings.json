@@ -1,69 +1,8 @@
 {
-  "hooks": {
-    "Notification": [
-      {
-        "hooks": [
-          {
-            "command": "uv run $CLAUDE_PROJECT_DIR/.claude/hooks/notification.py --notify || true",
-            "type": "command"
-          }
-        ],
-        "matcher": ""
-      }
-    ],
-    "PostToolUse": [
-      {
-        "hooks": [
-          {
-            "command": "uv run $CLAUDE_PROJECT_DIR/.claude/hooks/post_tool_use.py || true",
-            "type": "command"
-          }
-        ],
-        "matcher": ""
-      }
-    ],
-    "PreToolUse": [
-      {
-        "hooks": [
-          {
-            "command": "uv run $CLAUDE_PROJECT_DIR/.claude/hooks/pre_tool_use.py || true",
-            "type": "command"
-          }
-        ],
-        "matcher": ""
-      },
-      {
-        "hooks": [
-          {
-            "command": ".agtop/hooks/safety-guard.sh",
-            "type": "command"
-          }
-        ],
-        "matcher": "Bash"
-      }
-    ],
-    "Stop": [
-      {
-        "hooks": [
-          {
-            "command": "uv run $CLAUDE_PROJECT_DIR/.claude/hooks/stop.py --chat || true",
-            "type": "command"
-          }
-        ],
-        "matcher": ""
-      }
-    ],
-    "SubagentStop": [
-      {
-        "hooks": [
-          {
-            "command": "uv run $CLAUDE_PROJECT_DIR/.claude/hooks/subagent_stop.py || true",
-            "type": "command"
-          }
-        ],
-        "matcher": ""
-      }
-    ]
+  "enabledPlugins": {
+    "frontend-design@claude-plugins-official": false,
+    "typescript-lsp@claude-plugins-official": false,
+    "pyright-lsp@claude-plugins-official": false
   },
   "permissions": {
     "allow": [
@@ -72,7 +11,8 @@
       "Bash(find:*)",
       "Bash(mv:*)",
       "Bash(grep:*)",
-      "Bash(npm:*)",
+      "Bash(go:*)",
+      "Bash(just:*)",
       "Bash(ls:*)",
       "Bash(cp:*)",
       "Write",
