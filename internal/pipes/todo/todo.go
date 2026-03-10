@@ -1,9 +1,10 @@
 package todo
 
 import (
-	"database/sql"
+	"encoding/json"
 	"fmt"
 	"log/slog"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -15,6 +16,22 @@ import (
 	"github.com/olebedev/when/rules/common"
 	"github.com/olebedev/when/rules/en"
 )
+
+type todoData struct {
+	Status     string `json:"status"`
+	Priority   int    `json:"priority"`
+	DueDate    string `json:"due_date,omitempty"`
+	ExternalID string `json:"external_id,omitempty"`
+	Details    string `json:"details,omitempty"`
+}
+
+func parseTodoData(raw string) todoData {
+	var d todoData
+	if raw != "" {
+		json.Unmarshal([]byte(raw), &d) //nolint:errcheck
+	}
+	return d
+}
 
 var whenParser = func() *when.Parser {
 	w := when.New(nil)
@@ -83,26 +100,23 @@ func handleAdd(s *store.Store, input envelope.Envelope, flags map[string]string,
 		tags = strings.Split(t, ",")
 	}
 
-	todo, err := s.AddTodo(title, priority, dueDate, tags)
+	data := todoData{
+		Status:     "pending",
+		Priority:   priority,
+		DueDate:    dueDate,
+		ExternalID: flags["external_id"],
+		Details:    flags["details"],
+	}
+
+	id, err := s.SaveKind(store.KindTodo, title, data, tags, nil)
 	if err != nil {
 		logger.Error("add todo failed", "error", err)
 		out.Error = envelope.FatalError(fmt.Sprintf("failed to add todo: %v", err))
 		return out
 	}
 
-	signal := envelope.ContentToText(input.Content, input.ContentType)
-	memID, err := s.SaveInvocation("todo", signal, "Added todo: "+title)
-	if err != nil {
-		logger.Warn("failed to save invocation memory", "error", err)
-	} else if memID != "" {
-		if err := s.SetTodoMemoryID(todo.ID, memID); err != nil {
-			logger.Warn("failed to link memory to todo", "error", err)
-		}
-		todo.MemoryID = memID
-	}
-
-	logger.Info("added todo", "id", todo.ID, "title", title)
-	m := todoToMap(todo)
+	logger.Info("added todo", "id", id, "title", title)
+	m := memToMap(id, title, data, tags, time.Now())
 	m["action"] = "add"
 	out.Content = m
 	out.ContentType = envelope.ContentStructured
@@ -116,7 +130,7 @@ func handleList(s *store.Store, _ envelope.Envelope, flags map[string]string, lo
 
 	status := flags["status"]
 	if status == "" {
-		status = store.TodoStatusPending
+		status = "pending"
 	}
 
 	limit := 25
@@ -124,17 +138,46 @@ func handleList(s *store.Store, _ envelope.Envelope, flags map[string]string, lo
 		limit = l
 	}
 
-	todos, err := s.ListTodos(status, limit)
+	var entries []store.Memory
+	var err error
+	if status == "all" {
+		entries, err = s.QueryByKind(store.KindTodo, limit+20)
+		if err == nil {
+			filtered := entries[:0]
+			for _, e := range entries {
+				d := parseTodoData(e.Data)
+				if d.Status != "removed" {
+					filtered = append(filtered, e)
+				}
+			}
+			entries = filtered
+			if len(entries) > limit {
+				entries = entries[:limit]
+			}
+		}
+	} else {
+		entries, err = s.QueryByKindFiltered(store.KindTodo, map[string]any{"status": status}, limit)
+	}
 	if err != nil {
 		logger.Error("list todos failed", "error", err)
 		out.Error = envelope.FatalError(fmt.Sprintf("failed to list todos: %v", err))
 		return out
 	}
 
-	logger.Info("listed todos", "count", len(todos), "status", status)
-	items := make([]map[string]any, len(todos))
-	for i, t := range todos {
-		items[i] = todoToMap(t)
+	sort.Slice(entries, func(i, j int) bool {
+		di := parseTodoData(entries[i].Data)
+		dj := parseTodoData(entries[j].Data)
+		if di.Priority != dj.Priority {
+			return di.Priority < dj.Priority
+		}
+		return entries[i].CreatedAt.Before(entries[j].CreatedAt)
+	})
+
+	logger.Info("listed todos", "count", len(entries), "status", status)
+	items := make([]map[string]any, len(entries))
+	for i, e := range entries {
+		d := parseTodoData(e.Data)
+		items[i] = memToMap(e.ID, e.Content, d, e.Tags, e.CreatedAt)
 	}
 	out.Content = items
 	out.ContentType = envelope.ContentList
@@ -146,35 +189,24 @@ func handleDone(s *store.Store, input envelope.Envelope, flags map[string]string
 	out.Args = flags
 	defer func() { out.Duration = time.Since(out.Timestamp) }()
 
-	todo, err := resolveTodo(s, input, flags, store.TodoStatusPending)
+	mem, err := resolveTodo(s, input, flags, "pending")
 	if err != nil {
 		out.Error = envelope.FatalError(err.Error())
 		return out
 	}
 
-	if err := s.CompleteTodo(todo.ID); err != nil {
+	d := parseTodoData(mem.Data)
+	d.Status = "done"
+
+	newID, err := s.SupersedeMemory(mem.ID, mem.Content, d, mem.Tags)
+	if err != nil {
 		logger.Error("complete todo failed", "error", err)
 		out.Error = envelope.FatalError(fmt.Sprintf("failed to complete todo: %v", err))
 		return out
 	}
 
-	signal := envelope.ContentToText(input.Content, input.ContentType)
-	memID, err := s.SaveInvocation("todo", signal, "Completed todo: "+todo.Title)
-	if err != nil {
-		logger.Warn("failed to save completion memory", "error", err)
-	} else if memID != "" && todo.MemoryID != "" {
-		if err := s.CreateEdge(store.Edge{
-			SourceID: memID,
-			TargetID: todo.MemoryID,
-			Relation: store.RelationRefinedFrom,
-		}); err != nil {
-			logger.Warn("failed to create refined_from edge", "error", err)
-		}
-	}
-
-	todo.Status = store.TodoStatusDone
-	logger.Info("completed todo", "id", todo.ID, "title", todo.Title)
-	m := todoToMap(todo)
+	logger.Info("completed todo", "id", newID, "title", mem.Content)
+	m := memToMap(newID, mem.Content, d, mem.Tags, mem.CreatedAt)
 	m["action"] = "done"
 	out.Content = m
 	out.ContentType = envelope.ContentStructured
@@ -186,21 +218,24 @@ func handleUndone(s *store.Store, input envelope.Envelope, flags map[string]stri
 	out.Args = flags
 	defer func() { out.Duration = time.Since(out.Timestamp) }()
 
-	todo, err := resolveTodo(s, input, flags, store.TodoStatusDone)
+	mem, err := resolveTodo(s, input, flags, "done")
 	if err != nil {
 		out.Error = envelope.FatalError(err.Error())
 		return out
 	}
 
-	if err := s.UncompleteTodo(todo.ID); err != nil {
+	d := parseTodoData(mem.Data)
+	d.Status = "pending"
+
+	newID, err := s.SupersedeMemory(mem.ID, mem.Content, d, mem.Tags)
+	if err != nil {
 		logger.Error("uncomplete todo failed", "error", err)
 		out.Error = envelope.FatalError(fmt.Sprintf("failed to uncomplete todo: %v", err))
 		return out
 	}
 
-	todo.Status = store.TodoStatusPending
-	logger.Info("uncompleted todo", "id", todo.ID, "title", todo.Title)
-	m := todoToMap(todo)
+	logger.Info("uncompleted todo", "id", newID, "title", mem.Content)
+	m := memToMap(newID, mem.Content, d, mem.Tags, mem.CreatedAt)
 	m["action"] = "undone"
 	out.Content = m
 	out.ContentType = envelope.ContentStructured
@@ -212,20 +247,24 @@ func handleRemove(s *store.Store, input envelope.Envelope, flags map[string]stri
 	out.Args = flags
 	defer func() { out.Duration = time.Since(out.Timestamp) }()
 
-	todo, err := resolveTodo(s, input, flags, "all")
+	mem, err := resolveTodo(s, input, flags, "all")
 	if err != nil {
 		out.Error = envelope.FatalError(err.Error())
 		return out
 	}
 
-	if err := s.DeleteTodo(todo.ID); err != nil {
-		logger.Error("delete todo failed", "error", err)
+	d := parseTodoData(mem.Data)
+	d.Status = "removed"
+
+	_, err = s.SupersedeMemory(mem.ID, mem.Content, d, mem.Tags)
+	if err != nil {
+		logger.Error("remove todo failed", "error", err)
 		out.Error = envelope.FatalError(fmt.Sprintf("failed to remove todo: %v", err))
 		return out
 	}
 
-	logger.Info("removed todo", "id", todo.ID, "title", todo.Title)
-	out.Content = map[string]any{"action": "remove", "status": "removed", "id": todo.ID, "title": todo.Title}
+	logger.Info("removed todo", "id", mem.ID, "title", mem.Content)
+	out.Content = map[string]any{"action": "remove", "status": "removed", "id": mem.ID, "title": mem.Content}
 	out.ContentType = envelope.ContentStructured
 	return out
 }
@@ -241,34 +280,39 @@ func handleEdit(s *store.Store, _ envelope.Envelope, flags map[string]string, lo
 		return out
 	}
 
-	updates := map[string]string{}
-	if v := flags["title"]; v != "" {
-		updates["title"] = v
-	}
-	if v := flags["priority"]; v != "" {
-		updates["priority"] = v
-	}
-	if v := flags["due"]; v != "" {
-		updates["due_date"] = resolveDueDate(v)
-	}
-	if v := flags["tags"]; v != "" {
-		updates["tags"] = v
+	mem, err := s.GetMemory(id)
+	if err != nil {
+		out.Error = envelope.FatalError(fmt.Sprintf("todo not found: %s", id))
+		return out
 	}
 
-	if err := s.UpdateTodo(id, updates); err != nil {
+	d := parseTodoData(mem.Data)
+	content := mem.Content
+	tags := mem.Tags
+
+	if v := flags["title"]; v != "" {
+		content = v
+	}
+	if v := flags["priority"]; v != "" {
+		if p, err := strconv.Atoi(v); err == nil && p >= 1 && p <= 5 {
+			d.Priority = p
+		}
+	}
+	if v := flags["due"]; v != "" {
+		d.DueDate = resolveDueDate(v)
+	}
+	if v := flags["tags"]; v != "" {
+		tags = strings.Split(v, ",")
+	}
+
+	if err := s.UpdateMemory(id, content, d, tags); err != nil {
 		logger.Error("update todo failed", "error", err)
 		out.Error = envelope.FatalError(fmt.Sprintf("failed to edit todo: %v", err))
 		return out
 	}
 
-	todo, err := s.GetTodo(id)
-	if err != nil {
-		out.Error = envelope.FatalError(fmt.Sprintf("failed to get updated todo: %v", err))
-		return out
-	}
-
 	logger.Info("edited todo", "id", id)
-	out.Content = todoToMap(todo)
+	out.Content = memToMap(id, content, d, tags, mem.CreatedAt)
 	out.ContentType = envelope.ContentStructured
 	return out
 }
@@ -286,11 +330,20 @@ func handleReorder(s *store.Store, _ envelope.Envelope, flags map[string]string,
 
 	priority, err := strconv.Atoi(flags["priority"])
 	if err != nil || priority < 1 || priority > 5 {
-		out.Error = envelope.FatalError("priority must be 1–5 for reorder action")
+		out.Error = envelope.FatalError("priority must be 1-5 for reorder action")
 		return out
 	}
 
-	if err := s.ReorderTodo(id, priority); err != nil {
+	mem, err := s.GetMemory(id)
+	if err != nil {
+		out.Error = envelope.FatalError(fmt.Sprintf("todo not found: %s", id))
+		return out
+	}
+
+	d := parseTodoData(mem.Data)
+	d.Priority = priority
+
+	if err := s.UpdateData(id, d); err != nil {
 		logger.Error("reorder todo failed", "error", err)
 		out.Error = envelope.FatalError(fmt.Sprintf("failed to reorder todo: %v", err))
 		return out
@@ -307,34 +360,32 @@ func handleDetail(s *store.Store, input envelope.Envelope, flags map[string]stri
 	out.Args = flags
 	defer func() { out.Duration = time.Since(out.Timestamp) }()
 
-	todo, err := resolveTodo(s, input, flags, "all")
+	mem, err := resolveTodo(s, input, flags, "all")
 	if err != nil {
 		out.Error = envelope.FatalError(err.Error())
 		return out
 	}
 
-	logger.Info("detail todo", "id", todo.ID, "title", todo.Title)
-	m := todoToMap(todo)
+	d := parseTodoData(mem.Data)
+	logger.Info("detail todo", "id", mem.ID, "title", mem.Content)
+	m := memToMap(mem.ID, mem.Content, d, mem.Tags, mem.CreatedAt)
 	m["action"] = "detail"
 	out.Content = m
 	out.ContentType = envelope.ContentStructured
 	return out
 }
 
-func resolveTodo(s *store.Store, input envelope.Envelope, flags map[string]string, status string) (store.Todo, error) {
+func resolveTodo(s *store.Store, input envelope.Envelope, flags map[string]string, status string) (store.Memory, error) {
 	if id := flags["id"]; id != "" {
-		todo, err := s.GetTodo(id)
+		mem, err := s.GetMemory(id)
 		if err != nil {
-			if err == sql.ErrNoRows {
-				return store.Todo{}, fmt.Errorf("todo not found: %s", id)
-			}
-			return store.Todo{}, fmt.Errorf("failed to get todo: %v", err)
+			return store.Memory{}, fmt.Errorf("todo not found: %s", id)
 		}
-		return todo, nil
+		return mem, nil
 	}
 	search := resolveInput(flags, input)
 	if search == "" {
-		return store.Todo{}, fmt.Errorf("id or title is required")
+		return store.Memory{}, fmt.Errorf("id or title is required")
 	}
 	return fuzzyFind(s, search, status)
 }
@@ -349,21 +400,27 @@ func resolveInput(flags map[string]string, input envelope.Envelope) string {
 	return envelope.ContentToText(input.Content, input.ContentType)
 }
 
-func fuzzyFind(s *store.Store, search string, status string) (store.Todo, error) {
-	todos, err := s.ListTodos(status, 100)
-	if err != nil {
-		return store.Todo{}, fmt.Errorf("failed to search todos: %v", err)
+func fuzzyFind(s *store.Store, search string, status string) (store.Memory, error) {
+	var entries []store.Memory
+	var err error
+	if status == "all" {
+		entries, err = s.QueryByKind(store.KindTodo, 100)
+	} else {
+		entries, err = s.QueryByKindFiltered(store.KindTodo, map[string]any{"status": status}, 100)
 	}
+	if err != nil {
+		return store.Memory{}, fmt.Errorf("failed to search todos: %v", err)
+	}
+
 	lower := strings.ToLower(search)
 	searchWords := strings.Fields(lower)
 
-	// Single pass: try exact substring match first, accumulate word-overlap as fallback
-	var bestTodo store.Todo
+	var bestMem store.Memory
 	bestHits := 0
-	for _, t := range todos {
-		titleLower := strings.ToLower(t.Title)
+	for _, e := range entries {
+		titleLower := strings.ToLower(e.Content)
 		if strings.Contains(titleLower, lower) || strings.Contains(lower, titleLower) {
-			return t, nil
+			return e, nil
 		}
 
 		if len(searchWords) == 0 {
@@ -381,61 +438,55 @@ func fuzzyFind(s *store.Store, search string, status string) (store.Todo, error)
 		}
 		if hits > bestHits {
 			bestHits = hits
-			bestTodo = t
+			bestMem = e
 		}
 	}
 
-	// Require at least 2 word hits (or all words if fewer than 2)
 	minRequired := 2
 	if len(searchWords) < minRequired {
 		minRequired = len(searchWords)
 	}
 	if bestHits >= minRequired {
-		return bestTodo, nil
+		return bestMem, nil
 	}
 
-	return store.Todo{}, fmt.Errorf("no %s todo found matching %q", status, search)
+	return store.Memory{}, fmt.Errorf("no %s todo found matching %q", status, search)
 }
 
 func resolveDueDate(due string) string {
 	if due == "" {
 		return ""
 	}
-	// Try ISO date passthrough
 	if len(due) == 10 && due[4] == '-' && due[7] == '-' {
 		return due
 	}
-	// Try natural language
 	if result, err := whenParser.Parse(due, time.Now()); err == nil && result != nil {
 		return result.Time.Format("2006-01-02")
 	}
 	return due
 }
 
-func todoToMap(t store.Todo) map[string]any {
+func memToMap(id, title string, d todoData, tags []string, createdAt time.Time) map[string]any {
 	m := map[string]any{
-		"id":       t.ID,
-		"title":    t.Title,
-		"status":   t.Status,
-		"priority": t.Priority,
+		"id":       id,
+		"title":    title,
+		"status":   d.Status,
+		"priority": d.Priority,
 	}
-	if t.DueDate != "" {
-		m["due_date"] = t.DueDate
+	if d.DueDate != "" {
+		m["due_date"] = d.DueDate
 	}
-	if len(t.Tags) > 0 {
-		m["tags"] = t.Tags
+	if len(tags) > 0 {
+		m["tags"] = tags
 	}
-	if t.ExternalID != "" {
-		m["external_id"] = t.ExternalID
+	if d.ExternalID != "" {
+		m["external_id"] = d.ExternalID
 	}
-	if t.Details != "" {
-		m["details"] = t.Details
+	if d.Details != "" {
+		m["details"] = d.Details
 	}
-	if !t.CreatedAt.IsZero() {
-		m["created_at"] = t.CreatedAt.Format(time.RFC3339)
-	}
-	if !t.CompletedAt.IsZero() {
-		m["completed_at"] = t.CompletedAt.Format(time.RFC3339)
+	if !createdAt.IsZero() {
+		m["created_at"] = createdAt.Format(time.RFC3339)
 	}
 	return m
 }

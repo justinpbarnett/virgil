@@ -79,7 +79,13 @@ format:
     No details available.{{end}}{{else if eq .action "done"}}✓ Completed: {{.title}}{{else if eq .action "undone"}}↺ Restored: {{.title}}{{else if eq .action "remove"}}✗ Removed: {{.title}}{{else}}+ Added: {{.title}}{{end}}{{if and (ne .action "detail") (ne .action "remove") .due_date}} — due {{.due_date}}{{end}}{{if and (ne .action "detail") (ne .action "remove")}} · p{{.priority}}{{end}}
 
 memory:
-  disabled: true
+  context:
+    - type: kind_filter
+      kind: todo
+      depth: 30d
+    - type: kind_filter
+      kind: goal
+  budget: 1000
 
 vocabulary:
   verbs:

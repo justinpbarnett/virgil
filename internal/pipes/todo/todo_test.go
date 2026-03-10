@@ -1,8 +1,10 @@
 package todo
 
 import (
+	"encoding/json"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/justinpbarnett/virgil/internal/envelope"
 	"github.com/justinpbarnett/virgil/internal/store"
@@ -96,12 +98,15 @@ func TestHandleAddWritesMemory(t *testing.T) {
 	m := out.Content.(map[string]any)
 	id := m["id"].(string)
 
-	todo, err := s.GetTodo(id)
+	mem, err := s.GetMemory(id)
 	if err != nil {
-		t.Fatalf("GetTodo: %v", err)
+		t.Fatalf("GetMemory: %v", err)
 	}
-	if todo.MemoryID == "" {
-		t.Error("expected memory_id to be set after add")
+	if mem.Kind != store.KindTodo {
+		t.Errorf("kind = %q, want todo", mem.Kind)
+	}
+	if mem.Content != "buy milk" {
+		t.Errorf("content = %q, want buy milk", mem.Content)
 	}
 }
 
@@ -109,8 +114,8 @@ func TestHandleList(t *testing.T) {
 	s := setupStore(t)
 	h := NewHandler(s, nil)
 
-	h(textEnvelope(""), map[string]string{"action": "add", "title": "task one"})   //nolint:errcheck
-	h(textEnvelope(""), map[string]string{"action": "add", "title": "task two"})   //nolint:errcheck
+	h(textEnvelope(""), map[string]string{"action": "add", "title": "task one"})
+	h(textEnvelope(""), map[string]string{"action": "add", "title": "task two"})
 
 	out := h(textEnvelope(""), map[string]string{"action": "list", "status": "pending"})
 	if out.Error != nil {
@@ -150,8 +155,8 @@ func TestHandleListStatusFilter(t *testing.T) {
 	m := addOut.Content.(map[string]any)
 	id := m["id"].(string)
 
-	h(textEnvelope(""), map[string]string{"action": "add", "title": "other task"}) //nolint:errcheck
-	h(textEnvelope(""), map[string]string{"action": "done", "id": id})             //nolint:errcheck
+	h(textEnvelope(""), map[string]string{"action": "add", "title": "other task"})
+	h(textEnvelope(""), map[string]string{"action": "done", "id": id})
 
 	out := h(textEnvelope(""), map[string]string{"action": "list", "status": "done"})
 	items := out.Content.([]map[string]any)
@@ -182,7 +187,7 @@ func TestHandleDoneFuzzyMatch(t *testing.T) {
 	s := setupStore(t)
 	h := NewHandler(s, nil)
 
-	h(textEnvelope(""), map[string]string{"action": "add", "title": "buy groceries"}) //nolint:errcheck
+	h(textEnvelope(""), map[string]string{"action": "add", "title": "buy groceries"})
 
 	out := h(textEnvelope("buy groceries"), map[string]string{"action": "done"})
 	if out.Error != nil {
@@ -204,21 +209,37 @@ func TestHandleDoneFuzzyNoMatch(t *testing.T) {
 	}
 }
 
-func TestHandleDoneWritesMemoryAndEdge(t *testing.T) {
+func TestHandleDoneCreatesSupersedeEdge(t *testing.T) {
 	s := setupStore(t)
 	h := NewHandler(s, nil)
 
-	addOut := h(textEnvelope("add task"), map[string]string{"action": "add", "title": "test edge task"})
+	addOut := h(textEnvelope(""), map[string]string{"action": "add", "title": "test edge task"})
 	m := addOut.Content.(map[string]any)
-	id := m["id"].(string)
+	origID := m["id"].(string)
 
-	todo, _ := s.GetTodo(id)
-	if todo.MemoryID == "" {
-		t.Skip("memory not written on add, skipping edge test")
+	doneOut := h(textEnvelope(""), map[string]string{"action": "done", "id": origID})
+	if doneOut.Error != nil {
+		t.Fatalf("unexpected error: %s", doneOut.Error.Message)
+	}
+	newID := doneOut.Content.(map[string]any)["id"].(string)
+
+	newMem, err := s.GetMemory(newID)
+	if err != nil {
+		t.Fatalf("GetMemory new: %v", err)
+	}
+	var d todoData
+	json.Unmarshal([]byte(newMem.Data), &d) //nolint:errcheck
+	if d.Status != "done" {
+		t.Errorf("new entry status = %q, want done", d.Status)
 	}
 
-	h(textEnvelope("done task"), map[string]string{"action": "done", "id": id}) //nolint:errcheck
-	// If no panic/error, edge creation succeeded (or was gracefully skipped)
+	// Original should be superseded (not in pending list)
+	entries, _ := s.QueryByKindFiltered(store.KindTodo, map[string]any{"status": "pending"}, 25)
+	for _, e := range entries {
+		if e.ID == origID {
+			t.Error("original entry should be superseded")
+		}
+	}
 }
 
 func TestHandleRemove(t *testing.T) {
@@ -234,10 +255,15 @@ func TestHandleRemove(t *testing.T) {
 		t.Fatalf("unexpected error: %s", out.Error.Message)
 	}
 
-	// Verify gone
-	_, err := s.GetTodo(id)
-	if err == nil {
-		t.Error("expected error after remove, got nil")
+	// Verify not in pending list (superseded)
+	entries, err := s.QueryByKindFiltered(store.KindTodo, map[string]any{"status": "pending"}, 25)
+	if err != nil {
+		t.Fatalf("QueryByKindFiltered: %v", err)
+	}
+	for _, e := range entries {
+		if e.ID == id {
+			t.Error("removed todo should not appear in pending list")
+		}
 	}
 }
 
@@ -245,10 +271,8 @@ func TestHandleRemoveWordOverlapMatch(t *testing.T) {
 	s := setupStore(t)
 	h := NewHandler(s, nil)
 
-	h(textEnvelope(""), map[string]string{"action": "add", "title": "new event 4p-6:30p friends coming visit"}) //nolint:errcheck
+	h(textEnvelope(""), map[string]string{"action": "add", "title": "new event 4p-6:30p friends coming visit"})
 
-	// Topic extracted from "delete the new event todo item" would be "new event item"
-	// Substring match fails, but word-overlap should find it (2/3 words match)
 	out := h(textEnvelope(""), map[string]string{"action": "remove", "topic": "new event item"})
 	if out.Error != nil {
 		t.Fatalf("expected word-overlap match, got error: %s", out.Error.Message)
@@ -259,9 +283,8 @@ func TestHandleRemoveWordOverlapNoFalsePositive(t *testing.T) {
 	s := setupStore(t)
 	h := NewHandler(s, nil)
 
-	h(textEnvelope(""), map[string]string{"action": "add", "title": "buy groceries"}) //nolint:errcheck
+	h(textEnvelope(""), map[string]string{"action": "add", "title": "buy groceries"})
 
-	// Single-word overlap ("item" matches nothing) should not match
 	out := h(textEnvelope(""), map[string]string{"action": "remove", "topic": "random item"})
 	if out.Error == nil {
 		t.Fatal("expected no match for unrelated search")
@@ -314,9 +337,14 @@ func TestHandleReorder(t *testing.T) {
 		t.Fatalf("unexpected error: %s", out.Error.Message)
 	}
 
-	todo, _ := s.GetTodo(id)
-	if todo.Priority != 1 {
-		t.Errorf("priority = %d, want 1", todo.Priority)
+	mem, err := s.GetMemory(id)
+	if err != nil {
+		t.Fatalf("GetMemory: %v", err)
+	}
+	var d todoData
+	json.Unmarshal([]byte(mem.Data), &d) //nolint:errcheck
+	if d.Priority != 1 {
+		t.Errorf("priority = %d, want 1", d.Priority)
 	}
 }
 
@@ -386,7 +414,7 @@ func TestHandleDetailFuzzyMatch(t *testing.T) {
 	s := setupStore(t)
 	h := NewHandler(s, nil)
 
-	h(textEnvelope(""), map[string]string{"action": "add", "title": "implement oauth flow"}) //nolint:errcheck
+	h(textEnvelope(""), map[string]string{"action": "add", "title": "implement oauth flow"})
 
 	out := h(textEnvelope("implement oauth flow"), map[string]string{"action": "detail"})
 	if out.Error != nil {
@@ -398,143 +426,34 @@ func TestHandleDetailFuzzyMatch(t *testing.T) {
 	}
 }
 
-func TestTodoToMapIncludesExternalID(t *testing.T) {
-	todo, err := setupStore(t).AddTodo("task", 3, "", nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	todo.ExternalID = "jira:PTP-123"
-	m := todoToMap(todo)
+func TestMemToMapIncludesExternalID(t *testing.T) {
+	d := todoData{Status: "pending", Priority: 3, ExternalID: "jira:PTP-123"}
+	m := memToMap("test-id", "task", d, nil, time.Now())
 	if m["external_id"] != "jira:PTP-123" {
 		t.Errorf("external_id = %v, want jira:PTP-123", m["external_id"])
 	}
 }
 
-func TestTodoToMapIncludesDetails(t *testing.T) {
-	todo, err := setupStore(t).AddTodo("task", 3, "", nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	todo.Details = "## Description\nSome detail text"
-	m := todoToMap(todo)
+func TestMemToMapIncludesDetails(t *testing.T) {
+	d := todoData{Status: "pending", Priority: 3, Details: "## Description\nSome detail text"}
+	m := memToMap("test-id", "task", d, nil, time.Now())
 	if m["details"] != "## Description\nSome detail text" {
 		t.Errorf("details = %v, want the detail string", m["details"])
 	}
 }
 
-func TestTodoToMapOmitsEmptyExternalID(t *testing.T) {
-	todo, err := setupStore(t).AddTodo("task", 3, "", nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	m := todoToMap(todo)
+func TestMemToMapOmitsEmptyExternalID(t *testing.T) {
+	d := todoData{Status: "pending", Priority: 3}
+	m := memToMap("test-id", "task", d, nil, time.Now())
 	if _, ok := m["external_id"]; ok {
 		t.Error("expected external_id to be omitted when empty")
 	}
 }
 
-func TestTodoToMapOmitsEmptyDetails(t *testing.T) {
-	todo, err := setupStore(t).AddTodo("task", 3, "", nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	m := todoToMap(todo)
+func TestMemToMapOmitsEmptyDetails(t *testing.T) {
+	d := todoData{Status: "pending", Priority: 3}
+	m := memToMap("test-id", "task", d, nil, time.Now())
 	if _, ok := m["details"]; ok {
 		t.Error("expected details to be omitted when empty")
-	}
-}
-
-func TestUpsertTodoByExternalIDCreate(t *testing.T) {
-	s := setupStore(t)
-
-	todo, created, err := s.UpsertTodoByExternalID("jira:PTP-1", "Fix login bug", "## Details\nSome context", 2, "", []string{"jira"})
-	if err != nil {
-		t.Fatalf("upsert error: %v", err)
-	}
-	if !created {
-		t.Error("expected created=true for new external_id")
-	}
-	if todo.Title != "Fix login bug" {
-		t.Errorf("title = %q, want Fix login bug", todo.Title)
-	}
-	if todo.ExternalID != "jira:PTP-1" {
-		t.Errorf("external_id = %q, want jira:PTP-1", todo.ExternalID)
-	}
-}
-
-func TestUpsertTodoByExternalIDUpdate(t *testing.T) {
-	s := setupStore(t)
-
-	_, _, err := s.UpsertTodoByExternalID("jira:PTP-2", "Original title", "", 3, "", nil)
-	if err != nil {
-		t.Fatalf("first upsert: %v", err)
-	}
-
-	todo, created, err := s.UpsertTodoByExternalID("jira:PTP-2", "Updated title", "New details", 1, "", []string{"jira"})
-	if err != nil {
-		t.Fatalf("second upsert: %v", err)
-	}
-	if created {
-		t.Error("expected created=false for existing external_id")
-	}
-	if todo.Title != "Updated title" {
-		t.Errorf("title = %q, want Updated title", todo.Title)
-	}
-	if todo.Details != "New details" {
-		t.Errorf("details = %q, want New details", todo.Details)
-	}
-}
-
-func TestUpsertTodoByExternalIDEmptyID(t *testing.T) {
-	s := setupStore(t)
-	_, _, err := s.UpsertTodoByExternalID("", "title", "", 3, "", nil)
-	if err == nil {
-		t.Fatal("expected error for empty external_id")
-	}
-}
-
-func TestFindTodoByExternalID(t *testing.T) {
-	s := setupStore(t)
-
-	_, _, err := s.UpsertTodoByExternalID("jira:PTP-10", "Search me", "", 3, "", nil)
-	if err != nil {
-		t.Fatalf("upsert: %v", err)
-	}
-
-	todo, err := s.FindTodoByExternalID("jira:PTP-10")
-	if err != nil {
-		t.Fatalf("find: %v", err)
-	}
-	if todo.ExternalID != "jira:PTP-10" {
-		t.Errorf("external_id = %q, want jira:PTP-10", todo.ExternalID)
-	}
-}
-
-func TestFindTodoByExternalIDNotFound(t *testing.T) {
-	s := setupStore(t)
-	_, err := s.FindTodoByExternalID("jira:NOTEXIST-999")
-	if err == nil {
-		t.Fatal("expected error for nonexistent external_id")
-	}
-}
-
-func TestUpdateTodoDetails(t *testing.T) {
-	s := setupStore(t)
-
-	todo, err := s.AddTodo("update me", 3, "", nil)
-	if err != nil {
-		t.Fatalf("add: %v", err)
-	}
-
-	if err := s.UpdateTodo(todo.ID, map[string]string{"details": "new context here"}); err != nil {
-		t.Fatalf("update: %v", err)
-	}
-
-	got, err := s.GetTodo(todo.ID)
-	if err != nil {
-		t.Fatalf("get: %v", err)
-	}
-	if got.Details != "new context here" {
-		t.Errorf("details = %q, want new context here", got.Details)
 	}
 }
