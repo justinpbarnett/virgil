@@ -199,14 +199,14 @@ func (m *ModelEndpoint) SetDefaults(provider, model string, maxTokens int) {
 }
 
 type Config struct {
-	Server       ServerConfig          `yaml:"server"`
-	Provider     ProviderConfig        `yaml:"provider"`
-	Ack          ModelEndpoint         `yaml:"ack"`
-	Planner      ModelEndpoint         `yaml:"planner"`
-	Identity     string                `yaml:"identity"`
-	LogLevel     LogLevel              `yaml:"log_level"`
-	DatabasePath string                `yaml:"database_path"`
-	ConfigDir    string                `yaml:"-"`
+	Server       ServerConfig              `yaml:"server"`
+	Provider     ProviderConfig            `yaml:"provider"`
+	Ack          ModelEndpoint             `yaml:"ack"`
+	Planner      ModelEndpoint             `yaml:"planner"`
+	Identity     string                    `yaml:"identity"`
+	LogLevel     LogLevel                  `yaml:"log_level"`
+	DatabasePath string                    `yaml:"database_path"`
+	ConfigDir    string                    `yaml:"-"`
 	Pipes        map[string]PipeConfig     `yaml:"-"`
 	Pipelines    map[string]PipelineConfig `yaml:"-"`
 	Vocabulary   VocabularyConfig          `yaml:"-"`
@@ -240,6 +240,7 @@ type MemoryContextEntry struct {
 	Type      string   `yaml:"type"`
 	Depth     string   `yaml:"depth"`
 	Relations []string `yaml:"relations"`
+	Kind      string   `yaml:"kind"`
 }
 
 type MemoryConfig struct {
@@ -354,9 +355,9 @@ type PlanStep struct {
 // after each full iteration, and exits when satisfied or when Max is reached.
 type LoopConfig struct {
 	Name  string   `yaml:"name"`
-	Steps []string `yaml:"steps"`  // step names forming the loop body
-	Until string   `yaml:"until"`  // condition expression evaluated after each iteration
-	Max   int      `yaml:"max"`    // iteration cap; 0 means unlimited (not recommended)
+	Steps []string `yaml:"steps"` // step names forming the loop body
+	Until string   `yaml:"until"` // condition expression evaluated after each iteration
+	Max   int      `yaml:"max"`   // iteration cap; 0 means unlimited (not recommended)
 }
 
 // ParallelBranch declares one branch of a parallel fan-out within a pipeline step.

@@ -30,6 +30,7 @@ const (
 	RelevanceUserPrefs     = 0.7
 	RelevanceRecentHistory = 0.5
 	RelevanceRelational    = 0.4
+	RelevanceKindFilter    = 0.6
 )
 
 // Default confidence by memory kind, used at write time and as fallback at read time.
@@ -37,6 +38,10 @@ const (
 	ConfidenceExplicit     = 0.9
 	ConfidenceWorkingState = 0.7
 	ConfidenceInvocation   = 0.5
+	ConfidenceTodo         = 0.8
+	ConfidenceReminder     = 0.8
+	ConfidenceGoal         = 0.9
+	ConfidenceSummary      = 0.6
 )
 
 // ComputeScore calculates the composite retrieval score.
@@ -62,6 +67,8 @@ func defaultRelevance(sourceType string) float64 {
 		return RelevanceRecentHistory
 	case "relational":
 		return RelevanceRelational
+	case "kind_filter":
+		return RelevanceKindFilter
 	default:
 		return 0.5
 	}
