@@ -3,6 +3,7 @@ package store
 import (
 	"database/sql"
 	"embed"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -32,6 +33,7 @@ type Memory struct {
 	Tags       []string
 	Confidence float64
 	ValidUntil *time.Time // nil = never expires
+	Data       string     // JSON structured data for kind-specific fields
 }
 
 // Entry represents an explicit memory entry (kind='explicit').
@@ -62,9 +64,10 @@ type InvocationEntry struct {
 
 // ContextRequest describes what kind of memory context to retrieve.
 type ContextRequest struct {
-	Type      string   // "topic_history", "working_state", "user_preferences", "relational"
+	Type      string   // "topic_history", "working_state", "user_preferences", "relational", "kind_filter"
 	Depth     string   // optional duration like "7d", "30d"
 	Relations []string // for relational: which edge types to traverse
+	Kind      string   // for kind_filter: which memory kind to retrieve
 }
 
 // Store wraps a SQLite database.
@@ -719,257 +722,299 @@ func (s *Store) RecentInvocations(limit int) ([]InvocationEntry, error) {
 	return scanInvocations(rows)
 }
 
-// Todo status values.
-const (
-	TodoStatusPending = "pending"
-	TodoStatusDone    = "done"
-)
-
-// todoCols is the shared column list for all todo SELECT queries.
-const todoCols = `id, title, status, priority, COALESCE(due_date,''), tags, COALESCE(memory_id,''), COALESCE(external_id,''), COALESCE(details,''), created_at, COALESCE(completed_at,0)`
-
-// Todo represents a todo list item.
-type Todo struct {
-	ID          string    `json:"id"`
-	Title       string    `json:"title"`
-	Status      string    `json:"status"`
-	Priority    int       `json:"priority"`
-	DueDate     string    `json:"due_date,omitempty"`
-	Tags        []string  `json:"tags,omitempty"`
-	MemoryID    string    `json:"memory_id,omitempty"`
-	ExternalID  string    `json:"external_id,omitempty"`
-	Details     string    `json:"details,omitempty"`
-	CreatedAt   time.Time `json:"created_at"`
-	CompletedAt time.Time `json:"completed_at,omitempty"`
-}
-
-// clampPriority restricts a priority value to the valid range [1, 5].
-func clampPriority(p int) int {
-	if p < 1 {
-		return 1
-	}
-	if p > 5 {
-		return 5
-	}
-	return p
-}
-
-// AddTodo inserts a new todo item and returns the created Todo.
-func (s *Store) AddTodo(title string, priority int, dueDate string, tags []string) (Todo, error) {
-	priority = clampPriority(priority)
-
+// SaveKind inserts a memory entry with the given kind and optional structured data.
+// Data is marshaled to JSON if non-nil. Returns the new memory ID.
+func (s *Store) SaveKind(kind, content string, data any, tags []string, validUntil *time.Time) (string, error) {
 	id := newID()
 	now := time.Now()
 	tagStr := strings.Join(tags, ",")
 
-	_, err := s.db.Exec(
-		`INSERT INTO todos (id, title, status, priority, due_date, tags, created_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?)`,
-		id, title, TodoStatusPending, priority, dueDate, tagStr, now.UnixNano(),
-	)
-	if err != nil {
-		return Todo{}, err
+	var dataStr any
+	if data != nil {
+		b, err := json.Marshal(data)
+		if err != nil {
+			return "", fmt.Errorf("marshaling data: %w", err)
+		}
+		dataStr = string(b)
 	}
 
-	return Todo{
-		ID:        id,
-		Title:     title,
-		Status:    TodoStatusPending,
-		Priority:  priority,
-		DueDate:   dueDate,
-		Tags:      tags,
-		CreatedAt: now,
-	}, nil
+	var validUntilNano any
+	if validUntil != nil {
+		validUntilNano = validUntil.UnixNano()
+	}
+
+	_, err := s.db.Exec(
+		"INSERT INTO memories (id, created_at, updated_at, kind, content, tags, confidence, valid_until, data) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+		id, now.UnixNano(), now.UnixNano(), kind, content, tagStr, DefaultConfidence(kind), validUntilNano, dataStr,
+	)
+	if err != nil {
+		return "", err
+	}
+	return id, nil
 }
 
-// ListTodos returns todos ordered by priority ASC, created_at ASC.
-// When status is empty or "all", returns all items. Default limit is 25.
-func (s *Store) ListTodos(status string, limit int) ([]Todo, error) {
+// QueryByKind returns non-expired, non-superseded entries of the given kind.
+func (s *Store) QueryByKind(kind string, limit int) ([]Memory, error) {
 	if limit <= 0 {
 		limit = 25
 	}
+	now := time.Now().UnixNano()
 
-	q := "SELECT " + todoCols + " FROM todos"
-	args := []any{}
-	if status != "" && status != "all" {
-		q += " WHERE status = ?"
-		args = append(args, status)
+	rows, err := s.db.Query(`
+		SELECT id, created_at, updated_at, kind,
+		       COALESCE(source_pipe, ''), COALESCE(signal, ''), content, COALESCE(tags, ''),
+		       confidence, COALESCE(data, '')
+		FROM memories
+		WHERE kind = ?
+		  AND (valid_until IS NULL OR valid_until > ?)
+		  AND id NOT IN (SELECT target_id FROM memory_edges WHERE relation = 'refined_from')
+		ORDER BY created_at DESC
+		LIMIT ?
+	`, kind, now, limit)
+	if err != nil {
+		return nil, err
 	}
-	q += " ORDER BY priority ASC, created_at ASC LIMIT ?"
+	defer rows.Close()
+	return scanMemories(rows)
+}
+
+// QueryByKindFiltered returns non-expired, non-superseded entries of the given kind
+// filtered by json_extract conditions on the data column.
+func (s *Store) QueryByKindFiltered(kind string, jsonFilters map[string]any, limit int) ([]Memory, error) {
+	if limit <= 0 {
+		limit = 25
+	}
+	now := time.Now().UnixNano()
+
+	conds := []string{
+		"kind = ?",
+		"(valid_until IS NULL OR valid_until > ?)",
+		"id NOT IN (SELECT target_id FROM memory_edges WHERE relation = 'refined_from')",
+	}
+	args := []any{kind, now}
+
+	for key, val := range jsonFilters {
+		conds = append(conds, "json_extract(data, ?) = ?")
+		args = append(args, "$."+key, val)
+	}
+
 	args = append(args, limit)
+	query := fmt.Sprintf(`
+		SELECT id, created_at, updated_at, kind,
+		       COALESCE(source_pipe, ''), COALESCE(signal, ''), content, COALESCE(tags, ''),
+		       confidence, COALESCE(data, '')
+		FROM memories
+		WHERE %s
+		ORDER BY created_at DESC
+		LIMIT ?
+	`, strings.Join(conds, " AND "))
 
-	rows, err := s.db.Query(q, args...)
+	rows, err := s.db.Query(query, args...)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-
-	return scanTodos(rows)
+	return scanMemories(rows)
 }
 
-// GetTodo returns a single todo by ID.
-func (s *Store) GetTodo(id string) (Todo, error) {
-	row := s.db.QueryRow("SELECT "+todoCols+" FROM todos WHERE id = ?", id)
-	return scanTodoFrom(row)
-}
-
-// FindTodoByExternalID returns a todo by its external_id. Returns sql.ErrNoRows if not found.
-func (s *Store) FindTodoByExternalID(externalID string) (Todo, error) {
-	row := s.db.QueryRow("SELECT "+todoCols+" FROM todos WHERE external_id = ?", externalID)
-	return scanTodoFrom(row)
-}
-
-// UpsertTodoByExternalID inserts a todo if the external_id doesn't exist, or updates it if it does.
-// Returns the todo and true if it was created, false if it was updated.
-func (s *Store) UpsertTodoByExternalID(externalID, title, details string, priority int, dueDate string, tags []string) (Todo, bool, error) {
-	if externalID == "" {
-		return Todo{}, false, fmt.Errorf("external_id is required for upsert")
+// SearchByKind performs an FTS search restricted to a specific kind.
+func (s *Store) SearchByKind(query string, kind string, limit int) ([]Memory, error) {
+	if limit <= 0 {
+		limit = 10
 	}
-	priority = clampPriority(priority)
-	id := newID()
-	now := time.Now()
-	tagStr := strings.Join(tags, ",")
+	now := time.Now().UnixNano()
 
-	_, err := s.db.Exec(`
-		INSERT INTO todos (id, title, status, priority, due_date, tags, external_id, details, created_at)
-		VALUES (?, ?, 'pending', ?, ?, ?, ?, ?, ?)
-		ON CONFLICT(external_id) DO UPDATE SET
-			title    = excluded.title,
-			details  = excluded.details,
-			priority = excluded.priority,
-			due_date = excluded.due_date,
-			tags     = excluded.tags
-	`, id, title, priority, dueDate, tagStr, externalID, details, now.UnixNano())
-	if err != nil {
-		return Todo{}, false, err
-	}
-
-	todo, err := s.FindTodoByExternalID(externalID)
-	if err != nil {
-		return Todo{}, false, err
-	}
-	created := todo.ID == id
-	return todo, created, nil
-}
-
-// UpdateTodo updates specified fields on a todo. Supported keys: title, priority, due_date, tags.
-func (s *Store) UpdateTodo(id string, updates map[string]string) error {
-	if len(updates) == 0 {
-		return nil
-	}
-
-	setClauses := make([]string, 0, len(updates))
-	args := make([]any, 0, len(updates)+1)
-
-	for k, v := range updates {
-		switch k {
-		case "title", "due_date", "tags", "details", "external_id":
-			setClauses = append(setClauses, k+" = ?")
-			args = append(args, v)
-		case "priority":
-			p, err := strconv.Atoi(v)
-			if err != nil {
-				return fmt.Errorf("invalid priority %q: %w", v, err)
-			}
-			setClauses = append(setClauses, "priority = ?")
-			args = append(args, clampPriority(p))
-		}
-	}
-
-	if len(setClauses) == 0 {
-		return nil
-	}
-
-	args = append(args, id)
-	query := fmt.Sprintf("UPDATE todos SET %s WHERE id = ?", strings.Join(setClauses, ", "))
-	_, err := s.db.Exec(query, args...)
-	return err
-}
-
-// CompleteTodo marks a todo as done.
-func (s *Store) CompleteTodo(id string) error {
-	_, err := s.db.Exec(
-		"UPDATE todos SET status = ?, completed_at = ? WHERE id = ?",
-		TodoStatusDone,
-		time.Now().UnixNano(), id,
-	)
-	return err
-}
-
-// UncompleteTodo marks a completed todo as pending again.
-func (s *Store) UncompleteTodo(id string) error {
-	_, err := s.db.Exec(
-		"UPDATE todos SET status = ?, completed_at = 0 WHERE id = ?",
-		TodoStatusPending, id,
-	)
-	return err
-}
-
-// DeleteTodo removes a todo by ID.
-func (s *Store) DeleteTodo(id string) error {
-	_, err := s.db.Exec("DELETE FROM todos WHERE id = ?", id)
-	return err
-}
-
-// ReorderTodo changes a todo's priority.
-func (s *Store) ReorderTodo(id string, newPriority int) error {
-	_, err := s.db.Exec("UPDATE todos SET priority = ? WHERE id = ?", clampPriority(newPriority), id)
-	return err
-}
-
-// SetTodoMemoryID links a todo to its creation memory node.
-func (s *Store) SetTodoMemoryID(id, memoryID string) error {
-	_, err := s.db.Exec("UPDATE todos SET memory_id = ? WHERE id = ?", memoryID, id)
-	return err
-}
-
-// ListTodosWithExternalIDPrefix returns all todos whose external_id starts with prefix.
-func (s *Store) ListTodosWithExternalIDPrefix(prefix string) ([]Todo, error) {
-	rows, err := s.db.Query(
-		"SELECT "+todoCols+" FROM todos WHERE external_id LIKE ? ORDER BY created_at ASC",
-		prefix+"%",
-	)
+	rows, err := s.db.Query(`
+		SELECT m.id, m.created_at, m.updated_at, m.kind,
+		       COALESCE(m.source_pipe, ''), COALESCE(m.signal, ''), m.content, COALESCE(m.tags, ''),
+		       m.confidence, COALESCE(m.data, '')
+		FROM memories_fts f
+		JOIN memories m ON m.rowid = f.rowid
+		WHERE memories_fts MATCH ? AND m.kind = ?
+		  AND (m.valid_until IS NULL OR m.valid_until > ?)
+		ORDER BY rank
+		LIMIT ?
+	`, query, kind, now, limit)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	return scanTodos(rows)
+	return scanMemories(rows)
 }
 
-func scanTodos(rows *sql.Rows) ([]Todo, error) {
-	var todos []Todo
-	for rows.Next() {
-		t, err := scanTodoFrom(rows)
+// GetMemory returns a single memory entry by ID.
+func (s *Store) GetMemory(id string) (Memory, error) {
+	now := time.Now().UnixNano()
+	var m Memory
+	var createdNano, updatedNano int64
+	var tagStr string
+	err := s.db.QueryRow(`
+		SELECT id, created_at, updated_at, kind,
+		       COALESCE(source_pipe, ''), COALESCE(signal, ''), content, COALESCE(tags, ''),
+		       confidence, COALESCE(data, '')
+		FROM memories
+		WHERE id = ? AND (valid_until IS NULL OR valid_until > ?)
+	`, id, now).Scan(
+		&m.ID, &createdNano, &updatedNano, &m.Kind,
+		&m.SourcePipe, &m.Signal, &m.Content, &tagStr,
+		&m.Confidence, &m.Data,
+	)
+	if err != nil {
+		return Memory{}, err
+	}
+	m.CreatedAt = time.Unix(0, createdNano)
+	m.UpdatedAt = time.Unix(0, updatedNano)
+	if tagStr != "" {
+		m.Tags = strings.Split(tagStr, ",")
+	}
+	return m, nil
+}
+
+// UpdateMemory updates the content, data, and tags columns in place.
+func (s *Store) UpdateMemory(id string, content string, data any, tags []string) error {
+	now := time.Now().UnixNano()
+
+	var dataStr any
+	if data != nil {
+		b, err := json.Marshal(data)
 		if err != nil {
+			return fmt.Errorf("marshaling data: %w", err)
+		}
+		dataStr = string(b)
+	}
+
+	_, err := s.db.Exec(
+		"UPDATE memories SET content = ?, data = ?, tags = ?, updated_at = ? WHERE id = ?",
+		content, dataStr, strings.Join(tags, ","), now, id,
+	)
+	return err
+}
+
+// UpdateData updates only the data JSON column in place for minor edits.
+func (s *Store) UpdateData(id string, data any) error {
+	now := time.Now().UnixNano()
+
+	b, err := json.Marshal(data)
+	if err != nil {
+		return fmt.Errorf("marshaling data: %w", err)
+	}
+
+	_, err = s.db.Exec(
+		"UPDATE memories SET data = ?, updated_at = ? WHERE id = ?",
+		string(b), now, id,
+	)
+	return err
+}
+
+// SupersedeMemory creates a new memory that supersedes an old one.
+// Creates a refined_from edge (new -> old) and halves the old entry's confidence.
+func (s *Store) SupersedeMemory(oldID string, newContent string, newData any, newTags []string) (string, error) {
+	old, err := s.GetMemory(oldID)
+	if err != nil {
+		return "", fmt.Errorf("getting old memory: %w", err)
+	}
+
+	newID, err := s.SaveKind(old.Kind, newContent, newData, newTags, nil)
+	if err != nil {
+		return "", fmt.Errorf("saving new memory: %w", err)
+	}
+
+	if err := s.CreateEdge(Edge{
+		SourceID: newID,
+		TargetID: oldID,
+		Relation: RelationRefinedFrom,
+	}); err != nil {
+		return newID, fmt.Errorf("creating refined_from edge: %w", err)
+	}
+
+	s.db.Exec( //nolint:errcheck
+		"UPDATE memories SET confidence = MAX(confidence * 0.5, 0.01) WHERE id = ?",
+		oldID,
+	)
+
+	return newID, nil
+}
+
+// FindByKindAndDataField finds a non-superseded memory by kind and a JSON field value.
+func (s *Store) FindByKindAndDataField(kind, jsonPath string, value any) (Memory, error) {
+	now := time.Now().UnixNano()
+	var m Memory
+	var createdNano, updatedNano int64
+	var tagStr string
+	err := s.db.QueryRow(`
+		SELECT id, created_at, updated_at, kind,
+		       COALESCE(source_pipe, ''), COALESCE(signal, ''), content, COALESCE(tags, ''),
+		       confidence, COALESCE(data, '')
+		FROM memories
+		WHERE kind = ?
+		  AND json_extract(data, ?) = ?
+		  AND (valid_until IS NULL OR valid_until > ?)
+		  AND id NOT IN (SELECT target_id FROM memory_edges WHERE relation = 'refined_from')
+		LIMIT 1
+	`, kind, jsonPath, value, now).Scan(
+		&m.ID, &createdNano, &updatedNano, &m.Kind,
+		&m.SourcePipe, &m.Signal, &m.Content, &tagStr,
+		&m.Confidence, &m.Data,
+	)
+	if err != nil {
+		return Memory{}, err
+	}
+	m.CreatedAt = time.Unix(0, createdNano)
+	m.UpdatedAt = time.Unix(0, updatedNano)
+	if tagStr != "" {
+		m.Tags = strings.Split(tagStr, ",")
+	}
+	return m, nil
+}
+
+// FindByKindAndDataPrefix finds non-superseded memories by kind where a JSON field starts with prefix.
+func (s *Store) FindByKindAndDataPrefix(kind, jsonPath, prefix string, limit int) ([]Memory, error) {
+	if limit <= 0 {
+		limit = 25
+	}
+	now := time.Now().UnixNano()
+
+	rows, err := s.db.Query(`
+		SELECT id, created_at, updated_at, kind,
+		       COALESCE(source_pipe, ''), COALESCE(signal, ''), content, COALESCE(tags, ''),
+		       confidence, COALESCE(data, '')
+		FROM memories
+		WHERE kind = ?
+		  AND json_extract(data, ?) LIKE ?
+		  AND (valid_until IS NULL OR valid_until > ?)
+		  AND id NOT IN (SELECT target_id FROM memory_edges WHERE relation = 'refined_from')
+		ORDER BY created_at ASC
+		LIMIT ?
+	`, kind, jsonPath, prefix+"%", now, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return scanMemories(rows)
+}
+
+// scanMemories reads Memory records from rows selecting the standard 10-column set.
+func scanMemories(rows *sql.Rows) ([]Memory, error) {
+	var memories []Memory
+	for rows.Next() {
+		var m Memory
+		var createdNano, updatedNano int64
+		var tagStr string
+		if err := rows.Scan(
+			&m.ID, &createdNano, &updatedNano, &m.Kind,
+			&m.SourcePipe, &m.Signal, &m.Content, &tagStr,
+			&m.Confidence, &m.Data,
+		); err != nil {
 			return nil, err
 		}
-		todos = append(todos, t)
+		m.CreatedAt = time.Unix(0, createdNano)
+		m.UpdatedAt = time.Unix(0, updatedNano)
+		if tagStr != "" {
+			m.Tags = strings.Split(tagStr, ",")
+		}
+		memories = append(memories, m)
 	}
-	return todos, rows.Err()
-}
-
-type todoScanner interface {
-	Scan(dest ...any) error
-}
-
-func scanTodoFrom(s todoScanner) (Todo, error) {
-	var t Todo
-	var tagStr, memoryID, externalID, details string
-	var createdNano, completedNano int64
-	if err := s.Scan(&t.ID, &t.Title, &t.Status, &t.Priority, &t.DueDate, &tagStr, &memoryID, &externalID, &details, &createdNano, &completedNano); err != nil {
-		return Todo{}, err
-	}
-	t.MemoryID = memoryID
-	t.ExternalID = externalID
-	t.Details = details
-	t.CreatedAt = time.Unix(0, createdNano)
-	if completedNano != 0 {
-		t.CompletedAt = time.Unix(0, completedNano)
-	}
-	if tagStr != "" {
-		t.Tags = strings.Split(tagStr, ",")
-	}
-	return t, nil
+	return memories, rows.Err()
 }
 
 // parseStateID splits a composite "namespace/key" ID back into its parts.
@@ -1128,6 +1173,26 @@ func (s *Store) RetrieveContext(query string, requests []ContextRequest, budget 
 					SourceType:  "recent_history",
 				})
 				seenIDs[e.ID] = true
+			}
+
+		case "kind_filter":
+			if req.Kind == "" {
+				continue
+			}
+			entries, err := s.QueryByKind(req.Kind, 10)
+			if err != nil {
+				continue
+			}
+			for _, mem := range entries {
+				if seenIDs[mem.ID] {
+					continue
+				}
+				candidates = append(candidates, ScoredMemory{
+					Memory:      mem,
+					HopDistance: 0,
+					SourceType:  "kind_filter",
+				})
+				seenIDs[mem.ID] = true
 			}
 
 		case "user_preferences":

@@ -238,7 +238,7 @@ func (s *Store) traverseHop(anchorIDs []string, excludeIDs []string, relations [
 	query := fmt.Sprintf(`
 		SELECT m.id, m.created_at, m.updated_at, m.kind,
 		       COALESCE(m.source_pipe, ''), COALESCE(m.signal, ''), m.content, COALESCE(m.tags, ''),
-		       m.confidence,
+		       m.confidence, COALESCE(m.data, ''),
 		       MAX(e.strength) as max_strength
 		FROM memory_edges e
 		JOIN memories m ON (
@@ -269,7 +269,7 @@ func (s *Store) traverseHop(anchorIDs []string, excludeIDs []string, relations [
 		if err := rows.Scan(
 			&m.ID, &createdNano, &updatedNano, &m.Kind,
 			&m.SourcePipe, &m.Signal, &m.Content, &tagStr,
-			&m.Confidence,
+			&m.Confidence, &m.Data,
 			&maxStrength,
 		); err != nil {
 			return nil, err

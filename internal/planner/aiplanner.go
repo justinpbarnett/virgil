@@ -111,7 +111,10 @@ Rules:
 - Only include flags that are relevant. Omit flags you're unsure about.
 - The last pipe in a pipeline produces the user-facing response.
 - Use the recent history to understand follow-up signals. If the user's signal is ambiguous
-  but the recent history shows a specific pipe, prefer that pipe for continuity.`
+  but the recent history shows a specific pipe, prefer that pipe for continuity.
+- If the user mentions a specific external service or platform (e.g., Jira, Slack, GitHub,
+  email, Trello) that is NOT listed as an available pipe, respond with "chat". Do not map
+  service-specific requests to loosely related pipes.`
 
 // aiPlanResponse is the JSON structure returned by the AI planner.
 type aiPlanResponse struct {

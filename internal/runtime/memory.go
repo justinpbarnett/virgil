@@ -22,8 +22,8 @@ type MemorySaver interface {
 
 // StoreMemoryInjector implements MemoryInjector backed by a Store.
 type StoreMemoryInjector struct {
-	store           *store.Store
-	codebaseSearch  func(ctx context.Context, query string, budget int) ([]envelope.MemoryEntry, error)
+	store          *store.Store
+	codebaseSearch func(ctx context.Context, query string, budget int) ([]envelope.MemoryEntry, error)
 }
 
 func NewStoreMemoryInjector(s *store.Store) *StoreMemoryInjector {
@@ -74,7 +74,7 @@ func (m *StoreMemoryInjector) InjectContext(env envelope.Envelope, cfg config.Me
 	if len(storeEntries) > 0 {
 		requests := make([]store.ContextRequest, len(storeEntries))
 		for i, c := range storeEntries {
-			requests[i] = store.ContextRequest{Type: c.Type, Depth: c.Depth, Relations: c.Relations}
+			requests[i] = store.ContextRequest{Type: c.Type, Depth: c.Depth, Relations: c.Relations, Kind: c.Kind}
 		}
 		entries, err := m.store.RetrieveContext(query, requests, remainingBudget)
 		if err == nil && len(entries) > 0 {
