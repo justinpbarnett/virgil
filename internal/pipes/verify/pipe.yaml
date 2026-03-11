@@ -38,7 +38,6 @@ vocabulary:
   verbs:
     verify: [verify]
     validate: [verify]
-    check: [verify]
     test: [verify]
     lint: [verify]
   types:
