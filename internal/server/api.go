@@ -37,7 +37,6 @@ func buildAckUserPrompt(signal string, memories []envelope.MemoryEntry) string {
 	return sb.String()
 }
 
-
 type signalRequest struct {
 	Text  string `json:"text"`
 	Model string `json:"model,omitempty"`
@@ -61,6 +60,19 @@ func buildSeed(req signalRequest) envelope.Envelope {
 		seed.Args["cwd"] = cwd
 	}
 	return seed
+}
+
+func seedParsedFields(seed *envelope.Envelope, parsed parser.ParsedSignal) {
+	if parsed.Topic != "" {
+		seed.Args["topic"] = parsed.Topic
+		seed.Args["feature"] = parsed.Topic
+	}
+	if parsed.Source != "" {
+		seed.Args["source"] = parsed.Source
+	}
+	if parsed.Type != "" {
+		seed.Args["type"] = parsed.Type
+	}
 }
 
 // startAck launches the ack stream in a goroutine and returns a channel that
@@ -195,6 +207,7 @@ func (s *Server) handleSignal(w http.ResponseWriter, r *http.Request) {
 	// Check if this route maps to a pipeline.
 	var result envelope.Envelope
 	if pc := s.pipelineForRoute(route.Pipe); pc != nil {
+		seedParsedFields(&seed, parsed)
 		result = s.executePipeline(*pc, seed)
 	} else {
 		plan := s.buildPlanForRoute(&route, req.Text, parsed)
@@ -251,6 +264,7 @@ func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request, req signalReq
 
 	// Check if this route maps to a pipeline.
 	if pc := s.pipelineForRoute(route.Pipe); pc != nil {
+		seedParsedFields(&seed, parsed)
 		sse.WriteJSON(w, flusher, envelope.SSEEventRoute, map[string]any{"pipe": pc.Name, "layer": route.Layer})
 		result := s.executePipelineStream(*pc, seed, sseSink)
 		mu.Lock()
