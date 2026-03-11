@@ -188,6 +188,14 @@ func NewHandler(executor Executor, logger *slog.Logger) pipe.Handler {
 		if base == "" {
 			base = "main"
 		}
+
+		// Guard: refuse to publish from the base branch
+		if branch == base {
+			out.Duration = time.Since(out.Timestamp)
+			out.Error = envelope.FatalError(fmt.Sprintf("current branch %q is the same as base branch %q; publish requires a feature branch", branch, base))
+			return out
+		}
+
 		draft := flags["draft"] == "true"
 
 		// Check for existing PR
@@ -399,4 +407,3 @@ func extractPRNumber(url string) int {
 	_, _ = fmt.Sscanf(last, "%d", &n)
 	return n
 }
-
