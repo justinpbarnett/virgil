@@ -509,6 +509,7 @@ func (s *Store) Search(query string, limit int, sortOrder string) ([]Entry, erro
 	}
 
 	now := time.Now().UnixNano()
+	safeQuery := sanitizeFTS(query)
 
 	var rows *sql.Rows
 	var err error
@@ -521,9 +522,9 @@ func (s *Store) Search(query string, limit int, sortOrder string) ([]Entry, erro
 			  AND (m.valid_until IS NULL OR m.valid_until > ?)
 			ORDER BY m.created_at DESC
 			LIMIT ?
-		`, query, now, limit)
+		`, safeQuery, now, limit)
 	} else {
-		rows, err = s.searchRankStmt.Query(query, now, limit)
+		rows, err = s.searchRankStmt.Query(safeQuery, now, limit)
 	}
 	if err != nil {
 		return nil, err
@@ -637,6 +638,7 @@ func (s *Store) SearchInvocations(query, pipeName string, limit int, since time.
 	}
 
 	now := time.Now().UnixNano()
+	safeQuery := sanitizeFTS(query)
 
 	var rows *sql.Rows
 	var err error
@@ -644,16 +646,16 @@ func (s *Store) SearchInvocations(query, pipeName string, limit int, since time.
 	// Use prepared statements for the common no-pipe-filter cases
 	if pipeName == "" {
 		if since.IsZero() {
-			rows, err = s.searchInvStmt.Query(query, now, limit)
+			rows, err = s.searchInvStmt.Query(safeQuery, now, limit)
 		} else {
-			rows, err = s.searchInvSinceStmt.Query(query, since.UnixNano(), now, limit)
+			rows, err = s.searchInvSinceStmt.Query(safeQuery, since.UnixNano(), now, limit)
 		}
 	}
 
 	if rows == nil && err == nil {
 		// Fall back to dynamic query for filtered cases
 		conds := []string{"memories_fts MATCH ?", "m.kind = 'invocation'"}
-		args := []any{query}
+		args := []any{safeQuery}
 		if pipeName != "" {
 			conds = append(conds, "m.source_pipe = ?")
 			args = append(args, pipeName)
@@ -834,7 +836,7 @@ func (s *Store) SearchByKind(query string, kind string, limit int) ([]Memory, er
 		  AND (m.valid_until IS NULL OR m.valid_until > ?)
 		ORDER BY rank
 		LIMIT ?
-	`, query, kind, now, limit)
+	`, sanitizeFTS(query), kind, now, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -1048,6 +1050,19 @@ func (s *Store) listAllState() ([]StateEntry, error) {
 		entries = append(entries, e)
 	}
 	return entries, rows.Err()
+}
+
+// sanitizeFTS quotes each word in a query to prevent FTS5 operator interpretation.
+// Hyphens, parentheses, and other special chars become literal search terms.
+func sanitizeFTS(query string) string {
+	words := strings.Fields(query)
+	if len(words) == 0 {
+		return query
+	}
+	for i, w := range words {
+		words[i] = `"` + strings.ReplaceAll(w, `"`, `""`) + `"`
+	}
+	return strings.Join(words, " ")
 }
 
 // truncateRunes truncates s to at most maxBytes bytes without splitting a UTF-8 rune.
