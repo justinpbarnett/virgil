@@ -204,6 +204,9 @@ func (s *Server) handleSignal(w http.ResponseWriter, r *http.Request) {
 	seed := buildSeed(req)
 	route := s.router.Route(r.Context(), req.Text, parsed)
 
+	// Check for active goals relevant to this signal.
+	existingGoalMem, existingGoal, _ := s.retrieveActiveGoal(req.Text)
+
 	// Check if this route maps to a pipeline.
 	var result envelope.Envelope
 	if pc := s.pipelineForRoute(route.Pipe); pc != nil {
@@ -212,6 +215,23 @@ func (s *Server) handleSignal(w http.ResponseWriter, r *http.Request) {
 	} else {
 		plan := s.buildPlanForRoute(&route, req.Text, parsed)
 
+		if plan.Complexity == "" {
+			pipelines := map[string]config.PipelineConfig{}
+			if s.config != nil {
+				pipelines = s.config.Pipelines
+			}
+			plan.Complexity = inferComplexity(plan, route, pipelines)
+		}
+
+		var goalID string
+		var goal *GoalData
+		if existingGoal != nil {
+			goal = existingGoal
+			goalID = existingGoalMem.ID
+		} else {
+			goal, goalID, _ = s.deriveGoal(req.Text, plan, nil)
+		}
+
 		execSeed := seed
 		if len(plan.Steps) == 1 {
 			memCh := s.runtime.PrefetchMemory(seed, plan.Steps[0].Pipe)
@@ -219,7 +239,7 @@ func (s *Server) handleSignal(w http.ResponseWriter, r *http.Request) {
 			plan.SkipFirstMemoryInjection = true
 		}
 
-		result = s.runtime.Execute(plan, execSeed)
+		result = s.runWithGoal(r.Context(), req.Text, plan, execSeed, goal, goalID, nil)
 	}
 
 	s.logger.Info("signal complete", "duration", time.Since(start).String())
@@ -258,9 +278,14 @@ func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request, req signalReq
 			sse.WriteEvent(w, flusher, envelope.SSEEventTaskDone, []byte(event.Data))
 		case envelope.SSEEventPipelineProgress:
 			sse.WriteEvent(w, flusher, envelope.SSEEventPipelineProgress, []byte(event.Data))
+		case envelope.SSEEventGoalProgress:
+			sse.WriteEvent(w, flusher, envelope.SSEEventGoalProgress, []byte(event.Data))
 		}
 		flusher.Flush()
 	}
+
+	// Check for active goals relevant to this signal.
+	existingGoalMem, existingGoal, _ := s.retrieveActiveGoal(req.Text)
 
 	// Check if this route maps to a pipeline.
 	if pc := s.pipelineForRoute(route.Pipe); pc != nil {
@@ -285,6 +310,25 @@ func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request, req signalReq
 	// Build the plan — AI planning for Layer 4, deterministic for Layers 1-3.
 	plan := s.buildPlanForRoute(&route, req.Text, parsed)
 
+	// Infer complexity for deterministic plans.
+	if plan.Complexity == "" {
+		pipelines := map[string]config.PipelineConfig{}
+		if s.config != nil {
+			pipelines = s.config.Pipelines
+		}
+		plan.Complexity = inferComplexity(plan, route, pipelines)
+	}
+
+	// Derive goal if complexity warrants it.
+	var goalID string
+	var goal *GoalData
+	if existingGoal != nil {
+		goal = existingGoal
+		goalID = existingGoalMem.ID
+	} else {
+		goal, goalID, _ = s.deriveGoal(req.Text, plan, nil)
+	}
+
 	// Send route event now that we know the actual pipe.
 	if len(plan.Steps) > 0 {
 		sse.WriteJSON(w, flusher, envelope.SSEEventRoute, map[string]any{"pipe": plan.Steps[0].Pipe, "layer": route.Layer})
@@ -307,7 +351,8 @@ func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request, req signalReq
 		plan.SkipFirstMemoryInjection = true
 	}
 
-	result := s.runtime.ExecuteStream(r.Context(), plan, execSeed, sseSink)
+	// Execute with goal loop instead of single execution.
+	result := s.runWithGoal(r.Context(), req.Text, plan, execSeed, goal, goalID, sseSink)
 	if ackDone != nil {
 		<-ackDone
 	}
@@ -336,6 +381,21 @@ func (s *Server) handleStatus(w http.ResponseWriter, _ *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(status)
+}
+
+// inferComplexity heuristically classifies plan complexity for Layers 1-3.
+func inferComplexity(plan runtime.Plan, route router.RouteResult, pipelines map[string]config.PipelineConfig) string {
+	if _, ok := pipelines[route.Pipe]; ok {
+		return "multi_step"
+	}
+	switch len(plan.Steps) {
+	case 1:
+		return "trivial"
+	case 2, 3:
+		return "simple"
+	default:
+		return "multi_step"
+	}
 }
 
 // pipelineForRoute returns the PipelineConfig if the route maps to a pipeline

@@ -114,7 +114,15 @@ Rules:
   but the recent history shows a specific pipe, prefer that pipe for continuity.
 - If the user mentions a specific external service or platform (e.g., Jira, Slack, GitHub,
   email, Trello) that is NOT listed as an available pipe, respond with "chat". Do not map
-  service-specific requests to loosely related pipes.`
+  service-specific requests to loosely related pipes.
+
+In addition to the plan, classify the signal's complexity:
+- "trivial": single pipe, simple query
+- "simple": 2-3 pipe chain, straightforward task
+- "multi_step": pipeline-level task requiring verification or iteration
+- "mission": open-ended, will need multiple sessions or user decisions
+
+Include a "complexity" field in your response.`
 
 // aiPlanResponse is the JSON structure returned by the AI planner.
 type aiPlanResponse struct {
@@ -122,12 +130,18 @@ type aiPlanResponse struct {
 	Pipe  string            `json:"pipe"`
 	Flags map[string]string `json:"flags"`
 	// Multi-step pipeline response
-	Steps []aiPlanStep `json:"steps"`
+	Steps      []aiPlanStep `json:"steps"`
+	Complexity string       `json:"complexity,omitempty"`
 }
 
 type aiPlanStep struct {
 	Pipe  string            `json:"pipe"`
 	Flags map[string]string `json:"flags"`
+}
+
+// Provider returns the underlying bridge.Provider for direct calls (e.g. goal evaluation).
+func (ap *AIPlanner) Provider() bridge.Provider {
+	return ap.provider
 }
 
 // Plan calls the AI provider to produce an execution plan for the given signal.
@@ -204,7 +218,7 @@ func (ap *AIPlanner) parseResponse(response string) (*runtime.Plan, float64) {
 			}
 			steps = append(steps, runtime.Step{Pipe: s.Pipe, Flags: s.Flags})
 		}
-		plan := &runtime.Plan{Steps: steps}
+		plan := &runtime.Plan{Steps: steps, Complexity: parsed.Complexity}
 		ap.logger.Info("AI planner produced multi-step plan", "steps", len(steps))
 		return plan, 0.7
 	}
@@ -230,6 +244,7 @@ func (ap *AIPlanner) parseResponse(response string) (*runtime.Plan, float64) {
 		Steps: []runtime.Step{
 			{Pipe: parsed.Pipe, Flags: parsed.Flags},
 		},
+		Complexity: parsed.Complexity,
 	}
 	ap.logger.Info("AI planner produced single-pipe plan", "pipe", parsed.Pipe)
 	return plan, 0.7

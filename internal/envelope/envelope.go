@@ -51,6 +51,9 @@ const (
 	// Pipeline progress events — emitted by the pipeline executor for
 	// loop iterations, cycle triggers, and graph-level progress.
 	SSEEventPipelineProgress = "pipeline_progress"
+
+	// Goal progress events — emitted during goal evaluation/replan cycles.
+	SSEEventGoalProgress = "goal_progress"
 )
 
 // Voice priority constants for speak events.
