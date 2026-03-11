@@ -2,6 +2,7 @@ bin/
 /virgil
 internal/pipes/*/run
 .env
+.worktrees/
 
 # User config files (secrets — live in ~/.config/virgil/ but protect config/ too)
 config/credentials.yaml
