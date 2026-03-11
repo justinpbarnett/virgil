@@ -127,16 +127,29 @@ Include a "complexity" field in your response.`
 // aiPlanResponse is the JSON structure returned by the AI planner.
 type aiPlanResponse struct {
 	// Single-pipe response
-	Pipe  string            `json:"pipe"`
-	Flags map[string]string `json:"flags"`
+	Pipe  string         `json:"pipe"`
+	Flags map[string]any `json:"flags"`
 	// Multi-step pipeline response
 	Steps      []aiPlanStep `json:"steps"`
 	Complexity string       `json:"complexity,omitempty"`
 }
 
 type aiPlanStep struct {
-	Pipe  string            `json:"pipe"`
-	Flags map[string]string `json:"flags"`
+	Pipe  string         `json:"pipe"`
+	Flags map[string]any `json:"flags"`
+}
+
+// coerceFlags converts map[string]any to map[string]string, coercing numeric
+// and other non-string values the AI provider may return.
+func coerceFlags(raw map[string]any) map[string]string {
+	if len(raw) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(raw))
+	for k, v := range raw {
+		out[k] = fmt.Sprintf("%v", v)
+	}
+	return out
 }
 
 // Provider returns the underlying bridge.Provider for direct calls (e.g. goal evaluation).
@@ -216,7 +229,7 @@ func (ap *AIPlanner) parseResponse(response string) (*runtime.Plan, float64) {
 				ap.logger.Warn("AI planner returned unknown pipe", "pipe", s.Pipe)
 				return nil, 0.0
 			}
-			steps = append(steps, runtime.Step{Pipe: s.Pipe, Flags: s.Flags})
+			steps = append(steps, runtime.Step{Pipe: s.Pipe, Flags: coerceFlags(s.Flags)})
 		}
 		plan := &runtime.Plan{Steps: steps, Complexity: parsed.Complexity}
 		ap.logger.Info("AI planner produced multi-step plan", "steps", len(steps))
@@ -242,7 +255,7 @@ func (ap *AIPlanner) parseResponse(response string) (*runtime.Plan, float64) {
 
 	plan := &runtime.Plan{
 		Steps: []runtime.Step{
-			{Pipe: parsed.Pipe, Flags: parsed.Flags},
+			{Pipe: parsed.Pipe, Flags: coerceFlags(parsed.Flags)},
 		},
 		Complexity: parsed.Complexity,
 	}
