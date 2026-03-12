@@ -198,11 +198,23 @@ func (m *ModelEndpoint) SetDefaults(provider, model string, maxTokens int) {
 	}
 }
 
+type GoalMaxCycles struct {
+	Trivial   int `yaml:"trivial"`
+	Simple    int `yaml:"simple"`
+	MultiStep int `yaml:"multi_step"`
+	Mission   int `yaml:"mission"`
+}
+
+type GoalConfig struct {
+	MaxCycles GoalMaxCycles `yaml:"max_cycles"`
+}
+
 type Config struct {
 	Server       ServerConfig              `yaml:"server"`
 	Provider     ProviderConfig            `yaml:"provider"`
 	Ack          ModelEndpoint             `yaml:"ack"`
 	Planner      ModelEndpoint             `yaml:"planner"`
+	Goal         GoalConfig                `yaml:"goal"`
 	Identity     string                    `yaml:"identity"`
 	LogLevel     LogLevel                  `yaml:"log_level"`
 	DatabasePath string                    `yaml:"database_path"`
@@ -427,6 +439,19 @@ func Load(configDir string, pipeDirs ...string) (*Config, error) {
 
 	cfg.Ack.SetDefaults("gemini", "gemini-3-flash-preview", 256)
 	cfg.Planner.SetDefaults("xai", "grok-4-fast", 1024)
+
+	if cfg.Goal.MaxCycles.Trivial == 0 {
+		cfg.Goal.MaxCycles.Trivial = 1
+	}
+	if cfg.Goal.MaxCycles.Simple == 0 {
+		cfg.Goal.MaxCycles.Simple = 2
+	}
+	if cfg.Goal.MaxCycles.MultiStep == 0 {
+		cfg.Goal.MaxCycles.MultiStep = 5
+	}
+	if cfg.Goal.MaxCycles.Mission == 0 {
+		cfg.Goal.MaxCycles.Mission = 10
+	}
 
 	// Expand ~ in database path
 	if cfg.DatabasePath != "" {

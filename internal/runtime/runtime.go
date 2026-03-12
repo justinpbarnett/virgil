@@ -27,6 +27,9 @@ type Plan struct {
 	// injection for the first step. Used when the caller has already injected
 	// memory into the seed envelope (e.g. via PrefetchMemory).
 	SkipFirstMemoryInjection bool
+	// Complexity classifies the signal: "trivial", "simple", "multi_step", "mission".
+	// Set by the AI planner (Layer 4) or inferred heuristically (Layers 1-3).
+	Complexity string
 }
 
 // StreamEvent is sent by ExecuteStream to report chunks and step transitions.

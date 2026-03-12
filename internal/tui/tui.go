@@ -28,11 +28,11 @@ const (
 )
 
 const (
-	escapeWindow   = 400 * time.Millisecond
-	minPanelWidth  = 30
-	panelFraction  = 3 // panel gets 1/panelFraction of width
-	minWidthWarn   = 60
-	minHeightWarn  = 15
+	escapeWindow  = 400 * time.Millisecond
+	minPanelWidth = 30
+	panelFraction = 3 // panel gets 1/panelFraction of width
+	minWidthWarn  = 60
+	minHeightWarn = 15
 )
 
 type model struct {
@@ -43,12 +43,12 @@ type model struct {
 	cmds      *CommandRegistry
 	completer *Completer
 
-	serverAddr     string
-	width          int
-	height         int
-	layout         layoutMode
-	ghost          string // autocomplete ghost text
-	keysShown      bool   // ctrl+k debounce
+	serverAddr string
+	width      int
+	height     int
+	layout     layoutMode
+	ghost      string // autocomplete ghost text
+	keysShown  bool   // ctrl+k debounce
 
 	// Streaming state
 	pending        strings.Builder // response chunks
@@ -60,9 +60,9 @@ type model struct {
 	lastEscTime    time.Time
 
 	// Reconnection state
-	connected      bool
-	reconnecting   bool
-	inputQueue     []string
+	connected    bool
+	reconnecting bool
+	inputQueue   []string
 
 	// Pipeline step tracking for panel display
 	pipelineSteps []string
@@ -121,6 +121,14 @@ type streamToolMsg struct {
 
 type streamRouteMsg struct {
 	pipe     string
+	streamID int
+	reader   *sse.Reader
+}
+
+type goalProgressMsg struct {
+	event    string
+	status   string
+	summary  string
 	streamID int
 	reader   *sse.Reader
 }
@@ -352,6 +360,16 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				label := m.taskLabel(msg.td.TaskID)
 				m.stream.Append(KindNotification, SymArrow+" "+label+": failed")
 			}
+		}
+		return m, readNextEvent(msg.reader, msg.streamID)
+
+	case goalProgressMsg:
+		if msg.streamID == m.activeStreamID {
+			label := "goal " + msg.event
+			if msg.summary != "" {
+				label += ": " + msg.summary
+			}
+			m.stream.Append(KindNotification, SymArrow+" "+label)
 		}
 		return m, readNextEvent(msg.reader, msg.streamID)
 
@@ -1252,6 +1270,23 @@ func readNextEventSync(reader *sse.Reader, streamID int) tea.Msg {
 				msg.streamID = streamID
 				msg.reader = reader
 				return msg
+			}
+			continue
+
+		case envelope.SSEEventGoalProgress:
+			var gp struct {
+				Event   string `json:"event"`
+				Status  string `json:"status"`
+				Summary string `json:"summary"`
+			}
+			if err := json.Unmarshal([]byte(event.Data), &gp); err == nil {
+				return goalProgressMsg{
+					event:    gp.Event,
+					status:   gp.Status,
+					summary:  gp.Summary,
+					streamID: streamID,
+					reader:   reader,
+				}
 			}
 			continue
 
