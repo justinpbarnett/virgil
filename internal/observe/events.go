@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/justinpbarnett/virgil/internal"
+	"github.com/justinpbarnett/virgil/internal/db"
 )
 
 // TimestampFormat is the ISO 8601 format used in SQLite and Go parsing.
@@ -31,9 +32,9 @@ func (e *EventLog) Log(ev *internal.Event) error {
 		INSERT INTO events (component, action, input, output, duration_ms, error, trace_id, span_id, parent_span, model, tokens_in, tokens_out)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		ev.Component, ev.Action,
-		nullStr(ev.Input), nullStr(ev.Output), ev.DurationMs,
-		nullStr(ev.Error), nullStr(ev.TraceID), nullStr(ev.SpanID), nullStr(ev.ParentSpan),
-		nullStr(ev.Model), ev.TokensIn, ev.TokensOut,
+		db.NullStr(ev.Input), db.NullStr(ev.Output), ev.DurationMs,
+		db.NullStr(ev.Error), db.NullStr(ev.TraceID), db.NullStr(ev.SpanID), db.NullStr(ev.ParentSpan),
+		db.NullStr(ev.Model), ev.TokensIn, ev.TokensOut,
 	)
 	return err
 }
@@ -113,13 +114,6 @@ func randomHex(n int) string {
 	b := make([]byte, n)
 	rand.Read(b)
 	return hex.EncodeToString(b)
-}
-
-func nullStr(s string) any {
-	if s == "" {
-		return nil
-	}
-	return s
 }
 
 // EventsToJSON marshals events to a JSON array.
