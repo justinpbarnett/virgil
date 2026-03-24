@@ -1,0 +1,21 @@
+# Binary
+/virgil
+
+# Data
+*.db
+*.db-wal
+*.db-shm
+
+# Secrets
+.env
+*.json
+!config/virgil.yaml
+!**/config.yaml
+!**/package.json
+
+# OS
+.DS_Store
+
+# IDE
+.idea/
+.vscode/
