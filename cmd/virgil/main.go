@@ -2,9 +2,11 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
+	"strings"
 
 	"github.com/alecthomas/kong"
 
@@ -68,12 +70,18 @@ type Context struct {
 type InitCmd struct{}
 
 func (c *InitCmd) Run(ctx *Context) error {
-	// Load config if it exists, otherwise use defaults.
+	// Load config if it exists, otherwise use defaults for first-time init.
 	cfg, err := config.Load(ctx.ConfigPath)
 	if err != nil {
-		cfg = config.Default()
+		if errors.Is(err, os.ErrNotExist) {
+			cfg = config.Default()
+			if err := cfg.ExpandDataDir(); err != nil {
+				return err
+			}
+		} else {
+			return fmt.Errorf("load config: %w", err)
+		}
 	}
-	cfg.ExpandDataDir()
 	dataDir := cfg.Guide.DataDir
 
 	if err := os.MkdirAll(dataDir, 0o755); err != nil {
@@ -104,12 +112,11 @@ func (c *InitCmd) Run(ctx *Context) error {
 
 // ---------- status ----------
 
-type StatusCmd struct {
-	JSON bool `help:"Output as JSON" default:"true"`
-}
+type StatusCmd struct{}
 
 type StatusOutput struct {
 	OK      bool   `json:"ok"`
+	Error   string `json:"error,omitempty"`
 	DataDir string `json:"data_dir"`
 	DBPath  string `json:"db_path"`
 	DBSize  int64  `json:"db_size_bytes"`
@@ -120,12 +127,12 @@ type StatusOutput struct {
 func (c *StatusCmd) Run(ctx *Context) error {
 	cfg, err := loadConfig(ctx)
 	if err != nil {
-		return outputStatus(&StatusOutput{OK: false})
+		return outputStatus(&StatusOutput{OK: false, Error: err.Error()})
 	}
 
 	database, err := db.Open(cfg.DBPath())
 	if err != nil {
-		return outputStatus(&StatusOutput{OK: false, DataDir: cfg.Guide.DataDir, DBPath: cfg.DBPath()})
+		return outputStatus(&StatusOutput{OK: false, Error: err.Error(), DataDir: cfg.Guide.DataDir, DBPath: cfg.DBPath()})
 	}
 	defer database.Close()
 
@@ -139,17 +146,26 @@ func (c *StatusCmd) Run(ctx *Context) error {
 		out.DBSize = info.Size()
 	}
 
-	row := database.QueryRow("SELECT count(*) FROM sqlite_master WHERE type='table'")
-	row.Scan(&out.Tables)
-
-	row = database.QueryRow("SELECT count(*) FROM events")
-	row.Scan(&out.Events)
+	var errs []string
+	if err := database.QueryRow("SELECT count(*) FROM sqlite_master WHERE type='table'").Scan(&out.Tables); err != nil {
+		errs = append(errs, fmt.Sprintf("count tables: %v", err))
+	}
+	if err := database.QueryRow("SELECT count(*) FROM events").Scan(&out.Events); err != nil {
+		errs = append(errs, fmt.Sprintf("count events: %v", err))
+	}
+	if len(errs) > 0 {
+		out.OK = false
+		out.Error = strings.Join(errs, "; ")
+	}
 
 	return outputStatus(out)
 }
 
 func outputStatus(s *StatusOutput) error {
-	data, _ := json.MarshalIndent(s, "", "  ")
+	data, err := json.MarshalIndent(s, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshal status: %w", err)
+	}
 	fmt.Println(string(data))
 	return nil
 }
@@ -160,7 +176,6 @@ type EventsCmd struct {
 	Trace     string `help:"Filter by trace ID"`
 	Component string `help:"Filter by component"`
 	Limit     int    `help:"Max events to return" default:"50"`
-	JSON      bool   `help:"Output as JSON" default:"true"`
 }
 
 func (c *EventsCmd) Run(ctx *Context) error {

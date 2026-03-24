@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 )
@@ -136,7 +137,9 @@ func Load(path string) (*Config, error) {
 		return nil, fmt.Errorf("parse config: %w", err)
 	}
 
-	cfg.ExpandDataDir()
+	if err := cfg.ExpandDataDir(); err != nil {
+		return nil, err
+	}
 	return cfg, nil
 }
 
@@ -150,16 +153,18 @@ func (c *Config) ConfigPath() string {
 	return filepath.Join(c.Guide.DataDir, "virgil.yaml")
 }
 
-func (c *Config) ExpandDataDir() {
+func (c *Config) ExpandDataDir() error {
 	if c.Guide.DataDir == "" {
 		c.Guide.DataDir = "~/.virgil"
 	}
-	if c.Guide.DataDir[:2] == "~/" {
+	if strings.HasPrefix(c.Guide.DataDir, "~/") {
 		home, err := os.UserHomeDir()
-		if err == nil {
-			c.Guide.DataDir = filepath.Join(home, c.Guide.DataDir[2:])
+		if err != nil {
+			return fmt.Errorf("expand ~: %w", err)
 		}
+		c.Guide.DataDir = filepath.Join(home, c.Guide.DataDir[2:])
 	}
+	return nil
 }
 
 // Default returns a Config with sensible defaults.

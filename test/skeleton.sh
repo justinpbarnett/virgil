@@ -38,7 +38,7 @@ server:
   port: 8080
 EOF
 
-$VIRGIL init --config "$TEST_CONFIG" 2>&1
+$VIRGIL init --config "$TEST_CONFIG" 2>/dev/null
 [ -f "$TEST_DB" ] || fail "data.db not created"
 pass "data.db created"
 
@@ -69,7 +69,7 @@ pass "indexes created ($INDEX_COUNT)"
 
 echo "--- status ---"
 
-STATUS=$($VIRGIL status --config "$TEST_CONFIG" 2>&1)
+STATUS=$($VIRGIL status --config "$TEST_CONFIG" 2>/dev/null)
 echo "$STATUS" | jq -e '.ok == true' > /dev/null || fail "status.ok not true"
 echo "$STATUS" | jq -e '.tables > 0' > /dev/null || fail "status.tables is 0"
 echo "$STATUS" | jq -e '.data_dir' > /dev/null || fail "status.data_dir missing"
@@ -82,7 +82,7 @@ echo "--- events ---"
 # Insert an event directly via SQL
 sqlite3 "$TEST_DB" "INSERT INTO events (component, action, trace_id, span_id) VALUES ('test', 'test_action', 'trace123', 'span456')"
 
-EVENTS=$($VIRGIL events --config "$TEST_CONFIG" --trace trace123 2>&1)
+EVENTS=$($VIRGIL events --config "$TEST_CONFIG" --trace trace123 2>/dev/null)
 echo "$EVENTS" | jq -e 'length == 1' > /dev/null || fail "expected 1 event"
 echo "$EVENTS" | jq -e '.[0].component == "test"' > /dev/null || fail "component mismatch"
 echo "$EVENTS" | jq -e '.[0].trace_id == "trace123"' > /dev/null || fail "trace_id mismatch"
@@ -92,11 +92,11 @@ pass "events query with --trace filter works"
 sqlite3 "$TEST_DB" "INSERT INTO events (component, action) VALUES ('test2', 'action2')"
 sqlite3 "$TEST_DB" "INSERT INTO events (component, action) VALUES ('test3', 'action3')"
 
-ALL_EVENTS=$($VIRGIL events --config "$TEST_CONFIG" --limit 2 2>&1)
+ALL_EVENTS=$($VIRGIL events --config "$TEST_CONFIG" --limit 2 2>/dev/null)
 echo "$ALL_EVENTS" | jq -e 'length == 2' > /dev/null || fail "limit not respected"
 pass "events --limit works"
 
-COMP_EVENTS=$($VIRGIL events --config "$TEST_CONFIG" --component test2 2>&1)
+COMP_EVENTS=$($VIRGIL events --config "$TEST_CONFIG" --component test2 2>/dev/null)
 echo "$COMP_EVENTS" | jq -e 'length == 1' > /dev/null || fail "component filter failed"
 pass "events --component filter works"
 

@@ -11,6 +11,10 @@ import (
 	"github.com/justinpbarnett/virgil/internal"
 )
 
+// TimestampFormat is the ISO 8601 format used in SQLite and Go parsing.
+// The SQL schema uses strftime('%Y-%m-%dT%H:%M:%fZ') which produces SS.SSS.
+const TimestampFormat = time.RFC3339Nano
+
 // EventLog writes structured events to the events table.
 type EventLog struct {
 	db *sql.DB
@@ -26,9 +30,10 @@ func (e *EventLog) Log(ev *internal.Event) error {
 	_, err := e.db.Exec(`
 		INSERT INTO events (component, action, input, output, duration_ms, error, trace_id, span_id, parent_span, model, tokens_in, tokens_out)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		ev.Component, ev.Action, ev.Input, ev.Output, ev.DurationMs,
-		nullStr(ev.Error), ev.TraceID, ev.SpanID, ev.ParentSpan,
-		ev.Model, ev.TokensIn, ev.TokensOut,
+		ev.Component, ev.Action,
+		nullStr(ev.Input), nullStr(ev.Output), ev.DurationMs,
+		nullStr(ev.Error), nullStr(ev.TraceID), nullStr(ev.SpanID), nullStr(ev.ParentSpan),
+		nullStr(ev.Model), ev.TokensIn, ev.TokensOut,
 	)
 	return err
 }
@@ -73,7 +78,11 @@ func (e *EventLog) Query(traceID string, component string, limit int) ([]interna
 			return nil, err
 		}
 
-		ev.Timestamp, _ = time.Parse("2006-01-02T15:04:05.000Z", ts)
+		parsed, parseErr := time.Parse(TimestampFormat, ts)
+		if parseErr != nil {
+			return nil, fmt.Errorf("parse event timestamp %q (id=%d): %w", ts, ev.ID, parseErr)
+		}
+		ev.Timestamp = parsed
 		ev.Input = input.String
 		ev.Output = output.String
 		ev.DurationMs = durMs.Int64
