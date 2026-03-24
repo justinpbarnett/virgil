@@ -135,4 +135,21 @@ func IsRetryable(err error) bool {
 	return false
 }
 
+// ToMessage converts a Response to a Message for conversation history.
+func (r *Response) ToMessage() Message {
+	return Message{
+		Role:      "assistant",
+		Content:   r.Text,
+		ToolCalls: r.ToolCalls,
+	}
+}
+
+// ToolResultsMessage bundles tool results into a user Message.
+func ToolResultsMessage(results []ToolResult) Message {
+	return Message{
+		Role:        "user",
+		ToolResults: results,
+	}
+}
+
 var ErrNoProviders = fmt.Errorf("no AI providers configured")

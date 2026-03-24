@@ -34,6 +34,13 @@ ask MESSAGE *ARGS:
 embed TEXT:
     ./virgil embed {{TEXT}}
 
+# Agent
+signal MESSAGE *ARGS:
+    ./virgil signal {{MESSAGE}} {{ARGS}}
+
+run-skill NAME *ARGS:
+    ./virgil run {{NAME}} {{ARGS}}
+
 # Test
 test-skeleton:
     bash test/skeleton.sh
@@ -44,7 +51,11 @@ test-memory:
 test-bridge:
     bash test/bridge.sh
 
+test-agent:
+    bash test/agent.sh
+
 test-all:
     bash test/skeleton.sh
     bash test/memory.sh
     bash test/bridge.sh
+    bash test/agent.sh

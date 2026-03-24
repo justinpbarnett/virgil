@@ -46,3 +46,27 @@ func (r *Registry) List() []string {
 	}
 	return names
 }
+
+// Definitions returns all registered tools (for passing to the model).
+func (r *Registry) Definitions() []*internal.Tool {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	result := make([]*internal.Tool, 0, len(r.tools))
+	for _, t := range r.tools {
+		result = append(result, t)
+	}
+	return result
+}
+
+// DefinitionsFor returns tools matching the given name subset.
+func (r *Registry) DefinitionsFor(names []string) []*internal.Tool {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	result := make([]*internal.Tool, 0, len(names))
+	for _, name := range names {
+		if t, ok := r.tools[name]; ok {
+			result = append(result, t)
+		}
+	}
+	return result
+}

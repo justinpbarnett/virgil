@@ -155,6 +155,27 @@ func (s *Store) EntityTraverse(entity string, limit int) ([]Entry, error) {
 		LIMIT ?`, "%"+entity+"%", limit)
 }
 
+// SearchRecent returns the most recent memories, optionally filtered by topic and type.
+func (s *Store) SearchRecent(topic string, memType string, limit int) ([]Entry, error) {
+	if limit <= 0 {
+		limit = 10
+	}
+	q := `SELECT id, type, scope, topic, content, source, created_at, expires_at
+		FROM memory WHERE 1=1`
+	var args []any
+	if topic != "" {
+		q += " AND (topic LIKE ? OR content LIKE ?)"
+		args = append(args, "%"+topic+"%", "%"+topic+"%")
+	}
+	if memType != "" {
+		q += " AND type = ?"
+		args = append(args, memType)
+	}
+	q += " ORDER BY created_at DESC LIMIT ?"
+	args = append(args, limit)
+	return s.queryEntries(q, args...)
+}
+
 // ftsEscape quotes each term for safe use in FTS5 MATCH expressions.
 // Characters like ", *, -, (, ) have special meaning in FTS5 syntax.
 func ftsEscape(query string) string {

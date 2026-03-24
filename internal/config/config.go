@@ -217,6 +217,35 @@ func Default() *Config {
 	}
 }
 
+// ModelFor returns the model selection for a given channel.
+func (c *Config) ModelFor(channel string) ModelSelection {
+	if channel == "mcp" && c.AI.MCP.Model != "" {
+		return c.AI.MCP
+	}
+	if c.AI.Interactive.Model != "" {
+		return c.AI.Interactive
+	}
+	return ModelSelection{
+		Model: c.AI.Default + "/sonnet",
+	}
+}
+
+// ModelFromSkill returns the model selection for a skill, falling back to interactive defaults.
+func (c *Config) ModelFromSkill(model string, fallback []string) ModelSelection {
+	ms := ModelSelection{}
+	if model != "" {
+		ms.Model = model
+	} else {
+		ms.Model = c.AI.Interactive.Model
+	}
+	if len(fallback) > 0 {
+		ms.Fallback = fallback
+	} else if model == "" {
+		ms.Fallback = c.AI.Interactive.Fallback
+	}
+	return ms
+}
+
 // WriteDefault writes the default config to the given path.
 func WriteDefault(path string) error {
 	cfg := Default()

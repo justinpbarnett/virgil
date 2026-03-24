@@ -8,14 +8,19 @@ import (
 	"log/slog"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/alecthomas/kong"
 
+	"github.com/justinpbarnett/virgil/internal"
+	"github.com/justinpbarnett/virgil/internal/agent"
 	"github.com/justinpbarnett/virgil/internal/bridge"
 	"github.com/justinpbarnett/virgil/internal/config"
 	"github.com/justinpbarnett/virgil/internal/db"
 	"github.com/justinpbarnett/virgil/internal/memory"
 	"github.com/justinpbarnett/virgil/internal/observe"
+	"github.com/justinpbarnett/virgil/internal/skills"
+	"github.com/justinpbarnett/virgil/internal/tools"
 )
 
 type CLI struct {
@@ -44,6 +49,9 @@ type CLI struct {
 	// AI bridge
 	Ask   AskCmd   `cmd:"" help:"Send a message to the AI bridge"`
 	Embed EmbedCmd `cmd:"" help:"Generate an embedding vector"`
+
+	// Agent
+	Signal SignalCmd `cmd:"" help:"Send a message through the agent"`
 
 	// Skills
 	Run RunCmd `cmd:"" help:"Run a skill by name"`
@@ -238,13 +246,23 @@ type EmbedCmd struct {
 	Text string `arg:"" help:"Text to embed"`
 }
 
+type SignalCmd struct {
+	Message   string `arg:"" help:"Message to send through the agent"`
+	Channel   string `help:"Channel" default:"cli"`
+	SkillsDir string `help:"Skills directory override" name:"skills-dir"`
+}
+
 type EmailCmd struct{}
 type CalendarCmd struct{}
 type SlackCmd struct{}
 type JIRACmd struct{}
 type TasksCmd struct{}
 type PeopleCmd struct{}
-type RunCmd struct{}
+
+type RunCmd struct {
+	Name      string `arg:"" help:"Skill name to run"`
+	SkillsDir string `help:"Skills directory override" name:"skills-dir"`
+}
 
 func (c *ServeCmd) Run(ctx *Context) error { return fmt.Errorf("not yet implemented") }
 func (c *MCPCmd) Run(ctx *Context) error   { return fmt.Errorf("not yet implemented") }
@@ -326,7 +344,64 @@ func (c *SlackCmd) Run(ctx *Context) error    { return fmt.Errorf("not yet imple
 func (c *JIRACmd) Run(ctx *Context) error     { return fmt.Errorf("not yet implemented") }
 func (c *TasksCmd) Run(ctx *Context) error    { return fmt.Errorf("not yet implemented") }
 func (c *PeopleCmd) Run(ctx *Context) error   { return fmt.Errorf("not yet implemented") }
-func (c *RunCmd) Run(ctx *Context) error      { return fmt.Errorf("not yet implemented") }
+
+func (c *SignalCmd) Run(ctx *Context) error {
+	cfg, err := loadConfig(ctx)
+	if err != nil {
+		return err
+	}
+	if c.SkillsDir != "" {
+		cfg.Skills.Dir = c.SkillsDir
+	}
+
+	ag, cleanup, err := openAgent(cfg)
+	if err != nil {
+		return err
+	}
+	defer cleanup()
+
+	sig := internal.Signal{
+		ID:        observe.GenerateSpanID(),
+		Channel:   c.Channel,
+		Content:   c.Message,
+		Timestamp: time.Now(),
+	}
+
+	text, err := ag.Run(context.Background(), sig)
+	if err != nil {
+		return fmt.Errorf("signal: %w", err)
+	}
+
+	return outputJSON(map[string]string{"response": text})
+}
+
+func (c *RunCmd) Run(ctx *Context) error {
+	cfg, err := loadConfig(ctx)
+	if err != nil {
+		return err
+	}
+	if c.SkillsDir != "" {
+		cfg.Skills.Dir = c.SkillsDir
+	}
+
+	ag, cleanup, err := openAgent(cfg)
+	if err != nil {
+		return err
+	}
+	defer cleanup()
+
+	sk := ag.FindSkill(c.Name)
+	if sk == nil {
+		return fmt.Errorf("skill %q not found", c.Name)
+	}
+
+	text, err := ag.RunSkill(context.Background(), sk, "cli")
+	if err != nil {
+		return fmt.Errorf("run skill: %w", err)
+	}
+
+	return outputJSON(map[string]string{"response": text})
+}
 
 func (c *AskCmd) Run(ctx *Context) error {
 	cfg, err := loadConfig(ctx)
@@ -416,6 +491,42 @@ func openBridge(cfg *config.Config) (*bridge.FallbackBridge, func(), error) {
 	}
 	events := observe.NewEventLog(database)
 
+	fb, err := buildBridge(cfg, events)
+	if err != nil {
+		database.Close()
+		return nil, nil, err
+	}
+	return fb, func() { database.Close() }, nil
+}
+
+func openAgent(cfg *config.Config) (*agent.Agent, func(), error) {
+	database, err := db.Open(cfg.DBPath())
+	if err != nil {
+		return nil, nil, err
+	}
+
+	events := observe.NewEventLog(database)
+	memStore := memory.NewStore(database)
+
+	fb, err := buildBridge(cfg, events)
+	if err != nil {
+		database.Close()
+		return nil, nil, err
+	}
+
+	loaded, err := skills.LoadAll(cfg.Skills.Dir)
+	if err != nil {
+		slog.Warn("load skills", "err", err)
+	}
+
+	reg := tools.NewRegistry()
+	tools.RegisterMemoryTools(reg, memStore)
+
+	ag := agent.NewAgent(cfg, memStore, fb, reg, loaded, events)
+	return ag, func() { database.Close() }, nil
+}
+
+func buildBridge(cfg *config.Config, events *observe.EventLog) (*bridge.FallbackBridge, error) {
 	providers := make(map[string]bridge.Bridge)
 	var embedder bridge.Bridge
 
@@ -442,8 +553,7 @@ func openBridge(cfg *config.Config) (*bridge.FallbackBridge, func(), error) {
 	}
 
 	if len(providers) == 0 {
-		database.Close()
-		return nil, nil, fmt.Errorf("no AI providers initialized (check API key environment variables)")
+		return nil, fmt.Errorf("no AI providers initialized (check API key environment variables)")
 	}
 
 	if embedder == nil {
@@ -452,8 +562,7 @@ func openBridge(cfg *config.Config) (*bridge.FallbackBridge, func(), error) {
 		}
 	}
 
-	fb := bridge.NewFallbackBridge(providers, embedder, events)
-	return fb, func() { database.Close() }, nil
+	return bridge.NewFallbackBridge(providers, embedder, events), nil
 }
 
 func outputJSON(v any) error {
