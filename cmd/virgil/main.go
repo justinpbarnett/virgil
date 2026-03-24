@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -10,6 +11,7 @@ import (
 
 	"github.com/alecthomas/kong"
 
+	"github.com/justinpbarnett/virgil/internal/bridge"
 	"github.com/justinpbarnett/virgil/internal/config"
 	"github.com/justinpbarnett/virgil/internal/db"
 	"github.com/justinpbarnett/virgil/internal/memory"
@@ -38,6 +40,10 @@ type CLI struct {
 	JIRA     JIRACmd     `cmd:"" help:"JIRA operations"`
 	Tasks    TasksCmd    `cmd:"" help:"Task operations"`
 	People   PeopleCmd   `cmd:"" help:"People lookup"`
+
+	// AI bridge
+	Ask   AskCmd   `cmd:"" help:"Send a message to the AI bridge"`
+	Embed EmbedCmd `cmd:"" help:"Generate an embedding vector"`
 
 	// Skills
 	Run RunCmd `cmd:"" help:"Run a skill by name"`
@@ -222,6 +228,16 @@ type MemoryFactsCmd struct {
 	About string `arg:"" help:"Person, topic, or project name"`
 	Scope string `help:"Filter by scope"`
 }
+type AskCmd struct {
+	Message  string   `arg:"" help:"Message to send"`
+	Model    string   `help:"Model ref (e.g. anthropic/sonnet)" default:""`
+	Fallback []string `help:"Fallback model refs"`
+}
+
+type EmbedCmd struct {
+	Text string `arg:"" help:"Text to embed"`
+}
+
 type EmailCmd struct{}
 type CalendarCmd struct{}
 type SlackCmd struct{}
@@ -312,6 +328,65 @@ func (c *TasksCmd) Run(ctx *Context) error    { return fmt.Errorf("not yet imple
 func (c *PeopleCmd) Run(ctx *Context) error   { return fmt.Errorf("not yet implemented") }
 func (c *RunCmd) Run(ctx *Context) error      { return fmt.Errorf("not yet implemented") }
 
+func (c *AskCmd) Run(ctx *Context) error {
+	cfg, err := loadConfig(ctx)
+	if err != nil {
+		return err
+	}
+
+	fb, cleanup, err := openBridge(cfg)
+	if err != nil {
+		return err
+	}
+	defer cleanup()
+
+	modelRef := c.Model
+	if modelRef == "" {
+		modelRef = cfg.AI.Interactive.Model
+	}
+	primary := bridge.NewModelConfig(cfg, modelRef)
+
+	fallbacks := c.Fallback
+	if len(fallbacks) == 0 && c.Model == "" {
+		fallbacks = cfg.AI.Interactive.Fallback
+	}
+	var fbConfigs []bridge.ModelConfig
+	for _, ref := range fallbacks {
+		fbConfigs = append(fbConfigs, bridge.NewModelConfig(cfg, ref))
+	}
+
+	messages := []bridge.Message{
+		{Role: "user", Content: c.Message},
+	}
+
+	resp, err := fb.Complete(context.Background(), primary, messages, nil, fbConfigs)
+	if err != nil {
+		return fmt.Errorf("ask: %w", err)
+	}
+
+	return outputJSON(resp)
+}
+
+func (c *EmbedCmd) Run(ctx *Context) error {
+	cfg, err := loadConfig(ctx)
+	if err != nil {
+		return err
+	}
+
+	fb, cleanup, err := openBridge(cfg)
+	if err != nil {
+		return err
+	}
+	defer cleanup()
+
+	vec, err := fb.Embed(context.Background(), c.Text)
+	if err != nil {
+		return fmt.Errorf("embed: %w", err)
+	}
+
+	return outputJSON(vec)
+}
+
 // ---------- helpers ----------
 
 func loadConfig(ctx *Context) (*config.Config, error) {
@@ -332,6 +407,53 @@ func openMemoryStore(ctx *Context) (*memory.Store, func(), error) {
 		return nil, nil, err
 	}
 	return memory.NewStore(database), func() { database.Close() }, nil
+}
+
+func openBridge(cfg *config.Config) (*bridge.FallbackBridge, func(), error) {
+	database, err := db.Open(cfg.DBPath())
+	if err != nil {
+		return nil, nil, err
+	}
+	events := observe.NewEventLog(database)
+
+	providers := make(map[string]bridge.Bridge)
+	var embedder bridge.Bridge
+
+	for name, pc := range cfg.AI.Providers {
+		switch name {
+		case "anthropic":
+			p, err := bridge.NewAnthropicProvider(pc.APIKeyEnv)
+			if err != nil {
+				slog.Warn("skip provider", "name", name, "err", err)
+				continue
+			}
+			providers[name] = p
+		default:
+			p, err := bridge.NewOpenAIProvider(pc.APIKeyEnv, pc.BaseURL, pc.EmbeddingModel)
+			if err != nil {
+				slog.Warn("skip provider", "name", name, "err", err)
+				continue
+			}
+			providers[name] = p
+			if pc.EmbeddingModel != "" && embedder == nil {
+				embedder = p
+			}
+		}
+	}
+
+	if len(providers) == 0 {
+		database.Close()
+		return nil, nil, fmt.Errorf("no AI providers initialized (check API key environment variables)")
+	}
+
+	if embedder == nil {
+		if p, ok := providers["openai"]; ok {
+			embedder = p
+		}
+	}
+
+	fb := bridge.NewFallbackBridge(providers, embedder, events)
+	return fb, func() { database.Close() }, nil
 }
 
 func outputJSON(v any) error {

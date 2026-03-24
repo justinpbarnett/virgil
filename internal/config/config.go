@@ -176,6 +176,24 @@ func Default() *Config {
 		},
 		AI: AIConfig{
 			Default: "anthropic",
+			Providers: map[string]ProviderConfig{
+				"anthropic": {
+					APIKeyEnv: "ANTHROPIC_API_KEY",
+					Models: map[string]string{
+						"sonnet": "claude-sonnet-4-6",
+						"haiku":  "claude-haiku-4-5-20251001",
+						"opus":   "claude-opus-4-6",
+					},
+				},
+				"openai": {
+					APIKeyEnv:      "OPENAI_API_KEY",
+					EmbeddingModel: "text-embedding-3-small",
+					Models: map[string]string{
+						"gpt4o":      "gpt-4o",
+						"gpt4o-mini": "gpt-4o-mini",
+					},
+				},
+			},
 			Interactive: ModelSelection{
 				Model:    "anthropic/sonnet",
 				Fallback: []string{"openai/gpt4o"},

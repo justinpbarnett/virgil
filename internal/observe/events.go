@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/justinpbarnett/virgil/internal"
@@ -49,13 +50,15 @@ func (e *EventLog) Query(traceID string, component string, limit int) ([]interna
 		args = append(args, traceID)
 	}
 	if component != "" {
-		q += " AND component = ?"
-		args = append(args, component)
+		escaped := strings.NewReplacer("%", "\\%", "_", "\\_").Replace(component)
+		q += " AND component LIKE ? ESCAPE '\\'"
+		args = append(args, escaped+"%")
 	}
 
 	q += " ORDER BY id DESC"
 	if limit > 0 {
-		q += fmt.Sprintf(" LIMIT %d", limit)
+		q += " LIMIT ?"
+		args = append(args, limit)
 	}
 
 	rows, err := e.db.Query(q, args...)

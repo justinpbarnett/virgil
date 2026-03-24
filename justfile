@@ -27,6 +27,13 @@ memory-search QUERY *ARGS:
 memory-facts ABOUT *ARGS:
     ./virgil memory facts {{ABOUT}} {{ARGS}}
 
+# AI bridge
+ask MESSAGE *ARGS:
+    ./virgil ask {{MESSAGE}} {{ARGS}}
+
+embed TEXT:
+    ./virgil embed {{TEXT}}
+
 # Test
 test-skeleton:
     bash test/skeleton.sh
@@ -34,6 +41,10 @@ test-skeleton:
 test-memory:
     bash test/memory.sh
 
+test-bridge:
+    bash test/bridge.sh
+
 test-all:
     bash test/skeleton.sh
     bash test/memory.sh
+    bash test/bridge.sh
