@@ -1,2 +1,4 @@
-model: anthropic/haiku
 enabled: true
+model: anthropic/haiku
+fallback: [anthropic/sonnet]
+# No schedule -- triggered manually in tests

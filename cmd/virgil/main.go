@@ -4,8 +4,8 @@ import (
 	"bufio"
 	"context"
 	"crypto/rand"
-	"encoding/hex"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -138,6 +138,7 @@ type StatusOutput struct {
 	DBSize  int64  `json:"db_size_bytes"`
 	Tables  int    `json:"tables"`
 	Events  int    `json:"events"`
+	Skills  int    `json:"skills"`
 }
 
 func (c *StatusCmd) Run(ctx *Context) error {
@@ -169,6 +170,11 @@ func (c *StatusCmd) Run(ctx *Context) error {
 	if err := database.QueryRow("SELECT count(*) FROM events").Scan(&out.Events); err != nil {
 		errs = append(errs, fmt.Sprintf("count events: %v", err))
 	}
+
+	if loaded, err := skills.LoadAll(cfg.Skills.Dir); err == nil {
+		out.Skills = len(loaded)
+	}
+
 	if len(errs) > 0 {
 		out.OK = false
 		out.Error = strings.Join(errs, "; ")
