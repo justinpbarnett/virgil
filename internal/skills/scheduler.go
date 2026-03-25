@@ -28,7 +28,6 @@ func NewScheduler(ag *agent.Agent, loaded []*internal.Skill, push func(string)) 
 		if sk.Schedule == "" || !sk.Enabled {
 			continue
 		}
-		sk := sk // capture for closure
 		_, err := s.NewJob(
 			gocron.CronJob(sk.Schedule, false),
 			gocron.NewTask(func() {
@@ -43,6 +42,7 @@ func NewScheduler(ag *agent.Agent, loaded []*internal.Skill, push func(string)) 
 					push(text)
 				}
 			}),
+			gocron.WithSingletonMode(gocron.LimitModeReschedule),
 		)
 		if err != nil {
 			slog.Warn("failed to schedule skill", "skill", sk.Name, "schedule", sk.Schedule, "err", err)

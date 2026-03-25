@@ -214,16 +214,11 @@ func (c *ServeCmd) Run(ctx *Context) error {
 		return err
 	}
 
-	ag, cleanup, err := openAgent(cfg)
+	ag, loaded, cleanup, err := openAgent(cfg)
 	if err != nil {
 		return err
 	}
 	defer cleanup()
-
-	loaded, err := skills.LoadAll(cfg.Skills.Dir)
-	if err != nil {
-		slog.Warn("skills failed to load", "dir", cfg.Skills.Dir, "err", err)
-	}
 
 	var push func(string)
 
@@ -302,7 +297,6 @@ func (c *AuthGoogleCmd) Run(ctx *Context) error {
 		return err
 	}
 
-	// Start local redirect server
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		return fmt.Errorf("start redirect server: %w", err)
@@ -322,8 +316,9 @@ func (c *AuthGoogleCmd) Run(ctx *Context) error {
 	authURL := oauthCfg.AuthCodeURL(state, oauth2.AccessTypeOffline, oauth2.ApprovalForce)
 
 	codeCh := make(chan string, 1)
-	srv := &http.Server{}
-	http.HandleFunc("/callback", func(w http.ResponseWriter, r *http.Request) {
+	mux := http.NewServeMux()
+	srv := &http.Server{Handler: mux}
+	mux.HandleFunc("/callback", func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Query().Get("state") != state {
 			http.Error(w, "invalid state", http.StatusBadRequest)
 			return
@@ -418,13 +413,13 @@ func (c *AuthTelegramCmd) Run(ctx *Context) error {
 	}
 
 	token := promptSecret("Telegram bot token (from @BotFather): ")
-	chatID := promptLine("Your chat ID (send a message to @userinfobot to find it): ")
+	chatID := promptSecret("Your chat ID (send a message to @userinfobot to find it): ")
 
 	envPath := filepath.Join(cfg.Guide.DataDir, ".env")
-	if err := appendEnvFile(envPath, tokenEnv, token); err != nil {
+	if err := setEnvFile(envPath, tokenEnv, token); err != nil {
 		return err
 	}
-	if err := appendEnvFile(envPath, chatEnv, chatID); err != nil {
+	if err := setEnvFile(envPath, chatEnv, chatID); err != nil {
 		return err
 	}
 
@@ -453,7 +448,7 @@ func (c *AuthJIRACmd) Run(ctx *Context) error {
 	token := promptSecret(fmt.Sprintf("JIRA API token for %s: ", inst.BaseURL))
 
 	envPath := filepath.Join(cfg.Guide.DataDir, ".env")
-	if err := appendEnvFile(envPath, inst.APITokenEnv, token); err != nil {
+	if err := setEnvFile(envPath, inst.APITokenEnv, token); err != nil {
 		return err
 	}
 
@@ -533,18 +528,30 @@ func promptSecret(prompt string) string {
 	return ""
 }
 
-func promptLine(prompt string) string {
-	return promptSecret(prompt)
-}
-
-func appendEnvFile(path, key, value string) error {
-	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
-	if err != nil {
-		return fmt.Errorf("open .env: %w", err)
+func setEnvFile(path, key, value string) error {
+	var lines []string
+	if data, err := os.ReadFile(path); err == nil {
+		lines = strings.Split(string(data), "\n")
 	}
-	defer f.Close()
-	_, err = fmt.Fprintf(f, "%s=%s\n", key, value)
-	return err
+
+	found := false
+	prefix := key + "="
+	for i, line := range lines {
+		if strings.HasPrefix(line, prefix) {
+			lines[i] = fmt.Sprintf("%s=%q", key, value)
+			found = true
+			break
+		}
+	}
+	if !found {
+		lines = append(lines, fmt.Sprintf("%s=%q", key, value))
+	}
+
+	content := strings.Join(lines, "\n")
+	if !strings.HasSuffix(content, "\n") {
+		content += "\n"
+	}
+	return os.WriteFile(path, []byte(content), 0o600)
 }
 
 func splitParagraphs(text string) []string {
@@ -1064,7 +1071,7 @@ func (c *SignalCmd) Run(ctx *Context) error {
 		cfg.Skills.Dir = c.SkillsDir
 	}
 
-	ag, cleanup, err := openAgent(cfg)
+	ag, _, cleanup, err := openAgent(cfg)
 	if err != nil {
 		return err
 	}
@@ -1094,7 +1101,7 @@ func (c *RunCmd) Run(ctx *Context) error {
 		cfg.Skills.Dir = c.SkillsDir
 	}
 
-	ag, cleanup, err := openAgent(cfg)
+	ag, _, cleanup, err := openAgent(cfg)
 	if err != nil {
 		return err
 	}
@@ -1202,10 +1209,10 @@ func runTool(ctx *Context, toolName string, params map[string]any) error {
 	return outputJSON(result)
 }
 
-func openAgent(cfg *config.Config) (*agent.Agent, func(), error) {
+func openAgent(cfg *config.Config) (*agent.Agent, []*internal.Skill, func(), error) {
 	database, err := db.Open(cfg.DBPath())
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 
 	events := observe.NewEventLog(database)
@@ -1214,7 +1221,7 @@ func openAgent(cfg *config.Config) (*agent.Agent, func(), error) {
 	fb, err := buildBridge(cfg, events)
 	if err != nil {
 		database.Close()
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 
 	loaded, err := skills.LoadAll(cfg.Skills.Dir)
@@ -1228,9 +1235,9 @@ func openAgent(cfg *config.Config) (*agent.Agent, func(), error) {
 	ag, err := agent.NewAgent(cfg, memStore, fb, reg, loaded, events)
 	if err != nil {
 		database.Close()
-		return nil, nil, fmt.Errorf("create agent: %w", err)
+		return nil, nil, nil, fmt.Errorf("create agent: %w", err)
 	}
-	return ag, func() { database.Close() }, nil
+	return ag, loaded, func() { database.Close() }, nil
 }
 
 func buildBridge(cfg *config.Config, events *observe.EventLog) (*bridge.FallbackBridge, error) {

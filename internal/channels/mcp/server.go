@@ -27,12 +27,11 @@ func Run(ctx context.Context, reg *tools.Registry) error {
 			continue
 		}
 
-		t := t // capture
 		server.AddTool(&mcpsdk.Tool{
 			Name:        t.Name,
 			Description: t.Description,
 			InputSchema: json.RawMessage(schema),
-		}, func(_ context.Context, req *mcpsdk.CallToolRequest) (*mcpsdk.CallToolResult, error) {
+		}, func(reqCtx context.Context, req *mcpsdk.CallToolRequest) (*mcpsdk.CallToolResult, error) {
 			var params map[string]any
 			if len(req.Params.Arguments) > 0 {
 				if err := json.Unmarshal(req.Params.Arguments, &params); err != nil {
@@ -43,7 +42,7 @@ func Run(ctx context.Context, reg *tools.Registry) error {
 				}
 			}
 
-			result, err := t.Execute(ctx, params)
+			result, err := t.Execute(reqCtx, params)
 			if err != nil {
 				return &mcpsdk.CallToolResult{
 					Content: []mcpsdk.Content{&mcpsdk.TextContent{Text: err.Error()}},
