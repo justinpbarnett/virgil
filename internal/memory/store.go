@@ -3,6 +3,7 @@ package memory
 import (
 	"database/sql"
 	"fmt"
+	"strings"
 
 	"github.com/google/uuid"
 
@@ -70,6 +71,11 @@ type StoreParams struct {
 // Store writes a memory entry and its entities. For facts, updates existing
 // facts with the same topic+entity instead of creating duplicates.
 func (s *Store) Store(p StoreParams) (string, error) {
+	switch p.Type {
+	case TypeObservation, TypeInteraction, TypeFact:
+	default:
+		return "", fmt.Errorf("unknown memory type %q", p.Type)
+	}
 	if p.Scope == "" {
 		p.Scope = DefaultScope
 	}
@@ -151,7 +157,7 @@ func (s *Store) Get(id string) (*Entry, error) {
 func (s *Store) findExistingFact(topic string, scope string, entities []Entity) (string, error) {
 	if len(entities) == 0 {
 		row := s.database.QueryRow(`
-			SELECT id FROM memory WHERE type='fact' AND topic = ? AND scope = ? LIMIT 1`, topic, scope)
+			SELECT id FROM memory WHERE type = ? AND topic = ? AND scope = ? LIMIT 1`, TypeFact, topic, scope)
 		var id string
 		if err := row.Scan(&id); err != nil {
 			if err == sql.ErrNoRows {
@@ -165,8 +171,8 @@ func (s *Store) findExistingFact(topic string, scope string, entities []Entity) 
 	row := s.database.QueryRow(`
 		SELECT m.id FROM memory m
 		JOIN memory_entities me ON m.id = me.memory_id
-		WHERE m.type='fact' AND m.topic = ? AND m.scope = ? AND me.entity = ?
-		LIMIT 1`, topic, scope, entities[0].Name)
+		WHERE m.type = ? AND m.topic = ? AND m.scope = ? AND me.entity = ?
+		LIMIT 1`, TypeFact, topic, scope, entities[0].Name)
 	var id string
 	if err := row.Scan(&id); err != nil {
 		if err == sql.ErrNoRows {
@@ -230,24 +236,6 @@ func (s *Store) updateFact(id string, p StoreParams) (string, error) {
 	return id, nil
 }
 
-func (s *Store) writeEntities(memoryID string, entities []Entity) error {
-	for _, e := range entities {
-		role := e.Role
-		if role == "" {
-			role = RoleMentioned
-		}
-		_, err := s.database.Exec(`
-			INSERT OR IGNORE INTO memory_entities (memory_id, entity, entity_type, role)
-			VALUES (?, ?, ?, ?)`,
-			memoryID, e.Name, db.NullStr(e.Type), role,
-		)
-		if err != nil {
-			return fmt.Errorf("insert entity %q: %w", e.Name, err)
-		}
-	}
-	return nil
-}
-
 func (s *Store) getEntities(memoryID string) ([]Entity, error) {
 	rows, err := s.database.Query(`
 		SELECT entity, entity_type, role FROM memory_entities
@@ -276,9 +264,9 @@ func (s *Store) Facts(about string, scope string) ([]Entry, error) {
 		SELECT DISTINCT m.id, m.type, m.scope, m.topic, m.content, m.source, m.created_at, m.expires_at
 		FROM memory m
 		LEFT JOIN memory_entities me ON m.id = me.memory_id
-		WHERE m.type = 'fact'
+		WHERE m.type = ?
 		AND (m.topic LIKE ? OR me.entity LIKE ?)`
-	args := []any{"%" + about + "%", "%" + about + "%"}
+	args := []any{TypeFact, "%" + about + "%", "%" + about + "%"}
 
 	if scope != "" {
 		q += " AND m.scope = ?"
@@ -287,6 +275,63 @@ func (s *Store) Facts(about string, scope string) ([]Entry, error) {
 	q += " ORDER BY m.created_at DESC LIMIT 100"
 
 	return s.queryEntries(q, args...)
+}
+
+// FactsBatch returns all facts matching any of the given entities in a single query.
+func (s *Store) FactsBatch(entities []string, scope string) (map[string][]Entry, error) {
+	if len(entities) == 0 {
+		return nil, nil
+	}
+
+	var conditions []string
+	var args []any
+	for _, e := range entities {
+		conditions = append(conditions, "(m.topic LIKE ? OR me.entity LIKE ?)")
+		args = append(args, "%"+e+"%", "%"+e+"%")
+	}
+
+	q := fmt.Sprintf(`
+		SELECT DISTINCT m.id, m.type, m.scope, m.topic, m.content, m.source, m.created_at, m.expires_at
+		FROM memory m
+		LEFT JOIN memory_entities me ON m.id = me.memory_id
+		WHERE m.type = ?
+		AND (%s)`, strings.Join(conditions, " OR "))
+	args = append([]any{TypeFact}, args...)
+
+	if scope != "" {
+		q += " AND m.scope = ?"
+		args = append(args, scope)
+	}
+	q += " ORDER BY m.created_at DESC LIMIT 100"
+
+	entries, err := s.queryEntries(q, args...)
+	if err != nil {
+		return nil, err
+	}
+
+	result := make(map[string][]Entry)
+	for _, entry := range entries {
+		for _, e := range entities {
+			if entryMatchesEntity(entry, e) {
+				result[e] = append(result[e], entry)
+			}
+		}
+	}
+	return result, nil
+}
+
+func entryMatchesEntity(entry Entry, entity string) bool {
+	eLower := strings.ToLower(entity)
+	if strings.Contains(strings.ToLower(entry.Topic), eLower) ||
+		strings.Contains(strings.ToLower(entry.Content), eLower) {
+		return true
+	}
+	for _, ent := range entry.Entities {
+		if strings.Contains(strings.ToLower(ent.Name), eLower) {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Store) queryEntries(q string, args ...any) ([]Entry, error) {

@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -58,10 +59,10 @@ type TelegramConfig struct {
 }
 
 type EmailConfig struct {
-	Accounts map[string]EmailAccountConfig `yaml:"accounts"`
+	Accounts map[string]GoogleAccountConfig `yaml:"accounts"`
 }
 
-type EmailAccountConfig struct {
+type GoogleAccountConfig struct {
 	Provider        string `yaml:"provider"`
 	Address         string `yaml:"address"`
 	CredentialsPath string `yaml:"credentials_path"`
@@ -70,15 +71,7 @@ type EmailAccountConfig struct {
 }
 
 type CalendarConfig struct {
-	Accounts map[string]CalendarAccountConfig `yaml:"accounts"`
-}
-
-type CalendarAccountConfig struct {
-	Provider        string `yaml:"provider"`
-	Address         string `yaml:"address"`
-	CredentialsPath string `yaml:"credentials_path"`
-	Default         bool   `yaml:"default"`
-	Bridge          string `yaml:"bridge"`
+	Accounts map[string]GoogleAccountConfig `yaml:"accounts"`
 }
 
 type SlackConfig struct {
@@ -87,6 +80,7 @@ type SlackConfig struct {
 
 type SlackWorkspaceConfig struct {
 	TokenEnv      string   `yaml:"token_env"`
+	TokenPath     string   `yaml:"token_path"`
 	UserID        string   `yaml:"user_id"`
 	WatchChannels []string `yaml:"watch_channels"`
 	Bridge        string   `yaml:"bridge"`
@@ -140,7 +134,57 @@ func Load(path string) (*Config, error) {
 	if err := cfg.ExpandDataDir(); err != nil {
 		return nil, err
 	}
+
+	cfg.loadEnv()
 	return cfg, nil
+}
+
+// loadEnv loads <data_dir>/.env into the process environment.
+// Existing env vars are not overridden, so this is safe to call even when
+// env vars are already set by the shell.
+func (c *Config) loadEnv() {
+	envPath := filepath.Join(c.Guide.DataDir, ".env")
+	data, err := os.ReadFile(envPath)
+	if err != nil {
+		if !os.IsNotExist(err) {
+			slog.Warn("failed to read .env file", "path", envPath, "err", err)
+		}
+		return
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		k, v, ok := strings.Cut(line, "=")
+		if !ok {
+			continue
+		}
+		k = strings.TrimSpace(k)
+		v = strings.TrimSpace(v)
+		v = strings.Trim(v, `"'`)
+		if os.Getenv(k) == "" {
+			os.Setenv(k, v)
+		}
+	}
+}
+
+// Validate checks that required config fields are present and consistent.
+func (c *Config) Validate() error {
+	if c.Guide.DataDir == "" {
+		return fmt.Errorf("guide.data_dir is required")
+	}
+	for name, ws := range c.Channels.Slack.Workspaces {
+		if ws.TokenEnv == "" && ws.TokenPath == "" {
+			return fmt.Errorf("slack workspace %q has neither token_env nor token_path", name)
+		}
+	}
+	for _, acctName := range c.Channels.Drive.Accounts {
+		if _, ok := c.Channels.Email.Accounts[acctName]; !ok {
+			return fmt.Errorf("drive account %q not found in email accounts", acctName)
+		}
+	}
+	return nil
 }
 
 // DBPath returns the full path to the SQLite database.
@@ -153,16 +197,44 @@ func (c *Config) ConfigPath() string {
 	return filepath.Join(c.Guide.DataDir, "virgil.yaml")
 }
 
+func expandTilde(path string) (string, error) {
+	if !strings.HasPrefix(path, "~/") {
+		return path, nil
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("expand ~: %w", err)
+	}
+	return filepath.Join(home, path[2:]), nil
+}
+
 func (c *Config) ExpandDataDir() error {
 	if c.Guide.DataDir == "" {
 		c.Guide.DataDir = "~/.virgil"
 	}
-	if strings.HasPrefix(c.Guide.DataDir, "~/") {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return fmt.Errorf("expand ~: %w", err)
+	var err error
+	if c.Guide.DataDir, err = expandTilde(c.Guide.DataDir); err != nil {
+		return err
+	}
+
+	// Expand ~ in all credential paths
+	for name, acct := range c.Channels.Email.Accounts {
+		if acct.CredentialsPath, err = expandTilde(acct.CredentialsPath); err != nil {
+			return err
 		}
-		c.Guide.DataDir = filepath.Join(home, c.Guide.DataDir[2:])
+		c.Channels.Email.Accounts[name] = acct
+	}
+	for name, acct := range c.Channels.Calendar.Accounts {
+		if acct.CredentialsPath, err = expandTilde(acct.CredentialsPath); err != nil {
+			return err
+		}
+		c.Channels.Calendar.Accounts[name] = acct
+	}
+	for name, ws := range c.Channels.Slack.Workspaces {
+		if ws.TokenPath, err = expandTilde(ws.TokenPath); err != nil {
+			return err
+		}
+		c.Channels.Slack.Workspaces[name] = ws
 	}
 	return nil
 }
@@ -222,12 +294,7 @@ func (c *Config) ModelFor(channel string) ModelSelection {
 	if channel == "mcp" && c.AI.MCP.Model != "" {
 		return c.AI.MCP
 	}
-	if c.AI.Interactive.Model != "" {
-		return c.AI.Interactive
-	}
-	return ModelSelection{
-		Model: c.AI.Default + "/sonnet",
-	}
+	return c.AI.Interactive
 }
 
 // ModelFromSkill returns the model selection for a skill, falling back to interactive defaults.

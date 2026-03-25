@@ -2,6 +2,7 @@ package internal
 
 import (
 	"context"
+	"fmt"
 	"time"
 )
 
@@ -44,6 +45,17 @@ type Skill struct {
 	Enabled     bool              `json:"enabled"`
 	Gotchas     string            `json:"-"`
 	Templates   map[string]string `json:"-"`
+}
+
+// Validate checks that required Skill fields are set.
+func (s *Skill) Validate() error {
+	if s.Name == "" {
+		return fmt.Errorf("skill name is required")
+	}
+	if s.Prompt == "" {
+		return fmt.Errorf("skill %q has no prompt (empty SKILL.md body)", s.Name)
+	}
+	return nil
 }
 
 // Event is a structured log entry for debugging and audit.

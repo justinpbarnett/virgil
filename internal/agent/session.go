@@ -79,6 +79,24 @@ func (sb *SessionBuffer) Add(channel, userMsg, assistantMsg string) {
 	if len(sess.turns) > maxTurns {
 		sess.turns = sess.turns[len(sess.turns)-maxTurns:]
 	}
+
+	sb.sweepExpired(now)
+}
+
+// sweepExpired removes sessions that have timed out. Must be called with mu held.
+func (sb *SessionBuffer) sweepExpired(now time.Time) {
+	for ch, sess := range sb.sessions {
+		if now.Sub(sess.lastAt) > sessionTimeout {
+			delete(sb.sessions, ch)
+		}
+	}
+}
+
+// Clear removes a channel's session.
+func (sb *SessionBuffer) Clear(channel string) {
+	sb.mu.Lock()
+	defer sb.mu.Unlock()
+	delete(sb.sessions, channel)
 }
 
 // TurnCount returns the number of turns in a channel's session.

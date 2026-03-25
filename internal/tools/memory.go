@@ -129,9 +129,7 @@ func RegisterMemoryTools(reg *Registry, store *memory.Store) {
 			if v, ok := params["scope"].(string); ok {
 				sp.Scope = v
 			}
-			if v, ok := params["limit"].(float64); ok {
-				sp.Limit = int(v)
-			}
+			sp.Limit = intParam(params, "limit", 0)
 
 			results, err := store.Search(sp)
 			if err != nil {

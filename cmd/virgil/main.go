@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -24,43 +25,30 @@ import (
 )
 
 type CLI struct {
-	// Serve mode (production)
-	Serve ServeCmd `cmd:"" help:"Start guide server (HTTP + Telegram + cron)"`
+	Serve  ServeCmd  `cmd:"" help:"Start guide server (HTTP + Telegram + cron)"`
+	MCP    MCPCmd    `cmd:"" help:"Start MCP server on stdio"`
+	Auth   AuthCmd   `cmd:"" help:"Set up OAuth tokens"`
+	Init   InitCmd   `cmd:"" help:"Initialize data directory and config"`
+	Seed   SeedCmd   `cmd:"" help:"Ingest a markdown file as facts into memory"`
+	Memory MemoryCmd `cmd:"" help:"Memory operations"`
 
-	// MCP mode (Claude Code)
-	MCP MCPCmd `cmd:"" help:"Start MCP server on stdio"`
-
-	// Auth setup
-	Auth AuthCmd `cmd:"" help:"Set up OAuth tokens"`
-
-	// Setup
-	Init InitCmd `cmd:"" help:"Initialize data directory and config"`
-	Seed SeedCmd `cmd:"" help:"Ingest a markdown file as facts into memory"`
-
-	// Direct tool access
-	Memory   MemoryCmd   `cmd:"" help:"Memory operations"`
+	// Tool CLI commands
 	Email    EmailCmd    `cmd:"" help:"Email operations"`
 	Calendar CalendarCmd `cmd:"" help:"Calendar operations"`
 	Slack    SlackCmd    `cmd:"" help:"Slack operations"`
 	JIRA     JIRACmd     `cmd:"" help:"JIRA operations"`
 	Tasks    TasksCmd    `cmd:"" help:"Task operations"`
 	People   PeopleCmd   `cmd:"" help:"People lookup"`
+	Drive    DriveCmd    `cmd:"" help:"Drive operations"`
+	Omi      OmiCmd      `cmd:"" help:"Omi operations"`
 
-	// AI bridge
-	Ask   AskCmd   `cmd:"" help:"Send a message to the AI bridge"`
-	Embed EmbedCmd `cmd:"" help:"Generate an embedding vector"`
-
-	// Agent
+	Ask    AskCmd    `cmd:"" help:"Send a message to the AI bridge"`
+	Embed  EmbedCmd  `cmd:"" help:"Generate an embedding vector"`
 	Signal SignalCmd `cmd:"" help:"Send a message through the agent"`
-
-	// Skills
-	Run RunCmd `cmd:"" help:"Run a skill by name"`
-
-	// System
+	Run    RunCmd    `cmd:"" help:"Run a skill by name"`
 	Status StatusCmd `cmd:"" help:"Guide health check"`
 	Events EventsCmd `cmd:"" help:"Event log queries"`
 
-	// Global flags
 	Config string `help:"Config file path" default:"~/.virgil/virgil.yaml" type:"path"`
 }
 
@@ -75,7 +63,6 @@ func main() {
 	ctx.FatalIfErrorf(err)
 }
 
-// Context is passed to all commands.
 type Context struct {
 	ConfigPath string
 }
@@ -85,7 +72,6 @@ type Context struct {
 type InitCmd struct{}
 
 func (c *InitCmd) Run(ctx *Context) error {
-	// Load config if it exists, otherwise use defaults for first-time init.
 	cfg, err := config.Load(ctx.ConfigPath)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
@@ -211,6 +197,14 @@ type ServeCmd struct{}
 type MCPCmd struct{}
 type AuthCmd struct{}
 type SeedCmd struct{}
+
+func (c *ServeCmd) Run(ctx *Context) error { return fmt.Errorf("not yet implemented") }
+func (c *MCPCmd) Run(ctx *Context) error   { return fmt.Errorf("not yet implemented") }
+func (c *AuthCmd) Run(ctx *Context) error  { return fmt.Errorf("not yet implemented") }
+func (c *SeedCmd) Run(ctx *Context) error  { return fmt.Errorf("not yet implemented") }
+
+// ---------- memory CLI ----------
+
 type MemoryCmd struct {
 	Store  MemoryStoreCmd  `cmd:"" help:"Store a memory"`
 	Search MemorySearchCmd `cmd:"" help:"Search memories"`
@@ -236,38 +230,7 @@ type MemoryFactsCmd struct {
 	About string `arg:"" help:"Person, topic, or project name"`
 	Scope string `help:"Filter by scope"`
 }
-type AskCmd struct {
-	Message  string   `arg:"" help:"Message to send"`
-	Model    string   `help:"Model ref (e.g. anthropic/sonnet)" default:""`
-	Fallback []string `help:"Fallback model refs"`
-}
 
-type EmbedCmd struct {
-	Text string `arg:"" help:"Text to embed"`
-}
-
-type SignalCmd struct {
-	Message   string `arg:"" help:"Message to send through the agent"`
-	Channel   string `help:"Channel" default:"cli"`
-	SkillsDir string `help:"Skills directory override" name:"skills-dir"`
-}
-
-type EmailCmd struct{}
-type CalendarCmd struct{}
-type SlackCmd struct{}
-type JIRACmd struct{}
-type TasksCmd struct{}
-type PeopleCmd struct{}
-
-type RunCmd struct {
-	Name      string `arg:"" help:"Skill name to run"`
-	SkillsDir string `help:"Skills directory override" name:"skills-dir"`
-}
-
-func (c *ServeCmd) Run(ctx *Context) error { return fmt.Errorf("not yet implemented") }
-func (c *MCPCmd) Run(ctx *Context) error   { return fmt.Errorf("not yet implemented") }
-func (c *AuthCmd) Run(ctx *Context) error  { return fmt.Errorf("not yet implemented") }
-func (c *SeedCmd) Run(ctx *Context) error  { return fmt.Errorf("not yet implemented") }
 func (c *MemoryStoreCmd) Run(ctx *Context) error {
 	store, cleanup, err := openMemoryStore(ctx)
 	if err != nil {
@@ -338,69 +301,331 @@ func (c *MemoryFactsCmd) Run(ctx *Context) error {
 
 	return outputJSON(facts)
 }
-func (c *EmailCmd) Run(ctx *Context) error    { return fmt.Errorf("not yet implemented") }
-func (c *CalendarCmd) Run(ctx *Context) error { return fmt.Errorf("not yet implemented") }
-func (c *SlackCmd) Run(ctx *Context) error    { return fmt.Errorf("not yet implemented") }
-func (c *JIRACmd) Run(ctx *Context) error     { return fmt.Errorf("not yet implemented") }
-func (c *TasksCmd) Run(ctx *Context) error    { return fmt.Errorf("not yet implemented") }
-func (c *PeopleCmd) Run(ctx *Context) error   { return fmt.Errorf("not yet implemented") }
 
-func (c *SignalCmd) Run(ctx *Context) error {
-	cfg, err := loadConfig(ctx)
-	if err != nil {
-		return err
-	}
-	if c.SkillsDir != "" {
-		cfg.Skills.Dir = c.SkillsDir
-	}
+// ---------- tool CLI commands ----------
 
-	ag, cleanup, err := openAgent(cfg)
-	if err != nil {
-		return err
-	}
-	defer cleanup()
-
-	sig := internal.Signal{
-		ID:        observe.GenerateSpanID(),
-		Channel:   c.Channel,
-		Content:   c.Message,
-		Timestamp: time.Now(),
-	}
-
-	text, err := ag.Run(context.Background(), sig)
-	if err != nil {
-		return fmt.Errorf("signal: %w", err)
-	}
-
-	return outputJSON(map[string]string{"response": text})
+type EmailCmd struct {
+	List       EmailListCmd       `cmd:"" help:"List emails"`
+	Read       EmailReadCmd       `cmd:"" help:"Read an email thread"`
+	Send       EmailSendCmd       `cmd:"" help:"Send an email"`
+	Categorize EmailCategorizeCmd `cmd:"" help:"Categorize an email"`
+}
+type EmailListCmd struct {
+	Account string `help:"Email account"`
+	Unread  bool   `help:"Only unread"`
+	From    string `help:"Filter by sender"`
+	Since   string `help:"Since date"`
+	Query   string `help:"Gmail search query"`
+	Limit   int    `help:"Max results" default:"20"`
+}
+type EmailReadCmd struct {
+	ThreadID string `arg:"" help:"Thread ID"`
+	Account  string `arg:"" help:"Account name"`
+}
+type EmailSendCmd struct {
+	Account string `arg:"" help:"Account to send from"`
+	To      string `arg:"" help:"Recipient"`
+	Body    string `arg:"" help:"Message body"`
+	Subject string `help:"Subject line"`
+	ReplyTo string `help:"Thread ID to reply to"`
+	Cc      string `help:"CC recipients"`
+}
+type EmailCategorizeCmd struct {
+	MessageID string `arg:"" help:"Message ID"`
+	Account   string `arg:"" help:"Account"`
+	Category  string `arg:"" help:"Category: imbox, feed, paper_trail, noise"`
 }
 
-func (c *RunCmd) Run(ctx *Context) error {
-	cfg, err := loadConfig(ctx)
-	if err != nil {
-		return err
+func (c *EmailListCmd) Run(ctx *Context) error {
+	p := map[string]any{"limit": float64(c.Limit)}
+	if c.Account != "" {
+		p["account"] = c.Account
 	}
-	if c.SkillsDir != "" {
-		cfg.Skills.Dir = c.SkillsDir
+	if c.Unread {
+		p["unread_only"] = true
 	}
+	if c.From != "" {
+		p["from"] = c.From
+	}
+	if c.Since != "" {
+		p["since"] = c.Since
+	}
+	if c.Query != "" {
+		p["query"] = c.Query
+	}
+	return runTool(ctx, "email_list", p)
+}
+func (c *EmailReadCmd) Run(ctx *Context) error {
+	return runTool(ctx, "email_read", map[string]any{"thread_id": c.ThreadID, "account": c.Account})
+}
+func (c *EmailSendCmd) Run(ctx *Context) error {
+	p := map[string]any{"account": c.Account, "to": c.To, "body": c.Body}
+	if c.Subject != "" {
+		p["subject"] = c.Subject
+	}
+	if c.ReplyTo != "" {
+		p["reply_to_thread"] = c.ReplyTo
+	}
+	if c.Cc != "" {
+		p["cc"] = c.Cc
+	}
+	return runTool(ctx, "email_send", p)
+}
+func (c *EmailCategorizeCmd) Run(ctx *Context) error {
+	return runTool(ctx, "email_categorize", map[string]any{"message_id": c.MessageID, "account": c.Account, "category": c.Category})
+}
 
-	ag, cleanup, err := openAgent(cfg)
-	if err != nil {
-		return err
-	}
-	defer cleanup()
+type CalendarCmd struct {
+	Check  CalendarCheckCmd  `cmd:"" help:"Check calendar events"`
+	Create CalendarCreateCmd `cmd:"" help:"Create an event"`
+	Delete CalendarDeleteCmd `cmd:"" help:"Delete an event"`
+}
+type CalendarCheckCmd struct {
+	Account string `help:"Calendar account"`
+	Start   string `help:"Start date"`
+	End     string `help:"End date"`
+	Days    int    `help:"Number of days" default:"1"`
+}
+type CalendarCreateCmd struct {
+	Account string `arg:"" help:"Account"`
+	Title   string `arg:"" help:"Event title"`
+	Start   string `arg:"" help:"Start time"`
+	End     string `arg:"" help:"End time"`
+}
+type CalendarDeleteCmd struct {
+	EventID string `arg:"" help:"Event ID"`
+	Account string `arg:"" help:"Account"`
+}
 
-	sk := ag.FindSkill(c.Name)
-	if sk == nil {
-		return fmt.Errorf("skill %q not found", c.Name)
+func (c *CalendarCheckCmd) Run(ctx *Context) error {
+	p := map[string]any{"days": float64(c.Days)}
+	if c.Account != "" {
+		p["account"] = c.Account
 	}
-
-	text, err := ag.RunSkill(context.Background(), sk, "cli")
-	if err != nil {
-		return fmt.Errorf("run skill: %w", err)
+	if c.Start != "" {
+		p["start"] = c.Start
 	}
+	if c.End != "" {
+		p["end"] = c.End
+	}
+	return runTool(ctx, "calendar_check", p)
+}
+func (c *CalendarCreateCmd) Run(ctx *Context) error {
+	return runTool(ctx, "calendar_create", map[string]any{"account": c.Account, "title": c.Title, "start": c.Start, "end": c.End})
+}
+func (c *CalendarDeleteCmd) Run(ctx *Context) error {
+	return runTool(ctx, "calendar_delete", map[string]any{"event_id": c.EventID, "account": c.Account})
+}
 
-	return outputJSON(map[string]string{"response": text})
+type SlackCmd struct {
+	Read   SlackReadCmd   `cmd:"" help:"Read channel messages"`
+	Post   SlackPostCmd   `cmd:"" help:"Post a message"`
+	Search SlackSearchCmd `cmd:"" help:"Search messages"`
+}
+type SlackReadCmd struct {
+	Workspace string `arg:"" help:"Workspace name"`
+	Channel   string `arg:"" help:"Channel name or ID"`
+	ThreadTS  string `help:"Thread timestamp"`
+	Limit     int    `help:"Max messages" default:"20"`
+}
+type SlackPostCmd struct {
+	Workspace string `arg:"" help:"Workspace"`
+	Channel   string `arg:"" help:"Channel"`
+	Text      string `arg:"" help:"Message text"`
+	ThreadTS  string `help:"Reply to thread"`
+}
+type SlackSearchCmd struct {
+	Query     string `arg:"" help:"Search query"`
+	Workspace string `help:"Limit to workspace"`
+	Limit     int    `help:"Max results" default:"20"`
+}
+
+func (c *SlackReadCmd) Run(ctx *Context) error {
+	p := map[string]any{"workspace": c.Workspace, "channel": c.Channel, "limit": float64(c.Limit)}
+	if c.ThreadTS != "" {
+		p["thread_ts"] = c.ThreadTS
+	}
+	return runTool(ctx, "slack_read", p)
+}
+func (c *SlackPostCmd) Run(ctx *Context) error {
+	p := map[string]any{"workspace": c.Workspace, "channel": c.Channel, "text": c.Text}
+	if c.ThreadTS != "" {
+		p["thread_ts"] = c.ThreadTS
+	}
+	return runTool(ctx, "slack_post", p)
+}
+func (c *SlackSearchCmd) Run(ctx *Context) error {
+	p := map[string]any{"query": c.Query, "limit": float64(c.Limit)}
+	if c.Workspace != "" {
+		p["workspace"] = c.Workspace
+	}
+	return runTool(ctx, "slack_search", p)
+}
+
+type JIRACmd struct {
+	Search JIRASearchCmd `cmd:"" help:"Search issues"`
+	Read   JIRAReadCmd   `cmd:"" help:"Read an issue"`
+	Update JIRAUpdateCmd `cmd:"" help:"Update an issue"`
+}
+type JIRASearchCmd struct {
+	Query    string `arg:"" help:"JQL or text query"`
+	Instance string `help:"JIRA instance"`
+	Assignee string `help:"Filter by assignee"`
+	Status   string `help:"Filter by status"`
+	Limit    int    `help:"Max results" default:"20"`
+}
+type JIRAReadCmd struct {
+	IssueKey string `arg:"" help:"Issue key (e.g. PASS-123)"`
+}
+type JIRAUpdateCmd struct {
+	IssueKey   string `arg:"" help:"Issue key"`
+	Comment    string `help:"Add a comment"`
+	Transition string `help:"Status transition name"`
+}
+
+func (c *JIRASearchCmd) Run(ctx *Context) error {
+	p := map[string]any{"query": c.Query, "limit": float64(c.Limit)}
+	if c.Instance != "" {
+		p["instance"] = c.Instance
+	}
+	if c.Assignee != "" {
+		p["assignee"] = c.Assignee
+	}
+	if c.Status != "" {
+		p["status"] = c.Status
+	}
+	return runTool(ctx, "jira_search", p)
+}
+func (c *JIRAReadCmd) Run(ctx *Context) error {
+	return runTool(ctx, "jira_read", map[string]any{"issue_key": c.IssueKey})
+}
+func (c *JIRAUpdateCmd) Run(ctx *Context) error {
+	p := map[string]any{"issue_key": c.IssueKey}
+	if c.Comment != "" {
+		p["comment"] = c.Comment
+	}
+	if c.Transition != "" {
+		p["transition"] = c.Transition
+	}
+	return runTool(ctx, "jira_update", p)
+}
+
+type TasksCmd struct {
+	List     TasksListCmd     `cmd:"" help:"List tasks"`
+	Create   TasksCreateCmd   `cmd:"" help:"Create a task"`
+	Complete TasksCompleteCmd `cmd:"" help:"Complete a task"`
+}
+type TasksListCmd struct {
+	Status   string `help:"Filter by status (open, done, dropped)"`
+	Priority string `help:"Filter by priority"`
+	Source   string `help:"Filter by source"`
+	Limit    int    `help:"Max results" default:"20"`
+}
+type TasksCreateCmd struct {
+	Title       string `arg:"" help:"Task title"`
+	Description string `help:"Task description"`
+	Priority    string `help:"Priority (urgent, high, normal, low)" default:"normal"`
+	Source      string `help:"Source (email, meeting, jira, user)"`
+	DueAt       string `help:"Due date"`
+}
+type TasksCompleteCmd struct {
+	TaskID string `arg:"" help:"Task ID"`
+}
+
+func (c *TasksListCmd) Run(ctx *Context) error {
+	p := map[string]any{"limit": float64(c.Limit)}
+	if c.Status != "" {
+		p["status"] = c.Status
+	}
+	if c.Priority != "" {
+		p["priority"] = c.Priority
+	}
+	if c.Source != "" {
+		p["source"] = c.Source
+	}
+	return runTool(ctx, "task_list", p)
+}
+func (c *TasksCreateCmd) Run(ctx *Context) error {
+	p := map[string]any{"title": c.Title, "priority": c.Priority}
+	if c.Description != "" {
+		p["description"] = c.Description
+	}
+	if c.Source != "" {
+		p["source"] = c.Source
+	}
+	if c.DueAt != "" {
+		p["due_at"] = c.DueAt
+	}
+	return runTool(ctx, "task_create", p)
+}
+func (c *TasksCompleteCmd) Run(ctx *Context) error {
+	return runTool(ctx, "task_complete", map[string]any{"task_id": c.TaskID})
+}
+
+type PeopleCmd struct {
+	Lookup PeopleLookupCmd `cmd:"" help:"Look up a person"`
+}
+type PeopleLookupCmd struct {
+	Name string `arg:"" help:"Person's name or email"`
+}
+
+func (c *PeopleLookupCmd) Run(ctx *Context) error {
+	return runTool(ctx, "people_lookup", map[string]any{"name": c.Name})
+}
+
+type DriveCmd struct {
+	List DriveListCmd `cmd:"" help:"List files"`
+	Read DriveReadCmd `cmd:"" help:"Read a file"`
+}
+type DriveListCmd struct {
+	Query string `help:"Search query"`
+	Type  string `help:"File type (document, spreadsheet, presentation, pdf)"`
+	Limit int    `help:"Max results" default:"20"`
+}
+type DriveReadCmd struct {
+	FileID string `arg:"" help:"File ID"`
+}
+
+func (c *DriveListCmd) Run(ctx *Context) error {
+	p := map[string]any{"limit": float64(c.Limit)}
+	if c.Query != "" {
+		p["query"] = c.Query
+	}
+	if c.Type != "" {
+		p["type"] = c.Type
+	}
+	return runTool(ctx, "drive_list", p)
+}
+func (c *DriveReadCmd) Run(ctx *Context) error {
+	return runTool(ctx, "drive_read", map[string]any{"file_id": c.FileID})
+}
+
+type OmiCmd struct {
+	Ingest OmiIngestCmd `cmd:"" help:"Ingest conversations from Omi"`
+}
+type OmiIngestCmd struct {
+	Since string `help:"Only conversations after this time"`
+	Limit int    `help:"Max conversations" default:"50"`
+}
+
+func (c *OmiIngestCmd) Run(ctx *Context) error {
+	p := map[string]any{"limit": float64(c.Limit)}
+	if c.Since != "" {
+		p["since"] = c.Since
+	}
+	return runTool(ctx, "omi_ingest", p)
+}
+
+// ---------- AI bridge ----------
+
+type AskCmd struct {
+	Message  string   `arg:"" help:"Message to send"`
+	Model    string   `help:"Model ref (e.g. anthropic/sonnet)" default:""`
+	Fallback []string `help:"Fallback model refs"`
+}
+
+type EmbedCmd struct {
+	Text string `arg:"" help:"Text to embed"`
 }
 
 func (c *AskCmd) Run(ctx *Context) error {
@@ -462,6 +687,77 @@ func (c *EmbedCmd) Run(ctx *Context) error {
 	return outputJSON(vec)
 }
 
+// ---------- agent ----------
+
+type SignalCmd struct {
+	Message   string `arg:"" help:"Message to send through the agent"`
+	Channel   string `help:"Channel" default:"cli"`
+	SkillsDir string `help:"Skills directory override" name:"skills-dir"`
+}
+
+type RunCmd struct {
+	Name      string `arg:"" help:"Skill name to run"`
+	SkillsDir string `help:"Skills directory override" name:"skills-dir"`
+}
+
+func (c *SignalCmd) Run(ctx *Context) error {
+	cfg, err := loadConfig(ctx)
+	if err != nil {
+		return err
+	}
+	if c.SkillsDir != "" {
+		cfg.Skills.Dir = c.SkillsDir
+	}
+
+	ag, cleanup, err := openAgent(cfg)
+	if err != nil {
+		return err
+	}
+	defer cleanup()
+
+	sig := internal.Signal{
+		ID:        observe.GenerateSpanID(),
+		Channel:   c.Channel,
+		Content:   c.Message,
+		Timestamp: time.Now(),
+	}
+
+	text, err := ag.Run(context.Background(), sig)
+	if err != nil {
+		return fmt.Errorf("signal: %w", err)
+	}
+
+	return outputJSON(map[string]string{"response": text})
+}
+
+func (c *RunCmd) Run(ctx *Context) error {
+	cfg, err := loadConfig(ctx)
+	if err != nil {
+		return err
+	}
+	if c.SkillsDir != "" {
+		cfg.Skills.Dir = c.SkillsDir
+	}
+
+	ag, cleanup, err := openAgent(cfg)
+	if err != nil {
+		return err
+	}
+	defer cleanup()
+
+	sk := ag.FindSkill(c.Name)
+	if sk == nil {
+		return fmt.Errorf("skill %q not found", c.Name)
+	}
+
+	text, err := ag.RunSkill(context.Background(), sk, "cli")
+	if err != nil {
+		return fmt.Errorf("run skill: %w", err)
+	}
+
+	return outputJSON(map[string]string{"response": text})
+}
+
 // ---------- helpers ----------
 
 func loadConfig(ctx *Context) (*config.Config, error) {
@@ -499,6 +795,58 @@ func openBridge(cfg *config.Config) (*bridge.FallbackBridge, func(), error) {
 	return fb, func() { database.Close() }, nil
 }
 
+func registerAllTools(reg *tools.Registry, cfg *config.Config, database *sql.DB, memStore *memory.Store) {
+	tools.RegisterMemoryTools(reg, memStore)
+	tools.RegisterTaskTools(reg, database)
+	tools.RegisterPeopleTools(reg, memStore)
+	tools.RegisterEmailTools(reg, cfg)
+	tools.RegisterCalendarTools(reg, cfg)
+	tools.RegisterDriveTools(reg, cfg)
+	tools.RegisterSlackTools(reg, cfg)
+	tools.RegisterJIRATools(reg, cfg)
+	tools.RegisterOmiTools(reg, cfg, memStore)
+}
+
+func openToolRegistry(ctx *Context) (*tools.Registry, func(), error) {
+	cfg, err := loadConfig(ctx)
+	if err != nil {
+		return nil, nil, err
+	}
+	database, err := db.Open(cfg.DBPath())
+	if err != nil {
+		return nil, nil, err
+	}
+	memStore := memory.NewStore(database)
+	reg := tools.NewRegistry()
+	registerAllTools(reg, cfg, database, memStore)
+	return reg, func() { database.Close() }, nil
+}
+
+func runTool(ctx *Context, toolName string, params map[string]any) error {
+	reg, cleanup, err := openToolRegistry(ctx)
+	if err != nil {
+		return err
+	}
+	defer cleanup()
+
+	t := reg.Get(toolName)
+	if t == nil {
+		return fmt.Errorf("tool %q not registered", toolName)
+	}
+
+	result, err := t.Execute(context.Background(), params)
+	if err != nil {
+		return err
+	}
+	if result.Error != "" {
+		return fmt.Errorf("%s", result.Error)
+	}
+	if result.Data != nil {
+		return outputJSON(result.Data)
+	}
+	return outputJSON(result)
+}
+
 func openAgent(cfg *config.Config) (*agent.Agent, func(), error) {
 	database, err := db.Open(cfg.DBPath())
 	if err != nil {
@@ -516,13 +864,17 @@ func openAgent(cfg *config.Config) (*agent.Agent, func(), error) {
 
 	loaded, err := skills.LoadAll(cfg.Skills.Dir)
 	if err != nil {
-		slog.Warn("load skills", "err", err)
+		slog.Error("skills failed to load, agent will run without skills", "dir", cfg.Skills.Dir, "err", err)
 	}
 
 	reg := tools.NewRegistry()
-	tools.RegisterMemoryTools(reg, memStore)
+	registerAllTools(reg, cfg, database, memStore)
 
-	ag := agent.NewAgent(cfg, memStore, fb, reg, loaded, events)
+	ag, err := agent.NewAgent(cfg, memStore, fb, reg, loaded, events)
+	if err != nil {
+		database.Close()
+		return nil, nil, fmt.Errorf("create agent: %w", err)
+	}
 	return ag, func() { database.Close() }, nil
 }
 
@@ -554,6 +906,14 @@ func buildBridge(cfg *config.Config, events *observe.EventLog) (*bridge.Fallback
 
 	if len(providers) == 0 {
 		return nil, fmt.Errorf("no AI providers initialized (check API key environment variables)")
+	}
+
+	if cfg.AI.Interactive.Model != "" {
+		primaryProvider, _ := bridge.ParseModelRef(cfg.AI.Interactive.Model)
+		if _, ok := providers[primaryProvider]; !ok {
+			slog.Error("primary provider failed to initialize, will use fallback",
+				"primary", primaryProvider)
+		}
 	}
 
 	if embedder == nil {

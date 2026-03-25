@@ -2,6 +2,7 @@ package skills
 
 import (
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -54,6 +55,7 @@ func Load(path string) (*internal.Skill, error) {
 	data, err := os.ReadFile(filepath.Join(path, "SKILL.md"))
 	if err != nil {
 		if os.IsNotExist(err) {
+			slog.Debug("skipping skill dir without SKILL.md", "path", path)
 			return nil, nil
 		}
 		return nil, fmt.Errorf("read SKILL.md: %w", err)
@@ -97,10 +99,16 @@ func Load(path string) (*internal.Skill, error) {
 			if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".md") {
 				continue
 			}
-			if content, err := os.ReadFile(filepath.Join(templatesDir, entry.Name())); err == nil {
-				s.Templates[entry.Name()] = string(content)
+			content, err := os.ReadFile(filepath.Join(templatesDir, entry.Name()))
+			if err != nil {
+				return nil, fmt.Errorf("read template %s: %w", entry.Name(), err)
 			}
+			s.Templates[entry.Name()] = string(content)
 		}
+	}
+
+	if err := s.Validate(); err != nil {
+		return nil, err
 	}
 
 	return s, nil
