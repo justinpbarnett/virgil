@@ -1,23 +1,36 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
+	"net/http"
 	"os"
+	"os/exec"
+	"os/signal"
+	"path/filepath"
+	"runtime"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/alecthomas/kong"
+	"golang.org/x/oauth2"
+	goauth "golang.org/x/oauth2/google"
 
 	"github.com/justinpbarnett/virgil/internal"
 	"github.com/justinpbarnett/virgil/internal/agent"
 	"github.com/justinpbarnett/virgil/internal/bridge"
+	"github.com/justinpbarnett/virgil/internal/channels/mcp"
+	tgbot "github.com/justinpbarnett/virgil/internal/channels/telegram"
 	"github.com/justinpbarnett/virgil/internal/config"
 	"github.com/justinpbarnett/virgil/internal/db"
+	vgoogle "github.com/justinpbarnett/virgil/internal/google"
 	"github.com/justinpbarnett/virgil/internal/memory"
 	"github.com/justinpbarnett/virgil/internal/observe"
 	"github.com/justinpbarnett/virgil/internal/skills"
@@ -191,17 +204,359 @@ func (c *EventsCmd) Run(ctx *Context) error {
 	return outputJSON(events)
 }
 
-// ---------- stubs (later stages) ----------
+// ---------- serve ----------
 
 type ServeCmd struct{}
-type MCPCmd struct{}
-type AuthCmd struct{}
-type SeedCmd struct{}
 
-func (c *ServeCmd) Run(ctx *Context) error { return fmt.Errorf("not yet implemented") }
-func (c *MCPCmd) Run(ctx *Context) error   { return fmt.Errorf("not yet implemented") }
-func (c *AuthCmd) Run(ctx *Context) error  { return fmt.Errorf("not yet implemented") }
-func (c *SeedCmd) Run(ctx *Context) error  { return fmt.Errorf("not yet implemented") }
+func (c *ServeCmd) Run(ctx *Context) error {
+	cfg, err := loadConfig(ctx)
+	if err != nil {
+		return err
+	}
+
+	ag, cleanup, err := openAgent(cfg)
+	if err != nil {
+		return err
+	}
+	defer cleanup()
+
+	loaded, err := skills.LoadAll(cfg.Skills.Dir)
+	if err != nil {
+		slog.Warn("skills failed to load", "dir", cfg.Skills.Dir, "err", err)
+	}
+
+	var push func(string)
+
+	bot, err := tgbot.NewBot(cfg, ag)
+	if err != nil {
+		slog.Warn("telegram bot disabled", "err", err)
+	} else {
+		push = func(text string) {
+			if err := bot.Push(text); err != nil {
+				slog.Warn("telegram push failed", "err", err)
+			}
+		}
+		go bot.Start()
+		defer bot.Stop()
+	}
+
+	sched, err := skills.NewScheduler(ag, loaded, push)
+	if err != nil {
+		return fmt.Errorf("create scheduler: %w", err)
+	}
+	sched.Start()
+	defer func() { _ = sched.Stop() }()
+
+	slog.Info("virgil serving", "skills", len(loaded))
+
+	quit := make(chan os.Signal, 1)
+	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
+	<-quit
+	slog.Info("shutting down")
+	return nil
+}
+
+// ---------- mcp ----------
+
+type MCPCmd struct{}
+
+func (c *MCPCmd) Run(ctx *Context) error {
+	reg, cleanup, err := openToolRegistry(ctx)
+	if err != nil {
+		return err
+	}
+	defer cleanup()
+
+	return mcp.Run(context.Background(), reg)
+}
+
+// ---------- auth ----------
+
+type AuthCmd struct {
+	Google   AuthGoogleCmd   `cmd:"" help:"Set up Google OAuth token for an account"`
+	Slack    AuthSlackCmd    `cmd:"" help:"Set up Slack workspace token"`
+	Telegram AuthTelegramCmd `cmd:"" help:"Set up Telegram bot token and chat ID"`
+	JIRA     AuthJIRACmd     `cmd:"" help:"Set up JIRA API token"`
+}
+
+type AuthGoogleCmd struct {
+	Account string `arg:"" help:"Account name (must match email.accounts in config)"`
+}
+
+func (c *AuthGoogleCmd) Run(ctx *Context) error {
+	cfg, err := loadConfig(ctx)
+	if err != nil {
+		return err
+	}
+
+	acct, ok := cfg.Channels.Email.Accounts[c.Account]
+	if !ok {
+		return fmt.Errorf("account %q not found in config (email.accounts)", c.Account)
+	}
+	if acct.CredentialsPath == "" {
+		return fmt.Errorf("account %q has no credentials_path set", c.Account)
+	}
+
+	clientID, clientSecret, err := vgoogle.LoadClientCredentials(filepath.Dir(acct.CredentialsPath))
+	if err != nil {
+		return err
+	}
+
+	// Start local redirect server
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		return fmt.Errorf("start redirect server: %w", err)
+	}
+	port := listener.Addr().(*net.TCPAddr).Port
+	redirectURL := fmt.Sprintf("http://127.0.0.1:%d/callback", port)
+
+	oauthCfg := &oauth2.Config{
+		ClientID:     clientID,
+		ClientSecret: clientSecret,
+		Endpoint:     goauth.Endpoint,
+		Scopes:       vgoogle.Scopes,
+		RedirectURL:  redirectURL,
+	}
+
+	state := fmt.Sprintf("virgil-%d", time.Now().UnixNano())
+	authURL := oauthCfg.AuthCodeURL(state, oauth2.AccessTypeOffline, oauth2.ApprovalForce)
+
+	codeCh := make(chan string, 1)
+	srv := &http.Server{}
+	http.HandleFunc("/callback", func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("state") != state {
+			http.Error(w, "invalid state", http.StatusBadRequest)
+			return
+		}
+		code := r.URL.Query().Get("code")
+		fmt.Fprintln(w, "Authorization complete. You can close this tab.")
+		codeCh <- code
+	})
+	go func() { _ = srv.Serve(listener) }()
+	defer srv.Close()
+
+	fmt.Printf("Opening browser for Google auth...\n%s\n\n", authURL)
+	openBrowser(authURL)
+
+	fmt.Println("Waiting for authorization...")
+	code := <-codeCh
+
+	tok, err := oauthCfg.Exchange(context.Background(), code)
+	if err != nil {
+		return fmt.Errorf("exchange code: %w", err)
+	}
+
+	if err := os.MkdirAll(filepath.Dir(acct.CredentialsPath), 0o700); err != nil {
+		return fmt.Errorf("create token dir: %w", err)
+	}
+	data, err := json.Marshal(tok)
+	if err != nil {
+		return fmt.Errorf("marshal token: %w", err)
+	}
+	if err := os.WriteFile(acct.CredentialsPath, data, 0o600); err != nil {
+		return fmt.Errorf("write token: %w", err)
+	}
+
+	fmt.Printf("Token saved to %s\n", acct.CredentialsPath)
+	return nil
+}
+
+type AuthSlackCmd struct {
+	Workspace string `arg:"" help:"Workspace name (must match slack.workspaces in config)"`
+}
+
+func (c *AuthSlackCmd) Run(ctx *Context) error {
+	cfg, err := loadConfig(ctx)
+	if err != nil {
+		return err
+	}
+
+	ws, ok := cfg.Channels.Slack.Workspaces[c.Workspace]
+	if !ok {
+		return fmt.Errorf("workspace %q not found in config (slack.workspaces)", c.Workspace)
+	}
+	if ws.TokenPath == "" {
+		return fmt.Errorf("workspace %q has no token_path set; use token_env instead", c.Workspace)
+	}
+
+	token := promptSecret(fmt.Sprintf("Slack token for %q (xoxb- or xoxc-): ", c.Workspace))
+	cookie := ""
+	if strings.HasPrefix(token, "xoxc-") {
+		cookie = promptSecret("Session cookie (d= value): ")
+	}
+
+	data, err := json.Marshal(map[string]string{"token": token, "cookie": cookie})
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(ws.TokenPath), 0o700); err != nil {
+		return fmt.Errorf("create token dir: %w", err)
+	}
+	if err := os.WriteFile(ws.TokenPath, data, 0o600); err != nil {
+		return fmt.Errorf("write token file: %w", err)
+	}
+
+	fmt.Printf("Token saved to %s\n", ws.TokenPath)
+	return nil
+}
+
+type AuthTelegramCmd struct{}
+
+func (c *AuthTelegramCmd) Run(ctx *Context) error {
+	cfg, err := loadConfig(ctx)
+	if err != nil {
+		return err
+	}
+
+	tokenEnv := cfg.Channels.Telegram.BotTokenEnv
+	chatEnv := cfg.Channels.Telegram.ChatIDEnv
+	if tokenEnv == "" {
+		tokenEnv = "TELEGRAM_BOT_TOKEN"
+	}
+	if chatEnv == "" {
+		chatEnv = "TELEGRAM_CHAT_ID"
+	}
+
+	token := promptSecret("Telegram bot token (from @BotFather): ")
+	chatID := promptLine("Your chat ID (send a message to @userinfobot to find it): ")
+
+	envPath := filepath.Join(cfg.Guide.DataDir, ".env")
+	if err := appendEnvFile(envPath, tokenEnv, token); err != nil {
+		return err
+	}
+	if err := appendEnvFile(envPath, chatEnv, chatID); err != nil {
+		return err
+	}
+
+	fmt.Printf("Saved %s and %s to %s\n", tokenEnv, chatEnv, envPath)
+	return nil
+}
+
+type AuthJIRACmd struct {
+	Instance string `arg:"" help:"Instance name (must match jira.instances in config)"`
+}
+
+func (c *AuthJIRACmd) Run(ctx *Context) error {
+	cfg, err := loadConfig(ctx)
+	if err != nil {
+		return err
+	}
+
+	inst, ok := cfg.Channels.JIRA.Instances[c.Instance]
+	if !ok {
+		return fmt.Errorf("instance %q not found in config (jira.instances)", c.Instance)
+	}
+	if inst.APITokenEnv == "" {
+		return fmt.Errorf("instance %q has no api_token_env set", c.Instance)
+	}
+
+	token := promptSecret(fmt.Sprintf("JIRA API token for %s: ", inst.BaseURL))
+
+	envPath := filepath.Join(cfg.Guide.DataDir, ".env")
+	if err := appendEnvFile(envPath, inst.APITokenEnv, token); err != nil {
+		return err
+	}
+
+	fmt.Printf("Saved %s to %s\n", inst.APITokenEnv, envPath)
+	return nil
+}
+
+// ---------- seed ----------
+
+type SeedCmd struct {
+	File  string `arg:"" help:"Markdown file to ingest as facts" type:"path"`
+	Scope string `help:"Memory scope" default:"personal"`
+	Topic string `help:"Primary topic for all facts"`
+}
+
+func (c *SeedCmd) Run(ctx *Context) error {
+	data, err := os.ReadFile(c.File)
+	if err != nil {
+		return fmt.Errorf("read file: %w", err)
+	}
+
+	store, cleanup, err := openMemoryStore(ctx)
+	if err != nil {
+		return err
+	}
+	defer cleanup()
+
+	paragraphs := splitParagraphs(string(data))
+	stored := 0
+	for _, p := range paragraphs {
+		p = strings.TrimSpace(p)
+		if p == "" || strings.HasPrefix(p, "#") {
+			continue
+		}
+		id, err := store.Store(memory.StoreParams{
+			Type:    memory.TypeFact,
+			Content: p,
+			Topic:   c.Topic,
+			Scope:   c.Scope,
+		})
+		if err != nil {
+			slog.Warn("seed: failed to store paragraph", "err", err)
+			continue
+		}
+		slog.Debug("seeded", "id", id)
+		stored++
+	}
+
+	fmt.Printf("Seeded %d facts from %s\n", stored, c.File)
+	return nil
+}
+
+// ---------- auth helpers ----------
+
+func openBrowser(url string) {
+	var cmd string
+	var args []string
+	switch runtime.GOOS {
+	case "darwin":
+		cmd, args = "open", []string{url}
+	case "windows":
+		cmd, args = "rundll32", []string{"url.dll,FileProtocolHandler", url}
+	default:
+		cmd, args = "xdg-open", []string{url}
+	}
+	if err := exec.Command(cmd, args...).Start(); err != nil {
+		slog.Warn("could not open browser", "err", err)
+	}
+}
+
+func promptSecret(prompt string) string {
+	fmt.Print(prompt)
+	scanner := bufio.NewScanner(os.Stdin)
+	if scanner.Scan() {
+		return strings.TrimSpace(scanner.Text())
+	}
+	return ""
+}
+
+func promptLine(prompt string) string {
+	return promptSecret(prompt)
+}
+
+func appendEnvFile(path, key, value string) error {
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
+	if err != nil {
+		return fmt.Errorf("open .env: %w", err)
+	}
+	defer f.Close()
+	_, err = fmt.Fprintf(f, "%s=%s\n", key, value)
+	return err
+}
+
+func splitParagraphs(text string) []string {
+	var result []string
+	for _, block := range strings.Split(text, "\n\n") {
+		block = strings.TrimSpace(block)
+		if block != "" {
+			result = append(result, block)
+		}
+	}
+	return result
+}
 
 // ---------- memory CLI ----------
 

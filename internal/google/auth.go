@@ -37,7 +37,7 @@ func NewHTTPClient(tokenPath string) (*http.Client, error) {
 		return nil, fmt.Errorf("token file %s has no refresh_token", tokenPath)
 	}
 
-	clientID, clientSecret, err := loadClientCredentials(filepath.Dir(tokenPath))
+	clientID, clientSecret, err := LoadClientCredentials(filepath.Dir(tokenPath))
 	if err != nil {
 		return nil, err
 	}
@@ -52,7 +52,9 @@ func NewHTTPClient(tokenPath string) (*http.Client, error) {
 	return cfg.Client(context.Background(), &tok), nil
 }
 
-func loadClientCredentials(dir string) (string, string, error) {
+// LoadClientCredentials loads OAuth2 client ID and secret from credentials.json
+// in the given directory, or from GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET env vars.
+func LoadClientCredentials(dir string) (string, string, error) {
 	credPath := filepath.Join(dir, "credentials.json")
 	if data, err := os.ReadFile(credPath); err == nil {
 		var cred struct {
