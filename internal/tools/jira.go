@@ -17,11 +17,13 @@ import (
 // RegisterJIRATools registers jira_search, jira_read, and jira_update.
 func RegisterJIRATools(reg *Registry, cfg *config.Config) {
 	clients := make(map[string]*jiraClient)
+	var initErrs []string
 
 	for name, inst := range cfg.Channels.JIRA.Instances {
 		token := os.Getenv(inst.APITokenEnv)
 		if token == "" || inst.BaseURL == "" || inst.Email == "" {
 			slog.Warn("skip jira instance: missing config", "instance", name)
+			initErrs = append(initErrs, fmt.Sprintf("%s: missing config (base_url, email, or token)", name))
 			continue
 		}
 		clients[name] = &jiraClient{
@@ -60,6 +62,9 @@ func RegisterJIRATools(reg *Registry, cfg *config.Config) {
 		},
 		Execute: func(ctx context.Context, params map[string]any) (*internal.ToolResult, error) {
 			if len(clients) == 0 {
+				if len(initErrs) > 0 {
+					return &internal.ToolResult{Error: fmt.Sprintf("no JIRA instances available (init errors: %s)", strings.Join(initErrs, "; "))}, nil
+				}
 				return &internal.ToolResult{Error: "no JIRA instances configured"}, nil
 			}
 
@@ -88,7 +93,11 @@ func RegisterJIRATools(reg *Registry, cfg *config.Config) {
 			if allIssues == nil {
 				allIssues = []map[string]any{}
 			}
-			return &internal.ToolResult{Data: allIssues}, nil
+			data := map[string]any{"issues": allIssues}
+			if len(errs) > 0 {
+				data["warnings"] = errs
+			}
+			return &internal.ToolResult{Data: data}, nil
 		},
 	})
 
@@ -158,6 +167,9 @@ func RegisterJIRATools(reg *Registry, cfg *config.Config) {
 			}
 
 			if len(clients) == 0 {
+				if len(initErrs) > 0 {
+					return &internal.ToolResult{Error: fmt.Sprintf("no JIRA instances available (init errors: %s)", strings.Join(initErrs, "; "))}, nil
+				}
 				return &internal.ToolResult{Error: "no JIRA instances configured"}, nil
 			}
 
@@ -317,7 +329,6 @@ func (c *jiraClient) updateFields(ctx context.Context, key string, fields map[st
 }
 
 func buildJQL(query, assignee, status string) string {
-	// If query already looks like JQL (contains operators), use as-is
 	isJQL := strings.ContainsAny(query, "=~") || jqlHasKeyword(query)
 
 	var parts []string

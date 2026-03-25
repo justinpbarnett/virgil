@@ -21,6 +21,7 @@ func RegisterEmailTools(reg *Registry, cfg *config.Config) {
 	accounts := make(map[string]config.GoogleAccountConfig)
 	labelCache := make(map[string]string) // "account:labelName" -> labelID
 	var labelCacheMu sync.Mutex
+	var initErrs []string
 
 	for name, acct := range cfg.Channels.Email.Accounts {
 		if acct.CredentialsPath == "" {
@@ -29,11 +30,13 @@ func RegisterEmailTools(reg *Registry, cfg *config.Config) {
 		httpClient, err := vgoogle.NewHTTPClient(acct.CredentialsPath)
 		if err != nil {
 			slog.Warn("skip email account", "account", name, "err", err)
+			initErrs = append(initErrs, fmt.Sprintf("%s: %v", name, err))
 			continue
 		}
 		svc, err := gmail.NewService(context.Background(), option.WithHTTPClient(httpClient))
 		if err != nil {
 			slog.Warn("skip email account", "account", name, "err", err)
+			initErrs = append(initErrs, fmt.Sprintf("%s: %v", name, err))
 			continue
 		}
 		clients[name] = svc
@@ -68,6 +71,9 @@ func RegisterEmailTools(reg *Registry, cfg *config.Config) {
 		},
 		Execute: func(ctx context.Context, params map[string]any) (*internal.ToolResult, error) {
 			if len(clients) == 0 {
+				if len(initErrs) > 0 {
+					return &internal.ToolResult{Error: fmt.Sprintf("no email accounts available (init errors: %s)", strings.Join(initErrs, "; "))}, nil
+				}
 				return &internal.ToolResult{Error: "no email accounts configured"}, nil
 			}
 
@@ -104,7 +110,11 @@ func RegisterEmailTools(reg *Registry, cfg *config.Config) {
 			if results == nil {
 				results = []map[string]any{}
 			}
-			return &internal.ToolResult{Data: results}, nil
+			data := map[string]any{"emails": results}
+			if len(errs) > 0 {
+				data["warnings"] = errs
+			}
+			return &internal.ToolResult{Data: data}, nil
 		},
 	})
 

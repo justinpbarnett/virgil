@@ -2,6 +2,8 @@ package internal
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"time"
 )
@@ -15,6 +17,19 @@ type Signal struct {
 	Content   string            `json:"content"`
 	Metadata  map[string]string `json:"metadata"`
 	Timestamp time.Time         `json:"timestamp"`
+}
+
+// NewSignal creates a Signal with the given channel and content.
+// ID and Timestamp are set automatically.
+func NewSignal(channel, content string) Signal {
+	b := make([]byte, 8)
+	rand.Read(b)
+	return Signal{
+		ID:        hex.EncodeToString(b),
+		Channel:   channel,
+		Content:   content,
+		Timestamp: time.Now(),
+	}
 }
 
 // Tool is a capability the model can invoke.

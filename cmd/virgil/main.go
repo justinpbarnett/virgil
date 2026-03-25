@@ -3,6 +3,8 @@ package main
 import (
 	"bufio"
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -38,7 +40,7 @@ import (
 )
 
 type CLI struct {
-	Serve  ServeCmd  `cmd:"" help:"Start guide server (HTTP + Telegram + cron)"`
+	Serve  ServeCmd  `cmd:"" help:"Start guide server (Telegram + cron)"`
 	MCP    MCPCmd    `cmd:"" help:"Start MCP server on stdio"`
 	Auth   AuthCmd   `cmd:"" help:"Set up OAuth tokens"`
 	Init   InitCmd   `cmd:"" help:"Initialize data directory and config"`
@@ -231,7 +233,10 @@ func (c *ServeCmd) Run(ctx *Context) error {
 				slog.Warn("telegram push failed", "err", err)
 			}
 		}
-		go bot.Start()
+		go func() {
+			bot.Start()
+			slog.Error("telegram bot exited unexpectedly")
+		}()
 		defer bot.Stop()
 	}
 
@@ -240,13 +245,18 @@ func (c *ServeCmd) Run(ctx *Context) error {
 		return fmt.Errorf("create scheduler: %w", err)
 	}
 	sched.Start()
-	defer func() { _ = sched.Stop() }()
+	defer func() {
+		if err := sched.Stop(); err != nil {
+			slog.Warn("scheduler stop error", "err", err)
+		}
+	}()
 
 	slog.Info("virgil serving", "skills", len(loaded))
 
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 	<-quit
+	signal.Stop(quit)
 	slog.Info("shutting down")
 	return nil
 }
@@ -312,7 +322,11 @@ func (c *AuthGoogleCmd) Run(ctx *Context) error {
 		RedirectURL:  redirectURL,
 	}
 
-	state := fmt.Sprintf("virgil-%d", time.Now().UnixNano())
+	b := make([]byte, 16)
+	if _, err := rand.Read(b); err != nil {
+		return fmt.Errorf("generate oauth state: %w", err)
+	}
+	state := "virgil-" + hex.EncodeToString(b)
 	authURL := oauthCfg.AuthCodeURL(state, oauth2.AccessTypeOffline, oauth2.ApprovalForce)
 
 	codeCh := make(chan string, 1)
@@ -323,18 +337,40 @@ func (c *AuthGoogleCmd) Run(ctx *Context) error {
 			http.Error(w, "invalid state", http.StatusBadRequest)
 			return
 		}
+		if errParam := r.URL.Query().Get("error"); errParam != "" {
+			http.Error(w, "authorization denied: "+errParam, http.StatusBadRequest)
+			codeCh <- ""
+			return
+		}
 		code := r.URL.Query().Get("code")
+		if code == "" {
+			http.Error(w, "missing code", http.StatusBadRequest)
+			codeCh <- ""
+			return
+		}
 		fmt.Fprintln(w, "Authorization complete. You can close this tab.")
 		codeCh <- code
 	})
-	go func() { _ = srv.Serve(listener) }()
+	go func() {
+		if err := srv.Serve(listener); err != nil && err != http.ErrServerClosed {
+			slog.Warn("oauth redirect server error", "err", err)
+		}
+	}()
 	defer srv.Close()
 
 	fmt.Printf("Opening browser for Google auth...\n%s\n\n", authURL)
 	openBrowser(authURL)
 
 	fmt.Println("Waiting for authorization...")
-	code := <-codeCh
+	var code string
+	select {
+	case code = <-codeCh:
+	case <-time.After(5 * time.Minute):
+		return fmt.Errorf("authorization timed out after 5 minutes")
+	}
+	if code == "" {
+		return fmt.Errorf("authorization failed or was denied")
+	}
 
 	tok, err := oauthCfg.Exchange(context.Background(), code)
 	if err != nil {
@@ -374,10 +410,16 @@ func (c *AuthSlackCmd) Run(ctx *Context) error {
 		return fmt.Errorf("workspace %q has no token_path set; use token_env instead", c.Workspace)
 	}
 
-	token := promptSecret(fmt.Sprintf("Slack token for %q (xoxb- or xoxc-): ", c.Workspace))
+	token, err := promptSecret(fmt.Sprintf("Slack token for %q (xoxb- or xoxc-): ", c.Workspace))
+	if err != nil {
+		return err
+	}
 	cookie := ""
 	if strings.HasPrefix(token, "xoxc-") {
-		cookie = promptSecret("Session cookie (d= value): ")
+		cookie, err = promptSecret("Session cookie (d= value): ")
+		if err != nil {
+			return err
+		}
 	}
 
 	data, err := json.Marshal(map[string]string{"token": token, "cookie": cookie})
@@ -412,8 +454,14 @@ func (c *AuthTelegramCmd) Run(ctx *Context) error {
 		chatEnv = "TELEGRAM_CHAT_ID"
 	}
 
-	token := promptSecret("Telegram bot token (from @BotFather): ")
-	chatID := promptSecret("Your chat ID (send a message to @userinfobot to find it): ")
+	token, err := promptSecret("Telegram bot token (from @BotFather): ")
+	if err != nil {
+		return err
+	}
+	chatID, err := promptSecret("Your chat ID (send a message to @userinfobot to find it): ")
+	if err != nil {
+		return err
+	}
 
 	envPath := filepath.Join(cfg.Guide.DataDir, ".env")
 	if err := setEnvFile(envPath, tokenEnv, token); err != nil {
@@ -445,7 +493,10 @@ func (c *AuthJIRACmd) Run(ctx *Context) error {
 		return fmt.Errorf("instance %q has no api_token_env set", c.Instance)
 	}
 
-	token := promptSecret(fmt.Sprintf("JIRA API token for %s: ", inst.BaseURL))
+	token, err := promptSecret(fmt.Sprintf("JIRA API token for %s: ", inst.BaseURL))
+	if err != nil {
+		return err
+	}
 
 	envPath := filepath.Join(cfg.Guide.DataDir, ".env")
 	if err := setEnvFile(envPath, inst.APITokenEnv, token); err != nil {
@@ -497,6 +548,9 @@ func (c *SeedCmd) Run(ctx *Context) error {
 		stored++
 	}
 
+	if stored == 0 && len(paragraphs) > 0 {
+		return fmt.Errorf("failed to store any facts from %s", c.File)
+	}
 	fmt.Printf("Seeded %d facts from %s\n", stored, c.File)
 	return nil
 }
@@ -519,19 +573,24 @@ func openBrowser(url string) {
 	}
 }
 
-func promptSecret(prompt string) string {
+func promptSecret(prompt string) (string, error) {
 	fmt.Print(prompt)
 	scanner := bufio.NewScanner(os.Stdin)
 	if scanner.Scan() {
-		return strings.TrimSpace(scanner.Text())
+		return strings.TrimSpace(scanner.Text()), nil
 	}
-	return ""
+	if err := scanner.Err(); err != nil {
+		return "", fmt.Errorf("read input: %w", err)
+	}
+	return "", fmt.Errorf("unexpected end of input")
 }
 
 func setEnvFile(path, key, value string) error {
 	var lines []string
 	if data, err := os.ReadFile(path); err == nil {
 		lines = strings.Split(string(data), "\n")
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("read env file: %w", err)
 	}
 
 	found := false
@@ -1077,12 +1136,7 @@ func (c *SignalCmd) Run(ctx *Context) error {
 	}
 	defer cleanup()
 
-	sig := internal.Signal{
-		ID:        observe.GenerateSpanID(),
-		Channel:   c.Channel,
-		Content:   c.Message,
-		Timestamp: time.Now(),
-	}
+	sig := internal.NewSignal(c.Channel, c.Message)
 
 	text, err := ag.Run(context.Background(), sig)
 	if err != nil {

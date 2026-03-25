@@ -136,6 +136,10 @@ func Load(path string) (*Config, error) {
 	}
 
 	cfg.loadEnv()
+
+	if err := cfg.Validate(); err != nil {
+		return nil, fmt.Errorf("invalid config: %w", err)
+	}
 	return cfg, nil
 }
 

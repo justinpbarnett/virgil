@@ -18,6 +18,7 @@ import (
 // RegisterDriveTools registers drive_list and drive_read.
 func RegisterDriveTools(reg *Registry, cfg *config.Config) {
 	var clients []*driveClient
+	var initErrs []string
 
 	for _, acctName := range cfg.Channels.Drive.Accounts {
 		emailCfg, ok := cfg.Channels.Email.Accounts[acctName]
@@ -27,11 +28,13 @@ func RegisterDriveTools(reg *Registry, cfg *config.Config) {
 		httpClient, err := vgoogle.NewHTTPClient(emailCfg.CredentialsPath)
 		if err != nil {
 			slog.Warn("skip drive account", "account", acctName, "err", err)
+			initErrs = append(initErrs, fmt.Sprintf("%s: %v", acctName, err))
 			continue
 		}
 		svc, err := drive.NewService(context.Background(), option.WithHTTPClient(httpClient))
 		if err != nil {
 			slog.Warn("skip drive account", "account", acctName, "err", err)
+			initErrs = append(initErrs, fmt.Sprintf("%s: %v", acctName, err))
 			continue
 		}
 		clients = append(clients, &driveClient{name: acctName, svc: svc})
@@ -61,6 +64,9 @@ func RegisterDriveTools(reg *Registry, cfg *config.Config) {
 		},
 		Execute: func(ctx context.Context, params map[string]any) (*internal.ToolResult, error) {
 			if len(clients) == 0 {
+				if len(initErrs) > 0 {
+					return &internal.ToolResult{Error: fmt.Sprintf("no drive accounts available (init errors: %s)", strings.Join(initErrs, "; "))}, nil
+				}
 				return &internal.ToolResult{Error: "no drive accounts configured"}, nil
 			}
 
@@ -109,7 +115,11 @@ func RegisterDriveTools(reg *Registry, cfg *config.Config) {
 			if results == nil {
 				results = []map[string]any{}
 			}
-			return &internal.ToolResult{Data: results}, nil
+			data := map[string]any{"files": results}
+			if len(errs) > 0 {
+				data["warnings"] = errs
+			}
+			return &internal.ToolResult{Data: data}, nil
 		},
 	})
 
@@ -125,6 +135,9 @@ func RegisterDriveTools(reg *Registry, cfg *config.Config) {
 		},
 		Execute: func(ctx context.Context, params map[string]any) (*internal.ToolResult, error) {
 			if len(clients) == 0 {
+				if len(initErrs) > 0 {
+					return &internal.ToolResult{Error: fmt.Sprintf("no drive accounts available (init errors: %s)", strings.Join(initErrs, "; "))}, nil
+				}
 				return &internal.ToolResult{Error: "no drive accounts configured"}, nil
 			}
 

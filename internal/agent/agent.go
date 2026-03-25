@@ -160,7 +160,7 @@ func (a *Agent) RunSkill(ctx context.Context, skill *internal.Skill, trigger str
 		fallbacks = append(fallbacks, bridge.NewModelConfig(a.config, ref))
 	}
 
-	// Filter out run_skill to prevent recursive skill invocations.
+	// Use skill's declared tool list instead of all tools (run_skill not listed, preventing recursion).
 	toolDefs := a.tools.DefinitionsFor(skill.Tools)
 	response, err := a.bridge.Complete(ctx, primary, messages, toolDefs, fallbacks)
 	if err != nil {

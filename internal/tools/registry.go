@@ -28,6 +28,9 @@ func (r *Registry) Register(t *internal.Tool) {
 	if t.Name == "" {
 		panic("tool registered with empty name")
 	}
+	if t.Execute == nil {
+		panic(fmt.Sprintf("tool %q registered with nil Execute", t.Name))
+	}
 	if _, exists := r.tools[t.Name]; exists {
 		panic(fmt.Sprintf("tool %q already registered", t.Name))
 	}

@@ -103,12 +103,12 @@ func (e *EventLog) Query(traceID string, component string, limit int) ([]interna
 	return events, rows.Err()
 }
 
-// GenerateTraceID returns a random 16-byte hex string.
+// GenerateTraceID returns a random 32-character hex string.
 func GenerateTraceID() string {
 	return randomHex(16)
 }
 
-// GenerateSpanID returns a random 8-byte hex string.
+// GenerateSpanID returns a random 16-character hex string.
 func GenerateSpanID() string {
 	return randomHex(8)
 }

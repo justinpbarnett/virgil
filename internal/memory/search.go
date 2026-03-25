@@ -41,7 +41,6 @@ func (s *Store) Search(p SearchParams) ([]SearchResult, error) {
 		return nil, err
 	}
 
-	// Vector rescore is a no-op until the AI bridge is wired up.
 	merged := rrfMerge(ftsResults, entityResults)
 
 	if len(merged) > p.Limit {
@@ -211,7 +210,6 @@ func rrfMerge(lists ...[]scoredID) []scoredID {
 }
 
 // cosineSimilarity computes the cosine similarity between two vectors.
-// Used by vector rescore once the AI bridge provides embeddings.
 func cosineSimilarity(a, b []float32) float64 {
 	if len(a) != len(b) || len(a) == 0 {
 		return 0

@@ -19,6 +19,7 @@ import (
 // RegisterSlackTools registers slack_read, slack_post, and slack_search.
 func RegisterSlackTools(reg *Registry, cfg *config.Config) {
 	clients := make(map[string]*slackClient)
+	var initErrs []string
 
 	for name, ws := range cfg.Channels.Slack.Workspaces {
 		sc := &slackClient{workspace: name}
@@ -27,6 +28,7 @@ func RegisterSlackTools(reg *Registry, cfg *config.Config) {
 			tok, cookie, err := loadSlackTokenFile(ws.TokenPath)
 			if err != nil {
 				slog.Warn("skip slack workspace: token file error", "workspace", name, "err", err)
+				initErrs = append(initErrs, fmt.Sprintf("%s: %v", name, err))
 				continue
 			}
 			sc.token = tok
@@ -37,6 +39,7 @@ func RegisterSlackTools(reg *Registry, cfg *config.Config) {
 
 		if sc.token == "" {
 			slog.Warn("skip slack workspace: no token", "workspace", name)
+			initErrs = append(initErrs, fmt.Sprintf("%s: no token configured", name))
 			continue
 		}
 		clients[name] = sc
@@ -74,6 +77,9 @@ func RegisterSlackTools(reg *Registry, cfg *config.Config) {
 
 			c, ok := clients[workspace]
 			if !ok {
+				if len(initErrs) > 0 {
+					return &internal.ToolResult{Error: fmt.Sprintf("workspace %q not available (init errors: %s)", workspace, strings.Join(initErrs, "; "))}, nil
+				}
 				return &internal.ToolResult{Error: fmt.Sprintf("workspace %q not configured", workspace)}, nil
 			}
 
@@ -219,7 +225,11 @@ func RegisterSlackTools(reg *Registry, cfg *config.Config) {
 			if allMatches == nil {
 				allMatches = []any{}
 			}
-			return &internal.ToolResult{Data: allMatches}, nil
+			data := map[string]any{"matches": allMatches}
+			if len(errs) > 0 {
+				data["warnings"] = errs
+			}
+			return &internal.ToolResult{Data: data}, nil
 		},
 	})
 }
@@ -300,7 +310,6 @@ func loadSlackTokenFile(path string) (token, cookie string, err error) {
 }
 
 func (c *slackClient) resolveChannel(ctx context.Context, channel string) (string, error) {
-	// If it looks like an ID already, use it directly
 	if len(channel) > 0 && (channel[0] == 'C' || channel[0] == 'D' || channel[0] == 'G') && len(channel) >= 9 {
 		return channel, nil
 	}
@@ -308,20 +317,26 @@ func (c *slackClient) resolveChannel(ctx context.Context, channel string) (strin
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	// Check cache
 	if c.channels != nil {
 		if id, ok := c.channels[channel]; ok {
 			return id, nil
 		}
 	}
 
-	// Fetch channel list (held under lock to prevent concurrent fetches)
+	// Fetch under lock to prevent concurrent fetches. Fetches at most 200 channels;
+	// workspaces with more channels may fail to resolve by name.
 	resp, err := c.apiGet(ctx, "conversations.list", url.Values{
 		"types": {"public_channel,private_channel"},
 		"limit": {"200"},
 	})
 	if err != nil {
 		return "", err
+	}
+
+	if meta, ok := resp["response_metadata"].(map[string]any); ok {
+		if cursor, _ := meta["next_cursor"].(string); cursor != "" {
+			slog.Warn("slack: channel list truncated at 200, some channels may not resolve by name", "workspace", c.workspace)
+		}
 	}
 
 	c.channels = make(map[string]string)

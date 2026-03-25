@@ -17,6 +17,7 @@ import (
 // RegisterCalendarTools registers calendar_check, calendar_create, and calendar_delete.
 func RegisterCalendarTools(reg *Registry, cfg *config.Config) {
 	clients := make(map[string]*calendar.Service)
+	var initErrs []string
 
 	for name, acct := range cfg.Channels.Calendar.Accounts {
 		if acct.CredentialsPath == "" {
@@ -25,11 +26,13 @@ func RegisterCalendarTools(reg *Registry, cfg *config.Config) {
 		httpClient, err := vgoogle.NewHTTPClient(acct.CredentialsPath)
 		if err != nil {
 			slog.Warn("skip calendar account", "account", name, "err", err)
+			initErrs = append(initErrs, fmt.Sprintf("%s: %v", name, err))
 			continue
 		}
 		svc, err := calendar.NewService(context.Background(), option.WithHTTPClient(httpClient))
 		if err != nil {
 			slog.Warn("skip calendar account", "account", name, "err", err)
+			initErrs = append(initErrs, fmt.Sprintf("%s: %v", name, err))
 			continue
 		}
 		clients[name] = svc
@@ -61,6 +64,9 @@ func RegisterCalendarTools(reg *Registry, cfg *config.Config) {
 		},
 		Execute: func(ctx context.Context, params map[string]any) (*internal.ToolResult, error) {
 			if len(clients) == 0 {
+				if len(initErrs) > 0 {
+					return &internal.ToolResult{Error: fmt.Sprintf("no calendar accounts available (init errors: %s)", strings.Join(initErrs, "; "))}, nil
+				}
 				return &internal.ToolResult{Error: "no calendar accounts configured"}, nil
 			}
 
@@ -109,7 +115,11 @@ func RegisterCalendarTools(reg *Registry, cfg *config.Config) {
 			if results == nil {
 				results = []map[string]any{}
 			}
-			return &internal.ToolResult{Data: results}, nil
+			data := map[string]any{"events": results}
+			if len(errs) > 0 {
+				data["warnings"] = errs
+			}
+			return &internal.ToolResult{Data: data}, nil
 		},
 	})
 

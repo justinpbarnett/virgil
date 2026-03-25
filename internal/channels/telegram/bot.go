@@ -12,7 +12,6 @@ import (
 	"github.com/justinpbarnett/virgil/internal"
 	"github.com/justinpbarnett/virgil/internal/agent"
 	"github.com/justinpbarnett/virgil/internal/config"
-	"github.com/justinpbarnett/virgil/internal/observe"
 )
 
 // Bot handles Telegram polling and message routing.
@@ -22,8 +21,11 @@ type Bot struct {
 	chatID int64
 }
 
-// NewBot creates a Telegram bot from config. Returns an error if the token is missing.
+// NewBot creates a Telegram bot from config. Returns an error if the token is missing or agent is nil.
 func NewBot(cfg *config.Config, ag *agent.Agent) (*Bot, error) {
+	if ag == nil {
+		return nil, fmt.Errorf("agent is required")
+	}
 	token := os.Getenv(cfg.Channels.Telegram.BotTokenEnv)
 	if token == "" {
 		return nil, fmt.Errorf("telegram bot token not set (env: %s)", cfg.Channels.Telegram.BotTokenEnv)
@@ -59,20 +61,19 @@ func (b *Bot) registerHandlers() {
 	})
 
 	b.bot.Handle(telebot.OnText, func(c telebot.Context) error {
-		ctx := context.Background()
-		sig := internal.Signal{
-			ID:        observe.GenerateSpanID(),
-			Channel:   "telegram",
-			Content:   c.Text(),
-			Timestamp: time.Now(),
+		if b.chatID != 0 && c.Chat().ID != b.chatID {
+			slog.Warn("telegram: ignoring message from unauthorized chat", "chat_id", c.Chat().ID)
+			return nil
 		}
+		ctx := context.Background()
+		sig := internal.NewSignal("telegram", c.Text())
 		resp, err := b.agent.Run(ctx, sig)
 		if err != nil {
 			slog.Error("telegram agent error", "err", err)
 			return c.Send("Something went wrong. Check the logs.")
 		}
 		if resp == "" {
-			return nil
+			return c.Send("Done.")
 		}
 		return c.Send(resp)
 	})

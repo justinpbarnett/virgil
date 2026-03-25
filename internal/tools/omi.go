@@ -74,6 +74,7 @@ func RegisterOmiTools(reg *Registry, cfg *config.Config, store *memory.Store) {
 			}
 
 			stored := 0
+			failed := 0
 			for _, m := range conversations {
 				mem, ok := m.(map[string]any)
 				if !ok {
@@ -106,15 +107,20 @@ func RegisterOmiTools(reg *Registry, cfg *config.Config, store *memory.Store) {
 				})
 				if err != nil {
 					slog.Warn("omi_ingest store error", "err", err)
+					failed++
 					continue
 				}
 				stored++
 			}
 
-			return &internal.ToolResult{Data: map[string]any{
+			result := map[string]any{
 				"fetched": len(conversations),
 				"stored":  stored,
-			}}, nil
+			}
+			if failed > 0 {
+				result["failed"] = failed
+			}
+			return &internal.ToolResult{Data: result}, nil
 		},
 	})
 }
