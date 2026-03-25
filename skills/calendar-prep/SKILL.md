@@ -23,7 +23,7 @@ Prepare Justin for today's upcoming meetings by assembling context for each one.
 
 For each meeting, produce output following this structure (from templates/meeting-brief.md):
 
-{{brief.md}}
+{{meeting-brief.md}}
 
 ### Output
 

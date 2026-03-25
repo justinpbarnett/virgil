@@ -106,7 +106,8 @@ func RegisterOmiTools(reg *Registry, cfg *config.Config, store *memory.Store) {
 					Entities: entities,
 				})
 				if err != nil {
-					slog.Warn("omi_ingest store error", "err", err)
+					convID, _ := mem["id"].(string)
+					slog.Warn("omi_ingest store error", "conversation_id", convID, "err", err)
 					failed++
 					continue
 				}

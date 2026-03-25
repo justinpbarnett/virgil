@@ -210,6 +210,7 @@ func rrfMerge(lists ...[]scoredID) []scoredID {
 }
 
 // cosineSimilarity computes the cosine similarity between two vectors.
+// Called by vectorRescore once the bridge provides embeddings.
 func cosineSimilarity(a, b []float32) float64 {
 	if len(a) != len(b) || len(a) == 0 {
 		return 0
@@ -228,6 +229,7 @@ func cosineSimilarity(a, b []float32) float64 {
 }
 
 // decodeEmbedding converts a BLOB of little-endian float32s to a slice.
+// Called by vectorRescore once the bridge provides embeddings.
 func decodeEmbedding(b []byte) []float32 {
 	if len(b) == 0 || len(b)%4 != 0 {
 		return nil

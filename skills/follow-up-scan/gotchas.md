@@ -12,9 +12,9 @@ If an action item from a meeting maps to an existing open JIRA ticket, don't cre
 
 A 2-hour-old email doesn't need a follow-up task. Threshold is 24 hours for standard imbox, 4 hours for anything marked urgent or from a VIP sender (client, employer, family).
 
-## "All clear" suppresses Telegram push
+## Suppress Telegram push when nothing was found
 
-If nothing was found, return "All clear." and the scheduler will not push to Telegram (the scheduler only pushes non-empty, non-trivial results). This prevents noise.
+The scheduler pushes any non-empty string to Telegram. To suppress the notification when there are no follow-ups to report, return an empty string (or return nothing). Do not return "All clear." -- that string is non-empty and will be pushed.
 
 ## Avoid cascading tasks
 

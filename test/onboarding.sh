@@ -51,9 +51,32 @@ echo "=== onboarding tests ==="
 # ---------- virgil seed ----------
 echo "--- virgil seed ---"
 
-# Create a test seed file with known facts
-SEED_FILE="$TEST_DIR/seed-test.md"
-cat > "$SEED_FILE" <<'SEEDEOF'
+# Test 1: seed on empty file succeeds (zero paragraphs -- no error)
+EMPTY_FILE="$TEST_DIR/empty.md"
+touch "$EMPTY_FILE"
+$VIRGIL seed "$EMPTY_FILE" --config "$CONFIG" 2>/dev/null || fail "seed on empty file should return OK (zero paragraphs)"
+pass "seed on empty file returns OK"
+
+# Test 2: seed on headings-only file fails (paragraphs exist but all filtered as headings)
+HEADINGS_FILE="$TEST_DIR/headings-only.md"
+cat > "$HEADINGS_FILE" <<'EOF'
+# Section One
+
+## Section Two
+
+### Section Three
+EOF
+if $VIRGIL seed "$HEADINGS_FILE" --config "$CONFIG" 2>/dev/null; then
+  fail "seed on headings-only file should return an error"
+fi
+pass "seed on headings-only file returns error"
+
+if [ -z "${ANTHROPIC_API_KEY:-}" ]; then
+  echo "  SKIP: ANTHROPIC_API_KEY not set -- skipping seed content tests"
+else
+  # Create a test seed file with known facts
+  SEED_FILE="$TEST_DIR/seed-test.md"
+  cat > "$SEED_FILE" <<'SEEDEOF'
 # Test context
 
 Justin Barnett is an AI engineer and entrepreneur. He runs three main ventures:
@@ -76,29 +99,21 @@ His primary programming languages are Go and TypeScript.
 3. Passion City Rock RMS migration (ongoing)
 SEEDEOF
 
-if [ -z "${ANTHROPIC_API_KEY:-}" ]; then
-  echo "  SKIP: ANTHROPIC_API_KEY not set -- skipping seed tests"
-else
-  # Test 1: seed runs without error
+  # Test 3: seed runs without error
   SEED_OUT=$($VIRGIL seed "$SEED_FILE" --config "$CONFIG" 2>/dev/null)
   echo "$SEED_OUT" | grep -qi "seeded\|fact" || fail "seed output looks wrong: $SEED_OUT"
   pass "virgil seed runs without error"
 
-  # Test 2: facts are stored in memory
+  # Test 4: facts are stored in memory
   MEM_OUT=$($VIRGIL memory search "Justin Barnett" --config "$CONFIG" 2>/dev/null)
   echo "$MEM_OUT" | grep -qi "Justin\|Barnett\|engineer\|entrepreneur" || \
     fail "seed facts not found in memory search"
   pass "seeded facts appear in memory search"
 
-  # Test 3: entity facts retrievable
+  # Test 5: entity facts retrievable
   FACTS_OUT=$($VIRGIL memory facts --about "Justin" --config "$CONFIG" 2>/dev/null)
   [ -n "$FACTS_OUT" ] || fail "no facts found for 'Justin' after seed"
   pass "facts retrievable by entity name"
-
-  # Test 4: seed errors on empty content (edge case)
-  EMPTY_FILE="$TEST_DIR/empty.md"
-  touch "$EMPTY_FILE"
-  $VIRGIL seed "$EMPTY_FILE" --config "$CONFIG" 2>/dev/null && pass "seed on empty file returns OK" || pass "seed on empty file handled gracefully"
 fi
 
 # ---------- bootstrap skill ----------
@@ -110,12 +125,12 @@ else
   if [ -z "${ANTHROPIC_API_KEY:-}" ]; then
     echo "  SKIP: ANTHROPIC_API_KEY not set"
   else
-    # Test 5: bootstrap skill runs and creates facts
+    # Test 6: bootstrap skill runs and creates facts
     BOOT_OUT=$($VIRGIL run bootstrap --config "$CONFIG" 2>/dev/null)
     [ -n "$BOOT_OUT" ] || fail "bootstrap produced no output"
     pass "bootstrap skill runs"
 
-    # Test 6: bootstrap creates person or project facts
+    # Test 7: bootstrap creates person or project facts
     FACTS_OUT=$($VIRGIL memory search "project" --type fact --config "$CONFIG" 2>/dev/null)
     [ -n "$FACTS_OUT" ] && ! echo "$FACTS_OUT" | grep -q '"results":\s*\[\]' || fail "bootstrap created no project facts"
     pass "bootstrap creates facts in memory"

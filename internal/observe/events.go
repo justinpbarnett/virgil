@@ -1,9 +1,7 @@
 package observe
 
 import (
-	"crypto/rand"
 	"database/sql"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -14,7 +12,7 @@ import (
 )
 
 // TimestampFormat is the ISO 8601 format used in SQLite and Go parsing.
-// The SQL schema uses strftime('%Y-%m-%dT%H:%M:%fZ') which produces SS.SSS.
+// The SQL schema uses strftime('%Y-%m-%dT%H:%M:%fZ'), which produces millisecond-precision RFC 3339 strings.
 const TimestampFormat = time.RFC3339Nano
 
 // EventLog writes structured events to the events table.
@@ -105,18 +103,12 @@ func (e *EventLog) Query(traceID string, component string, limit int) ([]interna
 
 // GenerateTraceID returns a random 32-character hex string.
 func GenerateTraceID() string {
-	return randomHex(16)
+	return internal.RandomHex(16)
 }
 
 // GenerateSpanID returns a random 16-character hex string.
 func GenerateSpanID() string {
-	return randomHex(8)
-}
-
-func randomHex(n int) string {
-	b := make([]byte, n)
-	rand.Read(b)
-	return hex.EncodeToString(b)
+	return internal.RandomHex(8)
 }
 
 // EventsToJSON marshals events to a JSON array.

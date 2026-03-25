@@ -146,6 +146,9 @@ func RegisterSlackTools(reg *Registry, cfg *config.Config) {
 
 			c, ok := clients[workspace]
 			if !ok {
+				if len(initErrs) > 0 {
+					return &internal.ToolResult{Error: fmt.Sprintf("workspace %q not available (init errors: %s)", workspace, strings.Join(initErrs, "; "))}, nil
+				}
 				return &internal.ToolResult{Error: fmt.Sprintf("workspace %q not configured", workspace)}, nil
 			}
 
@@ -225,11 +228,7 @@ func RegisterSlackTools(reg *Registry, cfg *config.Config) {
 			if allMatches == nil {
 				allMatches = []any{}
 			}
-			data := map[string]any{"matches": allMatches}
-			if len(errs) > 0 {
-				data["warnings"] = errs
-			}
-			return &internal.ToolResult{Data: data}, nil
+			return partialResult("matches", allMatches, errs), nil
 		},
 	})
 }

@@ -171,8 +171,14 @@ func (c *StatusCmd) Run(ctx *Context) error {
 		errs = append(errs, fmt.Sprintf("count events: %v", err))
 	}
 
-	if loaded, err := skills.LoadAll(cfg.Skills.Dir); err == nil {
-		out.Skills = len(loaded)
+	if entries, err := os.ReadDir(cfg.Skills.Dir); err == nil {
+		for _, e := range entries {
+			if e.IsDir() {
+				out.Skills++
+			}
+		}
+	} else if !os.IsNotExist(err) {
+		errs = append(errs, fmt.Sprintf("read skills dir: %v", err))
 	}
 
 	if len(errs) > 0 {
@@ -229,6 +235,8 @@ func (c *ServeCmd) Run(ctx *Context) error {
 	defer cleanup()
 
 	var push func(string)
+	botDone := make(chan struct{})
+	close(botDone) // closed immediately if no bot; select falls through
 
 	bot, err := tgbot.NewBot(cfg, ag)
 	if err != nil {
@@ -239,7 +247,9 @@ func (c *ServeCmd) Run(ctx *Context) error {
 				slog.Warn("telegram push failed", "err", err)
 			}
 		}
+		botDone = make(chan struct{})
 		go func() {
+			defer close(botDone)
 			bot.Start()
 			slog.Error("telegram bot exited unexpectedly")
 		}()
@@ -261,8 +271,12 @@ func (c *ServeCmd) Run(ctx *Context) error {
 
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
-	<-quit
-	signal.Stop(quit)
+	select {
+	case <-quit:
+		signal.Stop(quit)
+	case <-botDone:
+		slog.Error("shutting down: telegram bot exited")
+	}
 	slog.Info("shutting down")
 	return nil
 }
@@ -1239,7 +1253,8 @@ func openToolRegistry(ctx *Context) (*tools.Registry, func(), error) {
 		return nil, nil, err
 	}
 	memStore := memory.NewStore(database)
-	reg := tools.NewRegistry()
+	events := observe.NewEventLog(database)
+	reg := tools.NewRegistry(events)
 	registerAllTools(reg, cfg, database, memStore)
 	return reg, func() { database.Close() }, nil
 }
@@ -1289,7 +1304,7 @@ func openAgent(cfg *config.Config) (*agent.Agent, []*internal.Skill, func(), err
 		slog.Error("skills failed to load, agent will run without skills", "dir", cfg.Skills.Dir, "err", err)
 	}
 
-	reg := tools.NewRegistry()
+	reg := tools.NewRegistry(events)
 	registerAllTools(reg, cfg, database, memStore)
 
 	ag, err := agent.NewAgent(cfg, memStore, fb, reg, loaded, events)
