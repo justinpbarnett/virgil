@@ -50,4 +50,6 @@ You are triaging Justin's email. Work through unread emails across all accounts 
 
 ### Output
 
-Return a brief summary: accounts processed, totals per category, any imbox tasks created, and any unusual patterns noticed.
+If tasks were created, return a short list: one line per task, format "- [Account] Subject -- action needed". Nothing else.
+
+If no tasks were created, return nothing (empty string).
