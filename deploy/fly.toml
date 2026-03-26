@@ -2,7 +2,7 @@ app = "virgil-justin"
 primary_region = "iad"
 
 [build]
-  dockerfile = "deploy/Dockerfile"
+  dockerfile = "Dockerfile"
 
 [env]
   VIRGIL_CONFIG = "/data/virgil.yaml"
