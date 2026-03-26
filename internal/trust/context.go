@@ -12,7 +12,6 @@ type AutoApproval struct {
 }
 
 // WithAutoApprovals attaches an auto-approval tracker to the context.
-// Use at the start of a skill run to enable rollback on error.
 func WithAutoApprovals(ctx context.Context) context.Context {
 	approvals := make([]AutoApproval, 0)
 	return context.WithValue(ctx, approvalKey{}, &approvals)

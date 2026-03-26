@@ -220,8 +220,6 @@ func (a *Agent) RunSkill(ctx context.Context, skill *internal.Skill, trigger str
 	return response.Text, nil
 }
 
-// recoverError pushes a Telegram notification and rolls back any auto-approved
-// outbound tool actions that were executed during the failed skill run.
 func (a *Agent) recoverError(ctx context.Context, skillName string, err error) {
 	if a.push != nil {
 		a.push(fmt.Sprintf("[virgil] Skill %q failed: %v", skillName, err))
