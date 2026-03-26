@@ -10,12 +10,13 @@ import (
 	"github.com/justinpbarnett/virgil/internal"
 	"github.com/justinpbarnett/virgil/internal/config"
 	vgoogle "github.com/justinpbarnett/virgil/internal/google"
+	"github.com/justinpbarnett/virgil/internal/trust"
 	"google.golang.org/api/calendar/v3"
 	"google.golang.org/api/option"
 )
 
 // RegisterCalendarTools registers calendar_check, calendar_create, and calendar_delete.
-func RegisterCalendarTools(reg *Registry, cfg *config.Config) {
+func RegisterCalendarTools(reg *Registry, cfg *config.Config, ts *trust.Store) {
 	clients := make(map[string]*calendar.Service)
 	var initErrs []string
 
@@ -148,6 +149,10 @@ func RegisterCalendarTools(reg *Registry, cfg *config.Config) {
 
 			if account == "" || title == "" || startStr == "" || endStr == "" {
 				return &internal.ToolResult{Error: "account, title, start, and end are required"}, nil
+			}
+
+			if blocked := checkTrust(ctx, ts, "calendar_create", account, "*"); blocked != nil {
+				return blocked, nil
 			}
 
 			svc, ok := clients[account]

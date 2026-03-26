@@ -1,6 +1,7 @@
 package tools
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -10,6 +11,7 @@ import (
 	"time"
 
 	"github.com/justinpbarnett/virgil/internal"
+	"github.com/justinpbarnett/virgil/internal/trust"
 )
 
 const maxResponseBytes = 10 << 20 // 10 MB
@@ -77,6 +79,27 @@ func filterClients[T any](clients map[string]T, account string) map[string]T {
 	if c, ok := clients[account]; ok {
 		return map[string]T{account: c}
 	}
+	return nil
+}
+
+// checkTrust returns a blocked ToolResult if the action is not trusted, nil if OK to proceed.
+// If ts is nil, trust checking is disabled and nil is always returned.
+// On success (action is trusted), records the auto-approval in ctx for potential rollback.
+func checkTrust(ctx context.Context, ts *trust.Store, actionType, channel, contact string) *internal.ToolResult {
+	if ts == nil {
+		return nil
+	}
+	ok, err := ts.AutoApproves(actionType, channel, contact)
+	if err != nil {
+		return &internal.ToolResult{Error: fmt.Sprintf("trust check failed: %v", err)}
+	}
+	if !ok {
+		return &internal.ToolResult{
+			Error: fmt.Sprintf("%s not approved on %q (score below %d); run: virgil trust approve --action %s",
+				actionType, channel, ts.Threshold(), actionType),
+		}
+	}
+	trust.RecordAutoApproval(ctx, actionType, channel, contact)
 	return nil
 }
 

@@ -37,6 +37,7 @@ import (
 	"github.com/justinpbarnett/virgil/internal/observe"
 	"github.com/justinpbarnett/virgil/internal/skills"
 	"github.com/justinpbarnett/virgil/internal/tools"
+	"github.com/justinpbarnett/virgil/internal/trust"
 )
 
 type CLI struct {
@@ -63,6 +64,7 @@ type CLI struct {
 	Run    RunCmd    `cmd:"" help:"Run a skill by name"`
 	Status StatusCmd `cmd:"" help:"Guide health check"`
 	Events EventsCmd `cmd:"" help:"Event log queries"`
+	Trust  TrustCmd  `cmd:"" help:"Manage trust scores for outbound actions"`
 
 	Config string `help:"Config file path" default:"~/.virgil/virgil.yaml" type:"path"`
 }
@@ -218,6 +220,103 @@ func (c *EventsCmd) Run(ctx *Context) error {
 	return outputJSON(events)
 }
 
+// ---------- trust ----------
+
+type TrustCmd struct {
+	Show    TrustShowCmd    `cmd:"" help:"Show trust scores"`
+	Approve TrustApproveCmd `cmd:"" help:"Record an approval (increments score)"`
+	Reject  TrustRejectCmd  `cmd:"" help:"Record a rejection (decrements score)"`
+	Check   TrustCheckCmd   `cmd:"" help:"Exit 0 if action is auto-approved, 1 otherwise"`
+}
+
+type TrustShowCmd struct{}
+
+type TrustApproveCmd struct {
+	Action  string `help:"Action type (e.g. email_send)" required:""`
+	Channel string `help:"Channel or account" default:"*"`
+	Contact string `help:"Contact" default:"*"`
+}
+
+type TrustRejectCmd struct {
+	Action  string `help:"Action type" required:""`
+	Channel string `help:"Channel or account" default:"*"`
+	Contact string `help:"Contact" default:"*"`
+}
+
+type TrustCheckCmd struct {
+	Action  string `help:"Action type" required:""`
+	Channel string `help:"Channel or account" default:"*"`
+	Contact string `help:"Contact" default:"*"`
+}
+
+func openTrustStore(ctx *Context) (*trust.Store, func(), error) {
+	cfg, err := loadConfig(ctx)
+	if err != nil {
+		return nil, nil, err
+	}
+	database, err := db.Open(cfg.DBPath())
+	if err != nil {
+		return nil, nil, err
+	}
+	return trust.NewStore(database, cfg.Trust.AutoApproveThreshold), func() { database.Close() }, nil
+}
+
+func (c *TrustShowCmd) Run(ctx *Context) error {
+	ts, cleanup, err := openTrustStore(ctx)
+	if err != nil {
+		return err
+	}
+	defer cleanup()
+	scores, err := ts.List()
+	if err != nil {
+		return fmt.Errorf("list trust scores: %w", err)
+	}
+	return outputJSON(scores)
+}
+
+func (c *TrustApproveCmd) Run(ctx *Context) error {
+	ts, cleanup, err := openTrustStore(ctx)
+	if err != nil {
+		return err
+	}
+	defer cleanup()
+	if err := ts.Record(c.Action, c.Channel, c.Contact, true); err != nil {
+		return fmt.Errorf("record approval: %w", err)
+	}
+	fmt.Printf("Recorded approval for %s (channel: %s)\n", c.Action, c.Channel)
+	return nil
+}
+
+func (c *TrustRejectCmd) Run(ctx *Context) error {
+	ts, cleanup, err := openTrustStore(ctx)
+	if err != nil {
+		return err
+	}
+	defer cleanup()
+	if err := ts.Record(c.Action, c.Channel, c.Contact, false); err != nil {
+		return fmt.Errorf("record rejection: %w", err)
+	}
+	fmt.Printf("Recorded rejection for %s (channel: %s)\n", c.Action, c.Channel)
+	return nil
+}
+
+func (c *TrustCheckCmd) Run(ctx *Context) error {
+	ts, cleanup, err := openTrustStore(ctx)
+	if err != nil {
+		return err
+	}
+	defer cleanup()
+	ok, err := ts.AutoApproves(c.Action, c.Channel, c.Contact)
+	if err != nil {
+		return fmt.Errorf("trust check: %w", err)
+	}
+	if !ok {
+		return fmt.Errorf("%s not approved on %q (score below threshold)", c.Action, c.Channel)
+	}
+	fmt.Printf("approved: %s (channel: %s)\n", c.Action, c.Channel)
+	return nil
+}
+
 // ---------- serve ----------
 
 type ServeCmd struct{}
@@ -247,6 +346,7 @@ func (c *ServeCmd) Run(ctx *Context) error {
 				slog.Warn("telegram push failed", "err", err)
 			}
 		}
+		ag.SetPush(push)
 		botDone = make(chan struct{})
 		go func() {
 			defer close(botDone)
@@ -669,7 +769,7 @@ type MemorySearchCmd struct {
 }
 
 type MemoryFactsCmd struct {
-	About string `arg:"" help:"Person, topic, or project name"`
+	About string `help:"Person, topic, or project name"`
 	Scope string `help:"Filter by scope"`
 }
 
@@ -1232,14 +1332,14 @@ func openBridge(cfg *config.Config) (*bridge.FallbackBridge, func(), error) {
 	return fb, func() { database.Close() }, nil
 }
 
-func registerAllTools(reg *tools.Registry, cfg *config.Config, database *sql.DB, memStore *memory.Store) {
+func registerAllTools(reg *tools.Registry, cfg *config.Config, database *sql.DB, memStore *memory.Store, ts *trust.Store) {
 	tools.RegisterMemoryTools(reg, memStore)
 	tools.RegisterTaskTools(reg, database)
 	tools.RegisterPeopleTools(reg, memStore)
-	tools.RegisterEmailTools(reg, cfg)
-	tools.RegisterCalendarTools(reg, cfg)
+	tools.RegisterEmailTools(reg, cfg, ts)
+	tools.RegisterCalendarTools(reg, cfg, ts)
 	tools.RegisterDriveTools(reg, cfg)
-	tools.RegisterSlackTools(reg, cfg)
+	tools.RegisterSlackTools(reg, cfg, ts)
 	tools.RegisterJIRATools(reg, cfg)
 	tools.RegisterOmiTools(reg, cfg, memStore)
 }
@@ -1255,8 +1355,9 @@ func openToolRegistry(ctx *Context) (*tools.Registry, func(), error) {
 	}
 	memStore := memory.NewStore(database)
 	events := observe.NewEventLog(database)
+	ts := trust.NewStore(database, cfg.Trust.AutoApproveThreshold)
 	reg := tools.NewRegistry(events)
-	registerAllTools(reg, cfg, database, memStore)
+	registerAllTools(reg, cfg, database, memStore, ts)
 	return reg, func() { database.Close() }, nil
 }
 
@@ -1293,6 +1394,7 @@ func openAgent(cfg *config.Config) (*agent.Agent, []*internal.Skill, func(), err
 
 	events := observe.NewEventLog(database)
 	memStore := memory.NewStore(database)
+	ts := trust.NewStore(database, cfg.Trust.AutoApproveThreshold)
 
 	fb, err := buildBridge(cfg, events)
 	if err != nil {
@@ -1306,13 +1408,14 @@ func openAgent(cfg *config.Config) (*agent.Agent, []*internal.Skill, func(), err
 	}
 
 	reg := tools.NewRegistry(events)
-	registerAllTools(reg, cfg, database, memStore)
+	registerAllTools(reg, cfg, database, memStore, ts)
 
 	ag, err := agent.NewAgent(cfg, memStore, fb, reg, loaded, events)
 	if err != nil {
 		database.Close()
 		return nil, nil, nil, fmt.Errorf("create agent: %w", err)
 	}
+	ag.SetTrust(ts, nil)
 	return ag, loaded, func() { database.Close() }, nil
 }
 

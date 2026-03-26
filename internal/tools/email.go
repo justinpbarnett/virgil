@@ -11,12 +11,13 @@ import (
 	"github.com/justinpbarnett/virgil/internal"
 	"github.com/justinpbarnett/virgil/internal/config"
 	vgoogle "github.com/justinpbarnett/virgil/internal/google"
+	"github.com/justinpbarnett/virgil/internal/trust"
 	"google.golang.org/api/gmail/v1"
 	"google.golang.org/api/option"
 )
 
 // RegisterEmailTools registers email_list, email_read, email_send, and email_categorize.
-func RegisterEmailTools(reg *Registry, cfg *config.Config) {
+func RegisterEmailTools(reg *Registry, cfg *config.Config, ts *trust.Store) {
 	clients := make(map[string]*gmail.Service)
 	accounts := make(map[string]config.GoogleAccountConfig)
 	labelCache := make(map[string]string) // "account:labelName" -> labelID
@@ -188,6 +189,10 @@ func RegisterEmailTools(reg *Registry, cfg *config.Config) {
 
 			if account == "" || to == "" || body == "" {
 				return &internal.ToolResult{Error: "account, to, and body are required"}, nil
+			}
+
+			if blocked := checkTrust(ctx, ts, "email_send", account, "*"); blocked != nil {
+				return blocked, nil
 			}
 
 			svc, ok := clients[account]

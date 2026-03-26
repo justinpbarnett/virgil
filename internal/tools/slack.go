@@ -14,10 +14,11 @@ import (
 
 	"github.com/justinpbarnett/virgil/internal"
 	"github.com/justinpbarnett/virgil/internal/config"
+	"github.com/justinpbarnett/virgil/internal/trust"
 )
 
 // RegisterSlackTools registers slack_read, slack_post, and slack_search.
-func RegisterSlackTools(reg *Registry, cfg *config.Config) {
+func RegisterSlackTools(reg *Registry, cfg *config.Config, ts *trust.Store) {
 	clients := make(map[string]*slackClient)
 	var initErrs []string
 
@@ -142,6 +143,10 @@ func RegisterSlackTools(reg *Registry, cfg *config.Config) {
 
 			if workspace == "" || channel == "" || text == "" {
 				return &internal.ToolResult{Error: "workspace, channel, and text are required"}, nil
+			}
+
+			if blocked := checkTrust(ctx, ts, "slack_post", workspace, "*"); blocked != nil {
+				return blocked, nil
 			}
 
 			c, ok := clients[workspace]

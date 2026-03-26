@@ -12,6 +12,7 @@ import (
 	"github.com/justinpbarnett/virgil/internal/memory"
 	"github.com/justinpbarnett/virgil/internal/observe"
 	"github.com/justinpbarnett/virgil/internal/tools"
+	"github.com/justinpbarnett/virgil/internal/trust"
 )
 
 const maxToolRounds = 20
@@ -25,6 +26,19 @@ type Agent struct {
 	skills  []*internal.Skill
 	events  *observe.EventLog
 	session *SessionBuffer
+	trust   *trust.Store // optional; nil disables trust checking
+	push    func(string) // optional; nil disables push notifications
+}
+
+// SetTrust sets the trust store and push function. Both are optional.
+func (a *Agent) SetTrust(ts *trust.Store, push func(string)) {
+	a.trust = ts
+	a.push = push
+}
+
+// SetPush sets the push notification function without changing the trust store.
+func (a *Agent) SetPush(push func(string)) {
+	a.push = push
 }
 
 // NewAgent creates an Agent and registers the run_skill meta-tool.
@@ -148,6 +162,7 @@ func (a *Agent) RunSkill(ctx context.Context, skill *internal.Skill, trigger str
 	}
 	spanID := observe.GenerateSpanID()
 	ctx = observe.WithTraceContext(ctx, traceID, spanID)
+	ctx = trust.WithAutoApprovals(ctx) // track auto-approvals for rollback on error
 	start := time.Now()
 
 	sysPrompt := a.systemPrompt(internal.NewSignal("skill:"+skill.Name, ""))
@@ -176,14 +191,18 @@ func (a *Agent) RunSkill(ctx context.Context, skill *internal.Skill, trigger str
 	response, err := a.bridge.Complete(ctx, primary, messages, toolDefs, fallbacks)
 	if err != nil {
 		a.logEvent(traceID, spanID, parentSpan, "skill:"+skill.Name, "error", "run", "", err, time.Since(start))
-		return "", fmt.Errorf("run skill %s: %w", skill.Name, err)
+		runErr := fmt.Errorf("run skill %s: %w", skill.Name, err)
+		a.recoverError(ctx, skill.Name, runErr)
+		return "", runErr
 	}
 
 	for i := 0; response.HasToolCalls(); i++ {
 		if i >= maxToolRounds {
+			loopErr := fmt.Errorf("run skill %s: tool loop exceeded %d rounds", skill.Name, maxToolRounds)
 			a.logEvent(traceID, spanID, parentSpan, "skill:"+skill.Name, "error", "run", "",
 				fmt.Errorf("tool loop exceeded %d rounds", maxToolRounds), time.Since(start))
-			return "", fmt.Errorf("run skill %s: tool loop exceeded %d rounds", skill.Name, maxToolRounds)
+			a.recoverError(ctx, skill.Name, loopErr)
+			return "", loopErr
 		}
 		toolResults := a.executeTools(ctx, response.ToolCalls)
 		messages = append(messages, response.ToMessage())
@@ -191,12 +210,29 @@ func (a *Agent) RunSkill(ctx context.Context, skill *internal.Skill, trigger str
 		response, err = a.bridge.Complete(ctx, primary, messages, toolDefs, fallbacks)
 		if err != nil {
 			a.logEvent(traceID, spanID, parentSpan, "skill:"+skill.Name, "error", "run", "", err, time.Since(start))
-			return "", fmt.Errorf("run skill %s (tool loop): %w", skill.Name, err)
+			runErr := fmt.Errorf("run skill %s (tool loop): %w", skill.Name, err)
+			a.recoverError(ctx, skill.Name, runErr)
+			return "", runErr
 		}
 	}
 
 	a.logEvent(traceID, spanID, parentSpan, "skill:"+skill.Name, "complete", "run", response.Text, nil, time.Since(start))
 	return response.Text, nil
+}
+
+// recoverError pushes a Telegram notification and rolls back any auto-approved
+// outbound tool actions that were executed during the failed skill run.
+func (a *Agent) recoverError(ctx context.Context, skillName string, err error) {
+	if a.push != nil {
+		a.push(fmt.Sprintf("[virgil] Skill %q failed: %v", skillName, err))
+	}
+	if a.trust != nil {
+		for _, ap := range trust.DrainAutoApprovals(ctx) {
+			if rbErr := a.trust.Rollback(ap.ActionType, ap.Channel, ap.Contact); rbErr != nil {
+				slog.Warn("trust rollback failed", "action", ap.ActionType, "err", rbErr)
+			}
+		}
+	}
 }
 
 // FindSkill returns a skill by name, or nil.
