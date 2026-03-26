@@ -73,12 +73,14 @@ channels:
     workspaces:
       passion:
         token_env: VIRGIL_SLACK_TOKEN_PASSION
+        user_token_env: VIRGIL_SLACK_USER_TOKEN_PASSION
         user_id: ""
         watch_channels: []
         bridge: passion
       enver:
         token_env: VIRGIL_SLACK_TOKEN_ENVER
-        user_id: ""
+        user_token_env: VIRGIL_SLACK_USER_TOKEN_ENVER
+        user_id: "U0AKLGZA8SK"
         watch_channels: []
         bridge: enver
 
