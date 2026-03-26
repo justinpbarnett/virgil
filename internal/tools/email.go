@@ -305,10 +305,11 @@ func RegisterEmailTools(reg *Registry, cfg *config.Config, ts *trust.Store) {
 			}
 
 			mod := &gmail.ModifyMessageRequest{
-				AddLabelIds: []string{labelID},
+				AddLabelIds:    []string{labelID},
+				RemoveLabelIds: []string{"UNREAD"},
 			}
 			if category != "imbox" {
-				mod.RemoveLabelIds = []string{"INBOX"}
+				mod.RemoveLabelIds = append(mod.RemoveLabelIds, "INBOX")
 			}
 
 			if _, err := svc.Users.Messages.Modify("me", messageID, mod).Do(); err != nil {
