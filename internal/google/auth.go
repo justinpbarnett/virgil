@@ -85,12 +85,13 @@ func LoadClientCredentials(dir, account string) (string, string, error) {
 		if err := json.Unmarshal(data, &cred); err != nil {
 			slog.Warn("parse credentials.json failed", "path", credPath, "err", err)
 		} else {
-			if cred.Installed.ClientID != "" {
+			if cred.Installed.ClientID != "" && cred.Installed.ClientSecret != "" {
 				return cred.Installed.ClientID, cred.Installed.ClientSecret, nil
 			}
-			if cred.Web.ClientID != "" {
+			if cred.Web.ClientID != "" && cred.Web.ClientSecret != "" {
 				return cred.Web.ClientID, cred.Web.ClientSecret, nil
 			}
+			slog.Warn("credentials.json found but contains no usable OAuth client credentials", "path", credPath)
 		}
 	}
 
@@ -98,8 +99,12 @@ func LoadClientCredentials(dir, account string) (string, string, error) {
 		suffix := strings.ToUpper(account)
 		clientID := os.Getenv("GOOGLE_CLIENT_ID_" + suffix)
 		clientSecret := os.Getenv("GOOGLE_CLIENT_SECRET_" + suffix)
-		if clientID != "" && clientSecret != "" {
+		switch {
+		case clientID != "" && clientSecret != "":
 			return clientID, clientSecret, nil
+		case clientID != "" || clientSecret != "":
+			slog.Warn("partial per-account Google credentials, falling back to global",
+				"account", account, "has_client_id", clientID != "", "has_client_secret", clientSecret != "")
 		}
 	}
 

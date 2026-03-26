@@ -328,7 +328,7 @@ func (c *ServeCmd) Run(ctx *Context) error {
 		return err
 	}
 
-	ag, loaded, cleanup, err := openAgent(cfg)
+	ag, loaded, cleanup, err, skillsErr := openAgent(cfg)
 	if err != nil {
 		return err
 	}
@@ -347,6 +347,9 @@ func (c *ServeCmd) Run(ctx *Context) error {
 			}
 		}
 		ag.SetPush(push)
+		if skillsErr != nil {
+			push(fmt.Sprintf("Warning: Virgil started without skills (%v). Restart to fix.", skillsErr))
+		}
 		ch := make(chan struct{})
 		botDone = ch
 		var botStopped atomic.Bool
@@ -1294,7 +1297,7 @@ func (c *SignalCmd) Run(ctx *Context) error {
 		cfg.Skills.Dir = c.SkillsDir
 	}
 
-	ag, _, cleanup, err := openAgent(cfg)
+	ag, _, cleanup, err, _ := openAgent(cfg)
 	if err != nil {
 		return err
 	}
@@ -1319,7 +1322,7 @@ func (c *RunCmd) Run(ctx *Context) error {
 		cfg.Skills.Dir = c.SkillsDir
 	}
 
-	ag, _, cleanup, err := openAgent(cfg)
+	ag, _, cleanup, err, _ := openAgent(cfg)
 	if err != nil {
 		return err
 	}
@@ -1429,15 +1432,15 @@ func runTool(ctx *Context, toolName string, params map[string]any) error {
 	return outputJSON(result)
 }
 
-func openAgent(cfg *config.Config) (*agent.Agent, []*internal.Skill, func(), error) {
+func openAgent(cfg *config.Config) (*agent.Agent, []*internal.Skill, func(), error, error) {
 	database, err := db.Open(cfg.DBPath())
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, nil, nil, err, nil
 	}
 
 	if err := db.Migrate(database); err != nil {
 		database.Close()
-		return nil, nil, nil, fmt.Errorf("run migrations: %w", err)
+		return nil, nil, nil, fmt.Errorf("run migrations: %w", err), nil
 	}
 
 	events := observe.NewEventLog(database)
@@ -1447,12 +1450,12 @@ func openAgent(cfg *config.Config) (*agent.Agent, []*internal.Skill, func(), err
 	fb, err := buildBridge(cfg, events)
 	if err != nil {
 		database.Close()
-		return nil, nil, nil, err
+		return nil, nil, nil, err, nil
 	}
 
-	loaded, err := skills.LoadAll(cfg.Skills.Dir)
-	if err != nil {
-		slog.Error("skills failed to load, agent will run without skills", "dir", cfg.Skills.Dir, "err", err)
+	loaded, skillsErr := skills.LoadAll(cfg.Skills.Dir)
+	if skillsErr != nil {
+		slog.Error("skills failed to load, agent will run without skills", "dir", cfg.Skills.Dir, "err", skillsErr)
 	}
 
 	reg := tools.NewRegistry(events)
@@ -1461,10 +1464,10 @@ func openAgent(cfg *config.Config) (*agent.Agent, []*internal.Skill, func(), err
 	ag, err := agent.NewAgent(cfg, memStore, fb, reg, loaded, events)
 	if err != nil {
 		database.Close()
-		return nil, nil, nil, fmt.Errorf("create agent: %w", err)
+		return nil, nil, nil, fmt.Errorf("create agent: %w", err), nil
 	}
 	ag.SetTrust(ts, nil)
-	return ag, loaded, func() { database.Close() }, nil
+	return ag, loaded, func() { database.Close() }, nil, skillsErr
 }
 
 func buildBridge(cfg *config.Config, events *observe.EventLog) (*bridge.FallbackBridge, error) {

@@ -162,6 +162,7 @@ func (c *Config) loadEnv() {
 		}
 		k, v, ok := strings.Cut(line, "=")
 		if !ok {
+			slog.Warn("malformed .env line (no '=' found), skipping", "line", line, "path", envPath)
 			continue
 		}
 		k = strings.TrimSpace(k)

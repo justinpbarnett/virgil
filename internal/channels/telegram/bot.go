@@ -33,8 +33,9 @@ func NewBot(cfg *config.Config, ag *agent.Agent) (*Bot, error) {
 
 	var chatID int64
 	if env := cfg.Channels.Telegram.ChatIDEnv; env != "" {
-		if _, err := fmt.Sscanf(os.Getenv(env), "%d", &chatID); err != nil {
-			slog.Warn("telegram chat ID parse failed, push notifications disabled", "env", env)
+		raw := os.Getenv(env)
+		if _, err := fmt.Sscanf(raw, "%d", &chatID); err != nil {
+			slog.Warn("telegram chat ID parse failed, push notifications disabled", "env", env, "value", raw, "err", err)
 		}
 	}
 
@@ -81,8 +82,13 @@ func (b *Bot) registerHandlers() {
 
 func sendFormatted(c telebot.Context, text string) error {
 	opts := &telebot.SendOptions{ParseMode: telebot.ModeHTML}
-	for _, chunk := range splitHTML(mdToHTML(text)) {
+	chunks := splitHTML(mdToHTML(text))
+	for i, chunk := range chunks {
 		if err := c.Send(chunk, opts); err != nil {
+			if i > 0 {
+				slog.Error("telegram partial send", "sent", i, "total", len(chunks), "err", err)
+				_ = c.Send(fmt.Sprintf("(Message cut short at chunk %d/%d. Try again.)", i+1, len(chunks)))
+			}
 			return err
 		}
 	}
@@ -107,8 +113,12 @@ func (b *Bot) Push(text string) error {
 	}
 	chat := &telebot.Chat{ID: b.chatID}
 	opts := &telebot.SendOptions{ParseMode: telebot.ModeHTML}
-	for _, chunk := range splitHTML(mdToHTML(text)) {
+	chunks := splitHTML(mdToHTML(text))
+	for i, chunk := range chunks {
 		if _, err := b.bot.Send(chat, chunk, opts); err != nil {
+			if i > 0 {
+				slog.Warn("telegram push partial send", "delivered", i, "total", len(chunks), "err", err)
+			}
 			return err
 		}
 	}

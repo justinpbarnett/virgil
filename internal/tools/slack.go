@@ -40,6 +40,9 @@ func RegisterSlackTools(reg *Registry, cfg *config.Config, ts *trust.Store) {
 
 		if ws.UserTokenEnv != "" {
 			sc.userToken = os.Getenv(ws.UserTokenEnv)
+			if sc.userToken == "" {
+				slog.Warn("slack workspace user token env var is set but empty", "workspace", name, "env", ws.UserTokenEnv)
+			}
 		}
 
 		if sc.botToken == "" && sc.userToken == "" {

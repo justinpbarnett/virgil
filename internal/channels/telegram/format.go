@@ -3,6 +3,7 @@ package telegram
 import (
 	"fmt"
 	"html"
+	"log/slog"
 	"regexp"
 	"strings"
 )
@@ -70,61 +71,45 @@ func mdToHTML(md string) string {
 	return strings.TrimSpace(s)
 }
 
-// splitHTML splits a Telegram HTML string into chunks of at most maxMsgLen runes.
+// splitHTML splits a Telegram HTML string into chunks of at most maxMsgLen bytes.
 // Splits at paragraph boundaries when possible. When splitting inside a <pre> block,
 // it closes and reopens the tag so both chunks render correctly.
 func splitHTML(text string) []string {
-	runes := []rune(text)
-	if len(runes) <= maxMsgLen {
+	if len(text) <= maxMsgLen {
 		return []string{text}
 	}
 
 	var chunks []string
 	remaining := text
 
-	for {
-		r := []rune(remaining)
-		if len(r) <= maxMsgLen {
-			if s := strings.TrimSpace(remaining); s != "" {
-				chunks = append(chunks, s)
-			}
-			break
-		}
-
-		chunk := string(r[:maxMsgLen])
+	for len(remaining) > maxMsgLen {
+		window := remaining[:maxMsgLen]
 
 		// If we're inside an open <pre> block, close it cleanly and reopen in the next chunk.
-		if openPre := strings.Count(chunk, "<pre>") - strings.Count(chunk, "</pre>"); openPre > 0 {
-			// Split at the last newline so we don't cut mid-line.
-			splitAt := strings.LastIndex(chunk, "\n")
-			if splitAt < maxMsgLen/3 {
-				splitAt = maxMsgLen // fall through to hard split, tag will be malformed but content survives
-			}
-			if splitAt < maxMsgLen {
-				chunks = append(chunks, strings.TrimSpace(string(r[:splitAt]))+"</pre>")
-				remaining = "<pre>" + strings.TrimLeft(string(r[splitAt:]), "\n")
+		if strings.Count(window, "<pre>") > strings.Count(window, "</pre>") {
+			if splitAt := strings.LastIndex(window, "\n"); splitAt > maxMsgLen/3 {
+				chunks = append(chunks, strings.TrimSpace(remaining[:splitAt])+"</pre>")
+				remaining = "<pre>" + strings.TrimLeft(remaining[splitAt:], "\n")
 				continue
 			}
+			// No good newline -- fall through; hard split will leave unclosed <pre> tag.
+			slog.Warn("telegram: <pre> block too long for clean split, chunk will have unclosed tag")
 		}
 
-		// Prefer paragraph boundary.
-		if i := strings.LastIndex(chunk, "\n\n"); i > maxMsgLen/3 {
-			chunks = append(chunks, strings.TrimSpace(string(r[:i])))
-			remaining = strings.TrimLeft(string(r[i:]), "\n")
-			continue
+		// Prefer paragraph boundary, then line boundary, then hard split.
+		splitAt := maxMsgLen
+		if i := strings.LastIndex(window, "\n\n"); i > maxMsgLen/3 {
+			splitAt = i
+		} else if i := strings.LastIndex(window, "\n"); i > maxMsgLen/3 {
+			splitAt = i
 		}
 
-		// Fall back to line boundary.
-		if i := strings.LastIndex(chunk, "\n"); i > maxMsgLen/3 {
-			chunks = append(chunks, strings.TrimSpace(string(r[:i])))
-			remaining = strings.TrimLeft(string(r[i:]), "\n")
-			continue
-		}
-
-		// Hard split as last resort.
-		chunks = append(chunks, chunk)
-		remaining = string(r[maxMsgLen:])
+		chunks = append(chunks, strings.TrimSpace(remaining[:splitAt]))
+		remaining = strings.TrimLeft(remaining[splitAt:], "\n")
 	}
 
+	if s := strings.TrimSpace(remaining); s != "" {
+		chunks = append(chunks, s)
+	}
 	return chunks
 }
