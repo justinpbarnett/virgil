@@ -18,6 +18,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -348,12 +349,18 @@ func (c *ServeCmd) Run(ctx *Context) error {
 		ag.SetPush(push)
 		ch := make(chan struct{})
 		botDone = ch
+		var botStopped atomic.Bool
 		go func() {
 			defer close(ch)
 			bot.Start()
-			slog.Error("telegram bot exited unexpectedly")
+			if !botStopped.Load() {
+				slog.Error("telegram bot exited unexpectedly")
+			}
 		}()
-		defer bot.Stop()
+		defer func() {
+			botStopped.Store(true)
+			bot.Stop()
+		}()
 	}
 
 	sched, err := skills.NewScheduler(ag, loaded, push)
