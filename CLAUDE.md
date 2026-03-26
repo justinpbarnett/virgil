@@ -38,3 +38,37 @@ just test-skeleton  # Stage 1 tests
 just status         # health check (JSON)
 just events         # query event log
 ```
+
+## Deploying to Fly.io
+
+The `fly.toml` and `Dockerfile` live in `deploy/` but the Docker build context must be the repo root (Dockerfile references `config/`, `skills/`, etc.):
+
+```sh
+cd /home/jpb/dev/virgil
+~/.fly/bin/fly deploy --app virgil-justin --config deploy/fly.toml --dockerfile deploy/Dockerfile
+```
+
+Running `fly deploy` from the `deploy/` directory fails because the build context only contains `deploy/` -- missing go.mod, config/, skills/.
+
+## Connecting from Claude Code (MCP)
+
+Virgil exposes MCP via stdio. To use it from Claude Code, register it as a user-scoped server so it's available in every project:
+
+```sh
+claude mcp add --scope user virgil -- \
+  ~/.fly/bin/fly ssh console --app virgil-justin \
+  -C "virgil mcp --config /data/virgil.yaml"
+```
+
+Notes:
+- Use `--scope user` to make it global. Without it, Claude Code defaults to `local` scope (only the current project).
+- `~/.claude/.mcp.json` is NOT a valid path for user-level MCP config -- it is silently ignored.
+- The `-C` flag passes the command string to the remote shell. Quote the full command including flags.
+- `--config /data/virgil.yaml` is required on Fly.io; the default config path (`~/.virgil/virgil.yaml`) doesn't exist there.
+- Connection takes ~2s on first use per session (fly SSH tunnel setup). Subsequent calls in the same session reuse the tunnel.
+
+To verify: `claude mcp list` -- should show `virgil: ... Connected`.
+
+### After re-deploying
+
+If the machine restarts and the SSH key changes, re-run the `claude mcp add` command to clear any stale host key state.

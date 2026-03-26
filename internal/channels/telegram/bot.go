@@ -73,10 +73,20 @@ func (b *Bot) registerHandlers() {
 			return c.Send("Something went wrong. Check the logs.")
 		}
 		if resp == "" {
-			return c.Send("Done.")
+			resp = "Done."
 		}
-		return c.Send(resp)
+		return sendFormatted(c, resp)
 	})
+}
+
+func sendFormatted(c telebot.Context, text string) error {
+	opts := &telebot.SendOptions{ParseMode: telebot.ModeHTML}
+	for _, chunk := range splitHTML(mdToHTML(text)) {
+		if err := c.Send(chunk, opts); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // Start begins polling for updates. Blocks until Stop is called.
@@ -95,6 +105,12 @@ func (b *Bot) Push(text string) error {
 	if b.chatID == 0 {
 		return nil
 	}
-	_, err := b.bot.Send(&telebot.Chat{ID: b.chatID}, text)
-	return err
+	chat := &telebot.Chat{ID: b.chatID}
+	opts := &telebot.SendOptions{ParseMode: telebot.ModeHTML}
+	for _, chunk := range splitHTML(mdToHTML(text)) {
+		if _, err := b.bot.Send(chat, chunk, opts); err != nil {
+			return err
+		}
+	}
+	return nil
 }
