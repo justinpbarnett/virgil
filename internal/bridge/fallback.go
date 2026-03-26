@@ -26,6 +26,7 @@ func NewFallbackBridge(providers map[string]Bridge, embedder Bridge, events *obs
 
 func (fb *FallbackBridge) Complete(ctx context.Context, cfg ModelConfig, messages []Message, tools []*internal.Tool, fallbacks []ModelConfig) (*Response, error) {
 	chain := append([]ModelConfig{cfg}, fallbacks...)
+	traceID, parentSpan := observe.TraceFromContext(ctx)
 
 	var lastErr error
 	for i, mc := range chain {
@@ -45,6 +46,9 @@ func (fb *FallbackBridge) Complete(ctx context.Context, cfg ModelConfig, message
 			Action:     "inference",
 			Model:      mc.Model,
 			DurationMs: duration.Milliseconds(),
+			TraceID:    traceID,
+			SpanID:     observe.GenerateSpanID(),
+			ParentSpan: parentSpan,
 		}
 
 		if err != nil {
@@ -56,6 +60,7 @@ func (fb *FallbackBridge) Complete(ctx context.Context, cfg ModelConfig, message
 				lastErr = err
 				continue
 			}
+			slog.Error("bridge inference failed", "provider", mc.Provider, "model", mc.Model, "err", err)
 			return nil, err
 		}
 
@@ -77,6 +82,7 @@ func (fb *FallbackBridge) Embed(ctx context.Context, text string) ([]float32, er
 		return nil, fmt.Errorf("no embedding provider configured")
 	}
 
+	traceID, parentSpan := observe.TraceFromContext(ctx)
 	start := time.Now()
 	result, err := fb.embedder.Embed(ctx, text)
 	duration := time.Since(start)
@@ -85,6 +91,9 @@ func (fb *FallbackBridge) Embed(ctx context.Context, text string) ([]float32, er
 		Component:  "bridge:embeddings",
 		Action:     "embed",
 		DurationMs: duration.Milliseconds(),
+		TraceID:    traceID,
+		SpanID:     observe.GenerateSpanID(),
+		ParentSpan: parentSpan,
 	}
 	if err != nil {
 		ev.Error = err.Error()

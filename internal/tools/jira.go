@@ -93,11 +93,7 @@ func RegisterJIRATools(reg *Registry, cfg *config.Config) {
 			if allIssues == nil {
 				allIssues = []map[string]any{}
 			}
-			data := map[string]any{"issues": allIssues}
-			if len(errs) > 0 {
-				data["warnings"] = errs
-			}
-			return &internal.ToolResult{Data: data}, nil
+			return partialResult("issues", allIssues, errs), nil
 		},
 	})
 

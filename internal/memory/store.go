@@ -60,12 +60,13 @@ type Entity struct {
 
 // StoreParams is the input for storing a memory.
 type StoreParams struct {
-	Type     string
-	Content  string
-	Topic    string
-	Scope    string
-	Source   string
-	Entities []Entity
+	Type        string
+	Content     string
+	Topic       string
+	Scope       string
+	Source      string
+	Entities    []Entity
+	ForceInsert bool // skip dedup; always insert a new row
 }
 
 // Store writes a memory entry and its entities. For facts, updates existing
@@ -80,7 +81,7 @@ func (s *Store) Store(p StoreParams) (string, error) {
 		p.Scope = DefaultScope
 	}
 
-	if p.Type == TypeFact && p.Topic != "" {
+	if p.Type == TypeFact && p.Topic != "" && !p.ForceInsert {
 		existingID, err := s.findExistingFact(p.Topic, p.Scope, p.Entities)
 		if err != nil {
 			return "", fmt.Errorf("check existing fact: %w", err)

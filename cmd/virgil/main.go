@@ -555,10 +555,11 @@ func (c *SeedCmd) Run(ctx *Context) error {
 			continue
 		}
 		id, err := store.Store(memory.StoreParams{
-			Type:    memory.TypeFact,
-			Content: p,
-			Topic:   c.Topic,
-			Scope:   c.Scope,
+			Type:        memory.TypeFact,
+			Content:     p,
+			Topic:       c.Topic,
+			Scope:       c.Scope,
+			ForceInsert: true,
 		})
 		if err != nil {
 			slog.Warn("seed: failed to store paragraph", "err", err)

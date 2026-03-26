@@ -8,6 +8,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/justinpbarnett/virgil/internal"
 )
 
 const maxResponseBytes = 10 << 20 // 10 MB
@@ -76,6 +78,17 @@ func filterClients[T any](clients map[string]T, account string) map[string]T {
 		return map[string]T{account: c}
 	}
 	return nil
+}
+
+// partialResult builds a ToolResult with a named result slice and optional warnings.
+// Use when a multi-account tool may partially succeed: some accounts return data,
+// others fail. Warnings are included alongside results rather than replacing them.
+func partialResult(key string, results any, errs []string) *internal.ToolResult {
+	data := map[string]any{key: results}
+	if len(errs) > 0 {
+		data["warnings"] = errs
+	}
+	return &internal.ToolResult{Data: data}
 }
 
 func httpJSON(req *http.Request) (map[string]any, error) {

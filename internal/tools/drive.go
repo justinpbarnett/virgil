@@ -115,11 +115,7 @@ func RegisterDriveTools(reg *Registry, cfg *config.Config) {
 			if results == nil {
 				results = []map[string]any{}
 			}
-			data := map[string]any{"files": results}
-			if len(errs) > 0 {
-				data["warnings"] = errs
-			}
-			return &internal.ToolResult{Data: data}, nil
+			return partialResult("files", results, errs), nil
 		},
 	})
 
