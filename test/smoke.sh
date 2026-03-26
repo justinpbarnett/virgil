@@ -100,6 +100,8 @@ else
         sleep 0.5
     done
 
+    HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:18080/health 2>/dev/null)
+    [ "$HTTP_CODE" = "200" ] || fail "/health returned HTTP $HTTP_CODE, expected 200"
     HEALTH=$(curl -sf http://127.0.0.1:18080/health 2>/dev/null) || fail "/health did not respond"
     echo "$HEALTH" | grep -q '"ok":true' || fail "/health returned unexpected body: $HEALTH"
     pass "/health returns {\"ok\":true}"

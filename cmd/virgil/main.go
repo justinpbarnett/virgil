@@ -403,7 +403,9 @@ func (c *ServeCmd) Run(ctx *Context) error {
 	defer func() {
 		shutCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		_ = httpServer.Shutdown(shutCtx)
+		if err := httpServer.Shutdown(shutCtx); err != nil {
+			slog.Warn("HTTP server shutdown incomplete", "err", err)
+		}
 	}()
 
 	slog.Info("virgil serving", "skills", len(loaded))

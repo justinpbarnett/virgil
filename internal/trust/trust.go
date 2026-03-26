@@ -109,7 +109,11 @@ func (s *Store) Rollback(ap AutoApproval) error {
 	if err != nil {
 		return err
 	}
-	if n, _ := result.RowsAffected(); n == 0 {
+	n, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("rollback: rows affected: %w", err)
+	}
+	if n == 0 {
 		return fmt.Errorf("rollback: no trust score for (%s, %s, %s)", ap.actionType, channel, contact)
 	}
 	return nil
@@ -134,7 +138,9 @@ func (s *Store) List() ([]Score, error) {
 			&sc.Approvals, &sc.Rejections, &updatedAt); err != nil {
 			return nil, err
 		}
-		sc.UpdatedAt, _ = time.Parse(time.RFC3339, updatedAt)
+		if sc.UpdatedAt, err = time.Parse(time.RFC3339, updatedAt); err != nil {
+			return nil, fmt.Errorf("trust: parse updated_at %q: %w", updatedAt, err)
+		}
 		scores = append(scores, sc)
 	}
 	return scores, rows.Err()
