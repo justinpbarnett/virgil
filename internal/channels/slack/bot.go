@@ -151,14 +151,19 @@ func (c *wsConn) processEvents(ctx context.Context) {
 			if !ok {
 				return
 			}
+			slog.Debug("slack socket event", "workspace", c.name, "type", evt.Type)
 			switch evt.Type {
 			case socketmode.EventTypeEventsAPI:
 				apiEvt, ok := evt.Data.(slackevents.EventsAPIEvent)
 				if !ok {
-					c.socket.Ack(*evt.Request)
+					slog.Warn("slack: unexpected EventsAPI data type", "workspace", c.name, "data", evt.Data)
+					if evt.Request != nil {
+						c.socket.Ack(*evt.Request)
+					}
 					continue
 				}
 				c.socket.Ack(*evt.Request)
+				slog.Info("slack api event", "workspace", c.name, "type", apiEvt.InnerEvent.Type)
 				go c.handleAPIEvent(ctx, apiEvt)
 			default:
 				if evt.Request != nil {
@@ -181,20 +186,27 @@ func (c *wsConn) handleAPIEvent(ctx context.Context, evt slackevents.EventsAPIEv
 }
 
 func (c *wsConn) handleMessage(ctx context.Context, msg *slackevents.MessageEvent) {
+	slog.Info("slack message received", "workspace", c.name, "channel", msg.Channel,
+		"user", msg.User, "subtype", msg.SubType, "bot_id", msg.BotID)
+
 	// Skip bot messages and subtypes (edits, deletes, join/leave notices, etc.)
 	if msg.BotID != "" || msg.SubType != "" {
+		slog.Debug("slack: skipping bot message or subtype", "workspace", c.name,
+			"subtype", msg.SubType, "bot_id", msg.BotID)
 		return
 	}
 
 	isDM := strings.HasPrefix(msg.Channel, "D")
 	if !isDM && !c.watchChanIDs[msg.Channel] {
+		slog.Debug("slack: ignoring message not in DM or watch channel",
+			"workspace", c.name, "channel", msg.Channel)
 		return
 	}
 
 	// Enforce authorization -- silently ignore messages from other users.
 	if c.authorizedUID != "" && msg.User != c.authorizedUID {
-		slog.Debug("slack: ignoring message from unauthorized user",
-			"workspace", c.name, "user", msg.User)
+		slog.Warn("slack: ignoring message from unauthorized user",
+			"workspace", c.name, "user", msg.User, "authorized", c.authorizedUID)
 		return
 	}
 
