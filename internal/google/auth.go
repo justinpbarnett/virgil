@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"golang.org/x/oauth2"
 	goauth "golang.org/x/oauth2/google"
@@ -22,7 +23,9 @@ var Scopes = []string{
 
 // NewHTTPClient creates an auto-refreshing OAuth2 HTTP client from a token file.
 // Client credentials are loaded from credentials.json next to the token file,
-// or from GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET environment variables.
+// or from GOOGLE_CLIENT_ID_<ACCOUNT> / GOOGLE_CLIENT_SECRET_<ACCOUNT> env vars
+// (where account is derived from the token filename, e.g. google-token-passion.json -> PASSION),
+// falling back to GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET.
 func NewHTTPClient(tokenPath string) (*http.Client, error) {
 	tokenData, err := os.ReadFile(tokenPath)
 	if err != nil {
@@ -37,7 +40,8 @@ func NewHTTPClient(tokenPath string) (*http.Client, error) {
 		return nil, fmt.Errorf("token file %s has no refresh_token", tokenPath)
 	}
 
-	clientID, clientSecret, err := LoadClientCredentials(filepath.Dir(tokenPath))
+	account := accountFromTokenPath(tokenPath)
+	clientID, clientSecret, err := LoadClientCredentials(filepath.Dir(tokenPath), account)
 	if err != nil {
 		return nil, err
 	}
@@ -52,9 +56,20 @@ func NewHTTPClient(tokenPath string) (*http.Client, error) {
 	return cfg.Client(context.Background(), &tok), nil
 }
 
+// accountFromTokenPath derives an account name from a token filename.
+// e.g. "/data/google-token-passion.json" -> "passion"
+func accountFromTokenPath(tokenPath string) string {
+	base := filepath.Base(tokenPath)
+	base = strings.TrimSuffix(base, filepath.Ext(base))
+	base = strings.TrimPrefix(base, "google-token-")
+	return base
+}
+
 // LoadClientCredentials loads OAuth2 client ID and secret from credentials.json
-// in the given directory, or from GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET env vars.
-func LoadClientCredentials(dir string) (string, string, error) {
+// in the given directory, or from per-account env vars
+// (GOOGLE_CLIENT_ID_<ACCOUNT> / GOOGLE_CLIENT_SECRET_<ACCOUNT>),
+// falling back to GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET.
+func LoadClientCredentials(dir, account string) (string, string, error) {
 	credPath := filepath.Join(dir, "credentials.json")
 	if data, err := os.ReadFile(credPath); err == nil {
 		var cred struct {
@@ -76,6 +91,15 @@ func LoadClientCredentials(dir string) (string, string, error) {
 			if cred.Web.ClientID != "" {
 				return cred.Web.ClientID, cred.Web.ClientSecret, nil
 			}
+		}
+	}
+
+	if account != "" {
+		suffix := strings.ToUpper(account)
+		clientID := os.Getenv("GOOGLE_CLIENT_ID_" + suffix)
+		clientSecret := os.Getenv("GOOGLE_CLIENT_SECRET_" + suffix)
+		if clientID != "" && clientSecret != "" {
+			return clientID, clientSecret, nil
 		}
 	}
 

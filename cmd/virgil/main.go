@@ -465,7 +465,7 @@ func (c *AuthGoogleCmd) Run(ctx *Context) error {
 		return fmt.Errorf("account %q has no credentials_path set", c.Account)
 	}
 
-	clientID, clientSecret, err := vgoogle.LoadClientCredentials(filepath.Dir(acct.CredentialsPath))
+	clientID, clientSecret, err := vgoogle.LoadClientCredentials(filepath.Dir(acct.CredentialsPath), c.Account)
 	if err != nil {
 		return err
 	}
