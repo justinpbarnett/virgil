@@ -25,6 +25,11 @@ func (a *Agent) systemPrompt(signal internal.Signal) string {
 	}
 
 	b.WriteString("Be proactive. If you notice something relevant while doing a task, mention it.\n\n")
+
+	if signal.Channel == "slack" {
+		b.WriteString("Format responses for Slack: use *bold* (not **bold**), _italic_, `code`. No # headers -- use *bold* for section labels instead. Bullet lists with - are fine.\n\n")
+	}
+
 	b.WriteString(fmt.Sprintf("Current time: %s\n", time.Now().Format(time.RFC3339)))
 
 	if signal.Bridge != "" {
