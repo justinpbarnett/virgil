@@ -213,6 +213,10 @@ func RegisterCalendarTools(reg *Registry, cfg *config.Config, ts *trust.Store) {
 				return &internal.ToolResult{Error: "event_id and account are required"}, nil
 			}
 
+			if blocked := checkTrust(ctx, ts, "calendar_delete", account, "*"); blocked != nil {
+				return blocked, nil
+			}
+
 			svc, ok := clients[account]
 			if !ok {
 				return &internal.ToolResult{Error: fmt.Sprintf("calendar account %q not configured", account)}, nil

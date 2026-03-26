@@ -110,8 +110,7 @@ type SkillsConfig struct {
 }
 
 type TrustConfig struct {
-	AutoApproveThreshold int    `yaml:"auto_approve_threshold"`
-	DefaultAction        string `yaml:"default_action"`
+	AutoApproveThreshold int `yaml:"auto_approve_threshold"`
 }
 
 type ServerConfig struct {
@@ -284,7 +283,6 @@ func Default() *Config {
 		},
 		Trust: TrustConfig{
 			AutoApproveThreshold: 15,
-			DefaultAction:        "ask",
 		},
 		Server: ServerConfig{
 			Host: "0.0.0.0",

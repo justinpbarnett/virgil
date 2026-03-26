@@ -142,8 +142,6 @@ CREATE TABLE trust_scores (
     contact     TEXT NOT NULL DEFAULT '*',
     approvals   INTEGER NOT NULL DEFAULT 0,
     rejections  INTEGER NOT NULL DEFAULT 0,
-    edits       INTEGER NOT NULL DEFAULT 0,
-    auto_approved BOOLEAN NOT NULL DEFAULT FALSE,
     updated_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
     PRIMARY KEY (action_type, channel, contact)
 );

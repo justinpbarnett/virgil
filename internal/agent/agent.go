@@ -223,11 +223,14 @@ func (a *Agent) RunSkill(ctx context.Context, skill *internal.Skill, trigger str
 func (a *Agent) recoverError(ctx context.Context, skillName string, err error) {
 	if a.push != nil {
 		a.push(fmt.Sprintf("[virgil] Skill %q failed: %v", skillName, err))
+	} else {
+		slog.Warn("skill failed (no push configured)", "skill", skillName, "err", err)
 	}
 	if a.trust != nil {
 		for _, ap := range trust.DrainAutoApprovals(ctx) {
 			if rbErr := a.trust.Rollback(ap.ActionType, ap.Channel, ap.Contact); rbErr != nil {
-				slog.Warn("trust rollback failed", "action", ap.ActionType, "err", rbErr)
+				slog.Error("trust rollback failed -- score may be inflated",
+					"action", ap.ActionType, "channel", ap.Channel, "contact", ap.Contact, "err", rbErr)
 			}
 		}
 	}

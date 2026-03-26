@@ -41,6 +41,8 @@ func (s *Store) Threshold() int { return s.threshold }
 // trust score at or above the threshold. Checks the exact tuple first, then
 // (actionType, channel, "*"), then (actionType, "*", "*").
 func (s *Store) AutoApproves(actionType, channel, contact string) (bool, error) {
+	channel = normalizeWildcard(channel)
+	contact = normalizeWildcard(contact)
 	var value int
 	err := s.db.QueryRow(`
 		SELECT approvals - rejections
@@ -82,7 +84,10 @@ func (s *Store) Record(actionType, channel, contact string, approved bool) error
 			%s = %s + 1,
 			updated_at = excluded.updated_at`, col, col, col),
 		actionType, channel, contact, now)
-	return err
+	if err != nil {
+		return fmt.Errorf("record trust (%s, %s, %s, approved=%v): %w", actionType, channel, contact, approved, err)
+	}
+	return nil
 }
 
 // Rollback decrements approvals for the given tuple, flooring at 0.
@@ -90,12 +95,18 @@ func (s *Store) Rollback(actionType, channel, contact string) error {
 	channel = normalizeWildcard(channel)
 	contact = normalizeWildcard(contact)
 	now := time.Now().UTC().Format(time.RFC3339)
-	_, err := s.db.Exec(`
+	result, err := s.db.Exec(`
 		UPDATE trust_scores
 		SET approvals = MAX(0, approvals - 1), updated_at = ?
 		WHERE action_type = ? AND channel = ? AND contact = ?`,
 		now, actionType, channel, contact)
-	return err
+	if err != nil {
+		return err
+	}
+	if n, _ := result.RowsAffected(); n == 0 {
+		return fmt.Errorf("rollback: no trust score for (%s, %s, %s)", actionType, channel, contact)
+	}
+	return nil
 }
 
 // List returns all trust scores ordered by action_type, channel, contact.
