@@ -1,0 +1,31 @@
+app = "virgil-justin"
+primary_region = "atl"
+
+[build]
+  dockerfile = "deploy/Dockerfile"
+
+[env]
+  VIRGIL_CONFIG = "/data/virgil.yaml"
+  VIRGIL_DATA = "/data"
+
+[mounts]
+  source = "virgil_data"
+  destination = "/data"
+
+[[services]]
+  internal_port = 8080
+  protocol = "tcp"
+  [services.concurrency]
+    type = "connections"
+    hard_limit = 25
+    soft_limit = 20
+  [[services.ports]]
+    handlers = ["tls", "http"]
+    port = 443
+  [[services.http_checks]]
+    interval = 10000
+    grace_period = "5s"
+    method = "GET"
+    path = "/health"
+    protocol = "http"
+    timeout = 2000

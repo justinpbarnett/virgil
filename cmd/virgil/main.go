@@ -334,8 +334,7 @@ func (c *ServeCmd) Run(ctx *Context) error {
 	defer cleanup()
 
 	var push func(string)
-	botDone := make(chan struct{})
-	close(botDone) // closed immediately if no bot; select falls through
+	var botDone <-chan struct{} // nil: blocks forever (no shutdown when bot is absent)
 
 	bot, err := tgbot.NewBot(cfg, ag)
 	if err != nil {
@@ -347,9 +346,10 @@ func (c *ServeCmd) Run(ctx *Context) error {
 			}
 		}
 		ag.SetPush(push)
-		botDone = make(chan struct{})
+		ch := make(chan struct{})
+		botDone = ch
 		go func() {
-			defer close(botDone)
+			defer close(ch)
 			bot.Start()
 			slog.Error("telegram bot exited unexpectedly")
 		}()
@@ -367,6 +367,35 @@ func (c *ServeCmd) Run(ctx *Context) error {
 		}
 	}()
 
+	// HTTP server: health check for Fly.io + future A2A endpoint
+	host := cfg.Server.Host
+	if host == "" {
+		host = "0.0.0.0"
+	}
+	port := cfg.Server.Port
+	if port == 0 {
+		port = 8080
+	}
+	httpMux := http.NewServeMux()
+	httpMux.HandleFunc("/health", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintf(w, `{"ok":true}`)
+	})
+	httpServer := &http.Server{Addr: fmt.Sprintf("%s:%d", host, port), Handler: httpMux}
+	httpDone := make(chan struct{})
+	go func() {
+		defer close(httpDone)
+		slog.Info("HTTP server listening", "addr", httpServer.Addr)
+		if err := httpServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			slog.Error("HTTP server error", "err", err)
+		}
+	}()
+	defer func() {
+		shutCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = httpServer.Shutdown(shutCtx)
+	}()
+
 	slog.Info("virgil serving", "skills", len(loaded))
 
 	quit := make(chan os.Signal, 1)
@@ -376,6 +405,8 @@ func (c *ServeCmd) Run(ctx *Context) error {
 		signal.Stop(quit)
 	case <-botDone:
 		slog.Error("shutting down: telegram bot exited")
+	case <-httpDone:
+		slog.Error("shutting down: HTTP server exited")
 	}
 	slog.Info("shutting down")
 	return nil

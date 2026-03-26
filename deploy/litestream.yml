@@ -1,0 +1,10 @@
+dbs:
+  - path: /data/data.db
+    replicas:
+      - url: s3://virgil-backups/justin/data.db
+        type: s3
+        endpoint: ${R2_ENDPOINT}
+        access-key-id: ${R2_ACCESS_KEY}
+        secret-access-key: ${R2_SECRET_KEY}
+        retention: 720h
+        sync-interval: 1s

@@ -41,6 +41,20 @@ signal MESSAGE *ARGS:
 run-skill NAME *ARGS:
     ./virgil run {{NAME}} {{ARGS}}
 
+# Serve
+serve:
+    ./virgil serve
+
+# Deploy (requires fly CLI and authenticated account)
+deploy:
+    fly deploy
+
+deploy-status:
+    fly status
+
+deploy-logs:
+    fly logs
+
 # Test
 test-skeleton:
     bash test/skeleton.sh
@@ -54,8 +68,12 @@ test-bridge:
 test-agent:
     bash test/agent.sh
 
+test-smoke:
+    bash test/smoke.sh
+
 test-all:
     bash test/skeleton.sh
     bash test/memory.sh
     bash test/bridge.sh
     bash test/agent.sh
+    bash test/smoke.sh
