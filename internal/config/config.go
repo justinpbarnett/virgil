@@ -82,6 +82,7 @@ type SlackWorkspaceConfig struct {
 	TokenEnv      string   `yaml:"token_env"`      // bot token env var (xoxb-)
 	TokenPath     string   `yaml:"token_path"`     // session token file (xoxd- / xoxc-)
 	UserTokenEnv  string   `yaml:"user_token_env"` // user token env var (xoxp-) for posting as user + search
+	AppTokenEnv   string   `yaml:"app_token_env"`  // app-level token env var (xapp-) for Socket Mode
 	UserID        string   `yaml:"user_id"`
 	WatchChannels []string `yaml:"watch_channels"`
 	Bridge        string   `yaml:"bridge"`

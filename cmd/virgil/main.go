@@ -30,6 +30,7 @@ import (
 	"github.com/justinpbarnett/virgil/internal/agent"
 	"github.com/justinpbarnett/virgil/internal/bridge"
 	"github.com/justinpbarnett/virgil/internal/channels/mcp"
+	slkbot "github.com/justinpbarnett/virgil/internal/channels/slack"
 	tgbot "github.com/justinpbarnett/virgil/internal/channels/telegram"
 	"github.com/justinpbarnett/virgil/internal/config"
 	"github.com/justinpbarnett/virgil/internal/db"
@@ -363,6 +364,19 @@ func (c *ServeCmd) Run(ctx *Context) error {
 		defer func() {
 			botStopped.Store(true)
 			bot.Stop()
+		}()
+	}
+
+	slackCtx, slackCancel := context.WithCancel(context.Background())
+	defer slackCancel()
+	if slackBot, err := slkbot.NewBot(cfg, ag); err != nil {
+		slog.Warn("slack socket mode disabled", "err", err)
+	} else {
+		go func() {
+			slackBot.Start(slackCtx)
+			if slackCtx.Err() == nil {
+				slog.Error("all slack socket mode connections exited")
+			}
 		}()
 	}
 
