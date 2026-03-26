@@ -13,8 +13,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates
     apt-get remove -y wget && apt-get autoremove -y && rm -rf /var/lib/apt/lists/*
 COPY --from=builder /virgil /usr/local/bin/virgil
 COPY deploy/litestream.yml /etc/litestream.yml
+COPY deploy/entrypoint.sh /usr/local/bin/entrypoint.sh
 COPY config/virgil.yaml /etc/virgil/default.yaml
 COPY skills/ /etc/virgil/skills/
+RUN chmod +x /usr/local/bin/entrypoint.sh
 
 EXPOSE 8080
-CMD ["litestream", "replicate", "-exec", "virgil serve --config /data/virgil.yaml"]
+CMD ["/usr/local/bin/entrypoint.sh"]

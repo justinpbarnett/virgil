@@ -37,22 +37,22 @@ channels:
     accounts:
       personal:
         provider: gmail
-        address: ""
+        address: "barnett.justin.p@gmail.com"
         credentials_path: /data/google-token-personal.json
         default: true
       keep:
         provider: gmail
-        address: ""
+        address: "justin@keep.church"
         credentials_path: /data/google-token-keep.json
         bridge: keep
       enver:
         provider: gmail
-        address: ""
+        address: "justin@enver.ai"
         credentials_path: /data/google-token-enver.json
         bridge: enver
       passion:
         provider: gmail
-        address: ""
+        address: "justin.barnett@268generation.com"
         credentials_path: /data/google-token-passion.json
         bridge: passion
 
@@ -60,12 +60,12 @@ channels:
     accounts:
       personal:
         provider: google
-        address: ""
+        address: "barnett.justin.p@gmail.com"
         credentials_path: /data/google-token-personal.json
         default: true
       passion:
         provider: google
-        address: ""
+        address: "justin.barnett@268generation.com"
         credentials_path: /data/google-token-passion.json
         bridge: passion
 
@@ -86,7 +86,7 @@ channels:
     instances:
       passion:
         base_url: https://passion.atlassian.net
-        email: ""
+        email: "justin.barnett@268generation.com"
         api_token_env: VIRGIL_JIRA_TOKEN_PASSION
         bridge: passion
 

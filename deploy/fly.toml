@@ -1,5 +1,5 @@
 app = "virgil-justin"
-primary_region = "atl"
+primary_region = "iad"
 
 [build]
   dockerfile = "deploy/Dockerfile"
