@@ -93,6 +93,10 @@ else
         if curl -sf http://127.0.0.1:18080/health > /dev/null 2>&1; then
             break
         fi
+        if ! kill -0 "$SERVE_PID" 2>/dev/null; then
+            echo "serve log:" && cat "$TEST_DIR/serve.log" || true
+            fail "serve process exited early"
+        fi
         sleep 0.5
     done
 

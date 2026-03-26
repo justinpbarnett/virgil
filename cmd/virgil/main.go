@@ -367,7 +367,6 @@ func (c *ServeCmd) Run(ctx *Context) error {
 		}
 	}()
 
-	// HTTP server: health check for Fly.io + future A2A endpoint
 	host := cfg.Server.Host
 	if host == "" {
 		host = "0.0.0.0"
@@ -381,12 +380,16 @@ func (c *ServeCmd) Run(ctx *Context) error {
 		w.Header().Set("Content-Type", "application/json")
 		fmt.Fprintf(w, `{"ok":true}`)
 	})
-	httpServer := &http.Server{Addr: fmt.Sprintf("%s:%d", host, port), Handler: httpMux}
+	ln, err := net.Listen("tcp", fmt.Sprintf("%s:%d", host, port))
+	if err != nil {
+		return fmt.Errorf("listen %s:%d: %w", host, port, err)
+	}
+	httpServer := &http.Server{Handler: httpMux}
 	httpDone := make(chan struct{})
 	go func() {
 		defer close(httpDone)
-		slog.Info("HTTP server listening", "addr", httpServer.Addr)
-		if err := httpServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		slog.Info("HTTP server listening", "addr", ln.Addr())
+		if err := httpServer.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			slog.Error("HTTP server error", "err", err)
 		}
 	}()
