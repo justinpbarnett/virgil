@@ -256,6 +256,14 @@ if $VIRGIL trust check --action ping --config "$CONFIG2" 2>/dev/null; then
 fi
 pass "threshold=0 defaults to 15"
 
+# ---------- blocked error message ----------
+echo "--- blocked error format ---"
+
+# Test 14: blocked trust check error includes the approve hint.
+ERR_MSG=$($VIRGIL trust check --action email_send --config "$CONFIG" 2>&1 || true)
+echo "$ERR_MSG" | grep -q 'virgil trust approve' || fail "blocked error missing approve hint: $ERR_MSG"
+pass "blocked error includes approve hint"
+
 if [ "${VIRGIL_TEST_EXTERNAL:-0}" != "1" ]; then
   echo "  SKIP: VIRGIL_TEST_EXTERNAL=1 not set -- skipping Telegram notification test"
 fi

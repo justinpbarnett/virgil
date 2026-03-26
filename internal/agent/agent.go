@@ -238,6 +238,9 @@ func (a *Agent) recoverError(ctx context.Context, skillName string, err error) {
 			if rbErr := a.trust.Rollback(ap); rbErr != nil {
 				slog.Error("trust rollback failed -- score may be inflated",
 					"action", ap.ActionType(), "channel", ap.Channel(), "contact", ap.Contact(), "err", rbErr)
+				if a.push != nil {
+					a.push(fmt.Sprintf("[virgil] trust rollback failed for %q -- score may be inflated: %v", ap.ActionType(), rbErr))
+				}
 			}
 		}
 	}

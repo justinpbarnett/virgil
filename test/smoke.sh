@@ -106,6 +106,11 @@ else
     echo "$HEALTH" | grep -q '"ok":true' || fail "/health returned unexpected body: $HEALTH"
     pass "/health returns {\"ok\":true}"
 
+    # Verify server stays alive (no Telegram configured -- nil botDone must not fire)
+    sleep 1
+    kill -0 "$SERVE_PID" 2>/dev/null || fail "serve exited after startup -- nil botDone channel may be broken"
+    pass "serve stays alive with no Telegram config (nil botDone)"
+
     kill "$SERVE_PID" 2>/dev/null || true
     SERVE_PID=""
 fi
