@@ -2,179 +2,192 @@ package slack
 
 import (
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
+	"net/http"
 	"os"
+	"strconv"
 	"strings"
-	"sync"
+	"time"
 
 	slacklib "github.com/slack-go/slack"
 	"github.com/slack-go/slack/slackevents"
-	"github.com/slack-go/slack/socketmode"
 
 	"github.com/justinpbarnett/virgil/internal"
 	"github.com/justinpbarnett/virgil/internal/agent"
 	"github.com/justinpbarnett/virgil/internal/config"
 )
 
-// Bot manages Socket Mode connections for one or more Slack workspaces.
-type Bot struct {
-	conns []*wsConn
-}
+const agentTimeout = 5 * time.Minute
 
-type wsConn struct {
+type workspace struct {
 	name          string
 	api           *slacklib.Client
-	socket        *socketmode.Client
-	ag            *agent.Agent
 	botUserID     string
-	authorizedUID string          // only respond to this user ID; empty = respond to all
-	watchChanIDs  map[string]bool // resolved channel IDs to watch (besides DMs)
-	watchNames    []string        // raw entries from config, resolved at init
+	authorizedUID string
+	signingSecret string
+	watchChanIDs  map[string]bool
+	watchNames    []string
 }
 
-// NewBot creates Socket Mode connections for every workspace that has app_token_env configured.
-// Returns an error if no workspaces are configured with a socket mode token.
-func NewBot(cfg *config.Config, ag *agent.Agent) (*Bot, error) {
-	var conns []*wsConn
-
+// RegisterHandlers adds a /slack/events HTTP handler to mux for all configured workspaces.
+func RegisterHandlers(mux *http.ServeMux, cfg *config.Config, ag *agent.Agent) {
+	var wss []*workspace
 	for name, ws := range cfg.Channels.Slack.Workspaces {
-		if ws.AppTokenEnv == "" {
+		if ws.SigningSecretEnv == "" {
 			continue
 		}
-		appToken := os.Getenv(ws.AppTokenEnv)
-		if appToken == "" {
-			slog.Warn("slack app token env var set but empty", "workspace", name, "env", ws.AppTokenEnv)
+		secret := os.Getenv(ws.SigningSecretEnv)
+		if secret == "" {
+			slog.Warn("slack signing secret env var set but empty", "workspace", name, "env", ws.SigningSecretEnv)
 			continue
 		}
 		botToken := os.Getenv(ws.TokenEnv)
 		if botToken == "" {
-			slog.Warn("slack socket mode requires a bot token (token_env)", "workspace", name)
+			slog.Warn("slack webhook: no bot token", "workspace", name)
 			continue
 		}
 
-		api := slacklib.New(botToken, slacklib.OptionAppLevelToken(appToken))
-		socket := socketmode.New(api)
-
-		conns = append(conns, &wsConn{
+		w := &workspace{
 			name:          name,
-			api:           api,
-			socket:        socket,
-			ag:            ag,
+			api:           slacklib.New(botToken),
 			authorizedUID: ws.UserID,
+			signingSecret: secret,
 			watchChanIDs:  make(map[string]bool),
 			watchNames:    ws.WatchChannels,
-		})
-	}
+		}
 
-	if len(conns) == 0 {
-		return nil, fmt.Errorf("no slack workspaces with socket mode (app_token_env) configured")
-	}
-	return &Bot{conns: conns}, nil
-}
-
-// Start connects all workspaces and blocks until ctx is cancelled or all connections exit.
-func (b *Bot) Start(ctx context.Context) {
-	var wg sync.WaitGroup
-	for _, conn := range b.conns {
-		wg.Add(1)
-		go func(c *wsConn) {
-			defer wg.Done()
-			c.run(ctx)
-		}(conn)
-	}
-	wg.Wait()
-}
-
-func (c *wsConn) run(ctx context.Context) {
-	if err := c.init(ctx); err != nil {
-		slog.Error("slack workspace init failed", "workspace", c.name, "err", err)
-		return
-	}
-	go c.processEvents(ctx)
-	if err := c.socket.RunContext(ctx); err != nil && ctx.Err() == nil {
-		slog.Error("slack socket mode disconnected", "workspace", c.name, "err", err)
-	}
-}
-
-func (c *wsConn) init(ctx context.Context) error {
-	resp, err := c.api.AuthTestContext(ctx)
-	if err != nil {
-		return fmt.Errorf("auth test: %w", err)
-	}
-	c.botUserID = resp.UserID
-	slog.Info("slack socket mode ready", "workspace", c.name, "bot_user", resp.User,
-		"authorized_user", c.authorizedUID)
-
-	if len(c.watchNames) > 0 {
-		c.resolveWatchChannels(ctx)
-	}
-	return nil
-}
-
-func (c *wsConn) resolveWatchChannels(ctx context.Context) {
-	channels, _, err := c.api.GetConversationsContext(ctx, &slacklib.GetConversationsParameters{
-		Types: []string{"public_channel", "private_channel"},
-		Limit: 200,
-	})
-	if err != nil {
-		slog.Warn("slack: could not resolve watch channel names", "workspace", c.name, "err", err)
-		return
-	}
-	nameToID := make(map[string]string, len(channels))
-	for _, ch := range channels {
-		nameToID[ch.Name] = ch.ID
-	}
-	for _, entry := range c.watchNames {
-		if isChannelID(entry) {
-			c.watchChanIDs[entry] = true
+		resp, err := w.api.AuthTest()
+		if err != nil {
+			slog.Error("slack webhook: auth test failed, skipping workspace", "workspace", name, "err", err)
 			continue
 		}
-		if id, ok := nameToID[entry]; ok {
-			c.watchChanIDs[id] = true
-		} else {
-			slog.Warn("slack: watch channel not found", "workspace", c.name, "channel", entry)
+		w.botUserID = resp.UserID
+		slog.Info("slack webhook ready", "workspace", name, "bot_user", resp.User, "authorized_user", ws.UserID)
+
+		if len(ws.WatchChannels) > 0 {
+			w.resolveWatchChannels()
 		}
+
+		wss = append(wss, w)
 	}
-}
 
-func isChannelID(s string) bool {
-	return len(s) >= 9 && (s[0] == 'C' || s[0] == 'D' || s[0] == 'G')
-}
+	if len(wss) == 0 {
+		if len(cfg.Channels.Slack.Workspaces) > 0 {
+			slog.Warn("slack: no workspaces passed validation, webhook not registered")
+		}
+		return
+	}
 
-func (c *wsConn) processEvents(ctx context.Context) {
-	for {
-		select {
-		case <-ctx.Done():
+	mux.HandleFunc("/slack/events", func(rw http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(rw, "method not allowed", http.StatusMethodNotAllowed)
 			return
-		case evt, ok := <-c.socket.Events:
-			if !ok {
+		}
+
+		// Skip Slack retries -- we always respond 200 on first delivery.
+		if r.Header.Get("X-Slack-Retry-Num") != "" {
+			rw.WriteHeader(http.StatusOK)
+			return
+		}
+
+		body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+		if err != nil {
+			slog.Warn("slack: failed to read request body", "err", err, "remote_addr", r.RemoteAddr)
+			http.Error(rw, "read body", http.StatusBadRequest)
+			return
+		}
+
+		var matched *workspace
+		for _, w := range wss {
+			if w.verifySignature(r.Header, body) {
+				matched = w
+				break
+			}
+		}
+		if matched == nil {
+			slog.Warn("slack: no workspace matched request signature",
+				"remote_addr", r.RemoteAddr,
+				"workspaces_checked", len(wss),
+				"has_signature", r.Header.Get("X-Slack-Signature") != "",
+				"has_timestamp", r.Header.Get("X-Slack-Request-Timestamp") != "",
+			)
+			http.Error(rw, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+
+		matched.dispatch(rw, body, ag)
+	})
+
+	slog.Info("slack webhook registered", "path", "/slack/events", "workspaces", len(wss))
+}
+
+func (w *workspace) verifySignature(header http.Header, body []byte) bool {
+	ts := header.Get("X-Slack-Request-Timestamp")
+	sig := header.Get("X-Slack-Signature")
+	if ts == "" || sig == "" {
+		return false
+	}
+	t, err := strconv.ParseInt(ts, 10, 64)
+	if err != nil {
+		return false
+	}
+	elapsed := time.Since(time.Unix(t, 0))
+	if elapsed > 5*time.Minute || elapsed < -30*time.Second {
+		return false
+	}
+	mac := hmac.New(sha256.New, []byte(w.signingSecret))
+	fmt.Fprintf(mac, "v0:%s:%s", ts, body)
+	expected := "v0=" + hex.EncodeToString(mac.Sum(nil))
+	return hmac.Equal([]byte(expected), []byte(sig))
+}
+
+func (w *workspace) dispatch(rw http.ResponseWriter, body []byte, ag *agent.Agent) {
+	var envelope struct {
+		Type      string `json:"type"`
+		Challenge string `json:"challenge"`
+	}
+	if err := json.Unmarshal(body, &envelope); err != nil {
+		http.Error(rw, "parse body", http.StatusBadRequest)
+		return
+	}
+
+	switch envelope.Type {
+	case "url_verification":
+		rw.Header().Set("Content-Type", "application/json")
+		if err := json.NewEncoder(rw).Encode(map[string]string{"challenge": envelope.Challenge}); err != nil {
+			slog.Error("slack: failed to write url_verification challenge", "workspace", w.name, "err", err)
+		}
+
+	case "event_callback":
+		rw.WriteHeader(http.StatusOK)
+		go func() {
+			defer func() {
+				if r := recover(); r != nil {
+					slog.Error("slack: panic in event handler", "workspace", w.name, "panic", r)
+				}
+			}()
+			evt, err := slackevents.ParseEvent(json.RawMessage(body), slackevents.OptionNoVerifyToken())
+			if err != nil {
+				slog.Error("slack: parse event", "workspace", w.name, "err", err)
 				return
 			}
-			slog.Debug("slack socket event", "workspace", c.name, "type", evt.Type)
-			switch evt.Type {
-			case socketmode.EventTypeEventsAPI:
-				apiEvt, ok := evt.Data.(slackevents.EventsAPIEvent)
-				if !ok {
-					slog.Warn("slack: unexpected EventsAPI data type", "workspace", c.name, "data", evt.Data)
-					if evt.Request != nil {
-						c.socket.Ack(*evt.Request)
-					}
-					continue
-				}
-				c.socket.Ack(*evt.Request)
-				slog.Info("slack api event", "workspace", c.name, "type", apiEvt.InnerEvent.Type)
-				go c.handleAPIEvent(ctx, apiEvt)
-			default:
-				if evt.Request != nil {
-					c.socket.Ack(*evt.Request)
-				}
-			}
-		}
+			ctx, cancel := context.WithTimeout(context.Background(), agentTimeout)
+			defer cancel()
+			w.handleAPIEvent(ctx, evt, ag)
+		}()
+
+	default:
+		rw.WriteHeader(http.StatusOK)
 	}
 }
 
-func (c *wsConn) handleAPIEvent(ctx context.Context, evt slackevents.EventsAPIEvent) {
+func (w *workspace) handleAPIEvent(ctx context.Context, evt slackevents.EventsAPIEvent, ag *agent.Agent) {
 	if evt.InnerEvent.Type != "message" {
 		return
 	}
@@ -182,63 +195,89 @@ func (c *wsConn) handleAPIEvent(ctx context.Context, evt slackevents.EventsAPIEv
 	if !ok {
 		return
 	}
-	c.handleMessage(ctx, msg)
+	w.handleMessage(ctx, msg, ag)
 }
 
-func (c *wsConn) handleMessage(ctx context.Context, msg *slackevents.MessageEvent) {
-	slog.Info("slack message received", "workspace", c.name, "channel", msg.Channel,
+func (w *workspace) handleMessage(ctx context.Context, msg *slackevents.MessageEvent, ag *agent.Agent) {
+	slog.Info("slack message received", "workspace", w.name, "channel", msg.Channel,
 		"user", msg.User, "subtype", msg.SubType, "bot_id", msg.BotID)
 
-	// Skip bot messages and subtypes (edits, deletes, join/leave notices, etc.)
 	if msg.BotID != "" || msg.SubType != "" {
-		slog.Debug("slack: skipping bot message or subtype", "workspace", c.name,
-			"subtype", msg.SubType, "bot_id", msg.BotID)
 		return
 	}
 
 	isDM := strings.HasPrefix(msg.Channel, "D")
-	if !isDM && !c.watchChanIDs[msg.Channel] {
+	if !isDM && !w.watchChanIDs[msg.Channel] {
 		slog.Debug("slack: ignoring message not in DM or watch channel",
-			"workspace", c.name, "channel", msg.Channel)
+			"workspace", w.name, "channel", msg.Channel, "watch_channels_loaded", len(w.watchChanIDs))
 		return
 	}
 
-	// Enforce authorization -- silently ignore messages from other users.
-	if c.authorizedUID != "" && msg.User != c.authorizedUID {
+	if w.authorizedUID != "" && msg.User != w.authorizedUID {
 		slog.Warn("slack: ignoring message from unauthorized user",
-			"workspace", c.name, "user", msg.User, "authorized", c.authorizedUID)
+			"workspace", w.name, "user", msg.User, "authorized", w.authorizedUID)
 		return
 	}
 
 	text := strings.TrimSpace(msg.Text)
-	if c.botUserID != "" {
-		text = strings.TrimSpace(strings.ReplaceAll(text, "<@"+c.botUserID+">", ""))
+	if w.botUserID != "" {
+		text = strings.TrimSpace(strings.ReplaceAll(text, "<@"+w.botUserID+">", ""))
 	}
 	if text == "" {
 		return
 	}
 
 	sig := internal.NewSignal("slack", text)
-	sig.Account = c.name
+	sig.Account = w.name
 
-	resp, err := c.ag.Run(ctx, sig)
+	resp, err := ag.Run(ctx, sig)
 	if err != nil {
-		slog.Error("slack agent error", "workspace", c.name, "err", err)
-		c.post(msg.Channel, msg.ThreadTimeStamp, "Something went wrong. Check the logs.")
+		slog.Error("slack agent error", "workspace", w.name, "err", err)
+		w.post(msg.Channel, msg.ThreadTimeStamp, "Something went wrong. Check the logs.")
 		return
 	}
 	if resp == "" {
 		resp = "Done."
 	}
-	c.post(msg.Channel, msg.ThreadTimeStamp, resp)
+	w.post(msg.Channel, msg.ThreadTimeStamp, resp)
 }
 
-func (c *wsConn) post(channel, threadTS, text string) {
+func (w *workspace) post(channel, threadTS, text string) {
 	opts := []slacklib.MsgOption{slacklib.MsgOptionText(text, false)}
 	if threadTS != "" {
 		opts = append(opts, slacklib.MsgOptionTS(threadTS))
 	}
-	if _, _, err := c.api.PostMessage(channel, opts...); err != nil {
-		slog.Error("slack post message failed", "workspace", c.name, "err", err)
+	if _, _, err := w.api.PostMessage(channel, opts...); err != nil {
+		slog.Error("slack post message failed", "workspace", w.name, "err", err)
 	}
+}
+
+func (w *workspace) resolveWatchChannels() {
+	channels, _, err := w.api.GetConversations(&slacklib.GetConversationsParameters{
+		Types: []string{"public_channel", "private_channel"},
+		Limit: 200,
+	})
+	if err != nil {
+		slog.Warn("slack: could not resolve watch channel names", "workspace", w.name, "err", err)
+		return
+	}
+	nameToID := make(map[string]string, len(channels))
+	for _, ch := range channels {
+		nameToID[ch.Name] = ch.ID
+	}
+	for _, entry := range w.watchNames {
+		if isChannelID(entry) {
+			w.watchChanIDs[entry] = true
+			continue
+		}
+		if id, ok := nameToID[entry]; ok {
+			w.watchChanIDs[id] = true
+		} else {
+			slog.Warn("slack: watch channel not found", "workspace", w.name, "channel", entry)
+		}
+	}
+}
+
+func isChannelID(s string) bool {
+	return len(s) >= 9 && (s[0] == 'C' || s[0] == 'D' || s[0] == 'G')
 }

@@ -80,7 +80,7 @@ channels:
       enver:
         token_env: VIRGIL_SLACK_TOKEN_ENVER
         user_token_env: VIRGIL_SLACK_USER_TOKEN_ENVER
-        app_token_env: VIRGIL_SLACK_APP_TOKEN_ENVER
+        signing_secret_env: VIRGIL_SLACK_SIGNING_SECRET_ENVER
         user_id: "U0AKLGZA8SK"
         watch_channels: []
         bridge: enver

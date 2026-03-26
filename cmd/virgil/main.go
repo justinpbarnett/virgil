@@ -367,19 +367,6 @@ func (c *ServeCmd) Run(ctx *Context) error {
 		}()
 	}
 
-	slackCtx, slackCancel := context.WithCancel(context.Background())
-	defer slackCancel()
-	if slackBot, err := slkbot.NewBot(cfg, ag); err != nil {
-		slog.Warn("slack socket mode disabled", "err", err)
-	} else {
-		go func() {
-			slackBot.Start(slackCtx)
-			if slackCtx.Err() == nil {
-				slog.Error("all slack socket mode connections exited")
-			}
-		}()
-	}
-
 	sched, err := skills.NewScheduler(ag, loaded, push)
 	if err != nil {
 		return fmt.Errorf("create scheduler: %w", err)
@@ -404,6 +391,7 @@ func (c *ServeCmd) Run(ctx *Context) error {
 		w.Header().Set("Content-Type", "application/json")
 		fmt.Fprintf(w, `{"ok":true}`)
 	})
+	slkbot.RegisterHandlers(httpMux, cfg, ag)
 	ln, err := net.Listen("tcp", fmt.Sprintf("%s:%d", host, port))
 	if err != nil {
 		return fmt.Errorf("listen %s:%d: %w", host, port, err)
