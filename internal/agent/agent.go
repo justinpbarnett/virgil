@@ -86,6 +86,7 @@ func (a *Agent) Run(ctx context.Context, signal internal.Signal) (string, error)
 	traceID := observe.GenerateTraceID()
 	spanID := observe.GenerateSpanID()
 	ctx = observe.WithTraceContext(ctx, traceID, spanID)
+	ctx = trust.WithAutoApprovals(ctx)
 	start := time.Now()
 
 	assembled := a.assembleContext(signal)
@@ -118,14 +119,18 @@ func (a *Agent) Run(ctx context.Context, signal internal.Signal) (string, error)
 	response, err := a.bridge.Complete(ctx, primary, messages, toolDefs, fallbacks)
 	if err != nil {
 		a.logEvent(traceID, spanID, "", "agent", "error", signal.Content, "", err, time.Since(start))
-		return "", fmt.Errorf("agent run: %w", err)
+		runErr := fmt.Errorf("agent run: %w", err)
+		a.recoverError(ctx, "interactive", runErr)
+		return "", runErr
 	}
 
 	for i := 0; response.HasToolCalls(); i++ {
 		if i >= maxToolRounds {
+			loopErr := fmt.Errorf("agent run: tool loop exceeded %d rounds", maxToolRounds)
 			a.logEvent(traceID, spanID, "", "agent", "error", signal.Content, "",
 				fmt.Errorf("tool loop exceeded %d rounds", maxToolRounds), time.Since(start))
-			return "", fmt.Errorf("agent run: tool loop exceeded %d rounds", maxToolRounds)
+			a.recoverError(ctx, "interactive", loopErr)
+			return "", loopErr
 		}
 		toolResults := a.executeTools(ctx, response.ToolCalls)
 		messages = append(messages, response.ToMessage())
@@ -133,7 +138,9 @@ func (a *Agent) Run(ctx context.Context, signal internal.Signal) (string, error)
 		response, err = a.bridge.Complete(ctx, primary, messages, toolDefs, fallbacks)
 		if err != nil {
 			a.logEvent(traceID, spanID, "", "agent", "error", signal.Content, "", err, time.Since(start))
-			return "", fmt.Errorf("agent run (tool loop): %w", err)
+			runErr := fmt.Errorf("agent run (tool loop): %w", err)
+			a.recoverError(ctx, "interactive", runErr)
+			return "", runErr
 		}
 	}
 
@@ -228,9 +235,9 @@ func (a *Agent) recoverError(ctx context.Context, skillName string, err error) {
 	}
 	if a.trust != nil {
 		for _, ap := range trust.DrainAutoApprovals(ctx) {
-			if rbErr := a.trust.Rollback(ap.ActionType, ap.Channel, ap.Contact); rbErr != nil {
+			if rbErr := a.trust.Rollback(ap); rbErr != nil {
 				slog.Error("trust rollback failed -- score may be inflated",
-					"action", ap.ActionType, "channel", ap.Channel, "contact", ap.Contact, "err", rbErr)
+					"action", ap.ActionType(), "channel", ap.Channel(), "contact", ap.Contact(), "err", rbErr)
 			}
 		}
 	}
@@ -268,6 +275,7 @@ func (a *Agent) executeTools(ctx context.Context, calls []bridge.ToolCall) []bri
 			continue
 		}
 
+		toolStart := time.Now()
 		result, err := tool.Execute(ctx, tc.Input)
 		if err != nil {
 			results = append(results, bridge.ToolResult{
@@ -275,6 +283,8 @@ func (a *Agent) executeTools(ctx context.Context, calls []bridge.ToolCall) []bri
 				Content:    fmt.Sprintf("error: %v", err),
 				IsError:    true,
 			})
+			a.logEvent(traceID, observe.GenerateSpanID(), parentSpan, "tool:"+tc.Name, "error",
+				bridge.InputToJSON(tc.Input), "", err, time.Since(toolStart))
 			continue
 		}
 

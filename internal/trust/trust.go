@@ -14,12 +14,12 @@ type Store struct {
 
 // Score is a row from the trust_scores table.
 type Score struct {
-	ActionType string `json:"action_type"`
-	Channel    string `json:"channel"`
-	Contact    string `json:"contact"`
-	Approvals  int    `json:"approvals"`
-	Rejections int    `json:"rejections"`
-	UpdatedAt  string `json:"updated_at"`
+	ActionType string    `json:"action_type"`
+	Channel    string    `json:"channel"`
+	Contact    string    `json:"contact"`
+	Approvals  int       `json:"approvals"`
+	Rejections int       `json:"rejections"`
+	UpdatedAt  time.Time `json:"updated_at"`
 }
 
 // Value returns approvals minus rejections.
@@ -36,6 +36,12 @@ func NewStore(db *sql.DB, threshold int) *Store {
 
 // Threshold returns the auto-approve threshold.
 func (s *Store) Threshold() int { return s.threshold }
+
+// BlockedErr returns the standard error for a blocked trust check.
+func (s *Store) BlockedErr(actionType, channel string) error {
+	return fmt.Errorf("%s not approved on %q (score below %d); run: virgil trust approve --action %s",
+		actionType, channel, s.threshold, actionType)
+}
 
 // AutoApproves returns true if the (actionType, channel, contact) tuple has a
 // trust score at or above the threshold. Checks the exact tuple first, then
@@ -90,21 +96,21 @@ func (s *Store) Record(actionType, channel, contact string, approved bool) error
 	return nil
 }
 
-// Rollback decrements approvals for the given tuple, flooring at 0.
-func (s *Store) Rollback(actionType, channel, contact string) error {
-	channel = normalizeWildcard(channel)
-	contact = normalizeWildcard(contact)
+// Rollback decrements approvals for the given auto-approval record, flooring at 0.
+func (s *Store) Rollback(ap AutoApproval) error {
+	channel := normalizeWildcard(ap.channel)
+	contact := normalizeWildcard(ap.contact)
 	now := time.Now().UTC().Format(time.RFC3339)
 	result, err := s.db.Exec(`
 		UPDATE trust_scores
 		SET approvals = MAX(0, approvals - 1), updated_at = ?
 		WHERE action_type = ? AND channel = ? AND contact = ?`,
-		now, actionType, channel, contact)
+		now, ap.actionType, channel, contact)
 	if err != nil {
 		return err
 	}
 	if n, _ := result.RowsAffected(); n == 0 {
-		return fmt.Errorf("rollback: no trust score for (%s, %s, %s)", actionType, channel, contact)
+		return fmt.Errorf("rollback: no trust score for (%s, %s, %s)", ap.actionType, channel, contact)
 	}
 	return nil
 }
@@ -123,10 +129,12 @@ func (s *Store) List() ([]Score, error) {
 	scores := make([]Score, 0)
 	for rows.Next() {
 		var sc Score
+		var updatedAt string
 		if err := rows.Scan(&sc.ActionType, &sc.Channel, &sc.Contact,
-			&sc.Approvals, &sc.Rejections, &sc.UpdatedAt); err != nil {
+			&sc.Approvals, &sc.Rejections, &updatedAt); err != nil {
 			return nil, err
 		}
+		sc.UpdatedAt, _ = time.Parse(time.RFC3339, updatedAt)
 		scores = append(scores, sc)
 	}
 	return scores, rows.Err()

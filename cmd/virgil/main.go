@@ -311,7 +311,7 @@ func (c *TrustCheckCmd) Run(ctx *Context) error {
 		return fmt.Errorf("trust check: %w", err)
 	}
 	if !ok {
-		return fmt.Errorf("%s not approved on %q (score below threshold)", c.Action, c.Channel)
+		return ts.BlockedErr(c.Action, c.Channel)
 	}
 	fmt.Printf("approved: %s (channel: %s)\n", c.Action, c.Channel)
 	return nil

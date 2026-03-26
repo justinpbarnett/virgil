@@ -94,10 +94,7 @@ func checkTrust(ctx context.Context, ts *trust.Store, actionType, channel, conta
 		return &internal.ToolResult{Error: fmt.Sprintf("trust check failed: %v", err)}
 	}
 	if !ok {
-		return &internal.ToolResult{
-			Error: fmt.Sprintf("%s not approved on %q (score below %d); run: virgil trust approve --action %s",
-				actionType, channel, ts.Threshold(), actionType),
-		}
+		return &internal.ToolResult{Error: ts.BlockedErr(actionType, channel).Error()}
 	}
 	trust.RecordAutoApproval(ctx, actionType, channel, contact)
 	return nil

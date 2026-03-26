@@ -4,12 +4,17 @@ import "context"
 
 type approvalKey struct{}
 
-// AutoApproval records an outbound action that was auto-approved.
+// AutoApproval records an outbound action that was auto-approved during a skill run.
+// Fields are unexported; construct only via RecordAutoApproval.
 type AutoApproval struct {
-	ActionType string
-	Channel    string
-	Contact    string
+	actionType string
+	channel    string
+	contact    string
 }
+
+func (a AutoApproval) ActionType() string { return a.actionType }
+func (a AutoApproval) Channel() string    { return a.channel }
+func (a AutoApproval) Contact() string    { return a.contact }
 
 // WithAutoApprovals attaches an auto-approval tracker to the context.
 func WithAutoApprovals(ctx context.Context) context.Context {
@@ -21,7 +26,7 @@ func WithAutoApprovals(ctx context.Context) context.Context {
 // No-ops if the context has no tracker.
 func RecordAutoApproval(ctx context.Context, actionType, channel, contact string) {
 	if p, ok := ctx.Value(approvalKey{}).(*[]AutoApproval); ok && p != nil {
-		*p = append(*p, AutoApproval{ActionType: actionType, Channel: channel, Contact: contact})
+		*p = append(*p, AutoApproval{actionType: actionType, channel: channel, contact: contact})
 	}
 }
 
