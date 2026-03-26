@@ -1435,6 +1435,11 @@ func openAgent(cfg *config.Config) (*agent.Agent, []*internal.Skill, func(), err
 		return nil, nil, nil, err
 	}
 
+	if err := db.Migrate(database); err != nil {
+		database.Close()
+		return nil, nil, nil, fmt.Errorf("run migrations: %w", err)
+	}
+
 	events := observe.NewEventLog(database)
 	memStore := memory.NewStore(database)
 	ts := trust.NewStore(database, cfg.Trust.AutoApproveThreshold)
