@@ -32,13 +32,17 @@ func RegisterSlackTools(reg *Registry, cfg *config.Config, ts *trust.Store) {
 				initErrs = append(initErrs, fmt.Sprintf("%s: %v", name, err))
 				continue
 			}
-			sc.token = tok
+			sc.botToken = tok
 			sc.cookie = cookie
 		} else if ws.TokenEnv != "" {
-			sc.token = os.Getenv(ws.TokenEnv)
+			sc.botToken = os.Getenv(ws.TokenEnv)
 		}
 
-		if sc.token == "" {
+		if ws.UserTokenEnv != "" {
+			sc.userToken = os.Getenv(ws.UserTokenEnv)
+		}
+
+		if sc.botToken == "" && sc.userToken == "" {
 			slog.Warn("skip slack workspace: no token", "workspace", name)
 			initErrs = append(initErrs, fmt.Sprintf("%s: no token configured", name))
 			continue
@@ -105,7 +109,7 @@ func RegisterSlackTools(reg *Registry, cfg *config.Config, ts *trust.Store) {
 				v.Set("ts", threadTS)
 			}
 
-			resp, err := c.apiGet(ctx, method, v)
+			resp, err := c.apiGet(ctx, method, v, true)
 			if err != nil {
 				return nil, fmt.Errorf("slack_read: %w", err)
 			}
@@ -121,7 +125,7 @@ func RegisterSlackTools(reg *Registry, cfg *config.Config, ts *trust.Store) {
 
 	reg.Register(&internal.Tool{
 		Name:        "slack_post",
-		Description: "Post a message to a Slack channel or thread.",
+		Description: "Post a message to a Slack channel or thread. Set as_user=true to post as the authenticated user instead of the bot.",
 		Parameters: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
@@ -132,6 +136,10 @@ func RegisterSlackTools(reg *Registry, cfg *config.Config, ts *trust.Store) {
 					"type":        "string",
 					"description": "Reply to this thread",
 				},
+				"as_user": map[string]any{
+					"type":        "boolean",
+					"description": "Post as the authenticated user (true) or as the bot (false, default)",
+				},
 			},
 			"required": []string{"workspace", "channel", "text"},
 		},
@@ -140,6 +148,7 @@ func RegisterSlackTools(reg *Registry, cfg *config.Config, ts *trust.Store) {
 			channel, _ := params["channel"].(string)
 			text, _ := params["text"].(string)
 			threadTS, _ := params["thread_ts"].(string)
+			asUser, _ := params["as_user"].(bool)
 
 			if workspace == "" || channel == "" || text == "" {
 				return &internal.ToolResult{Error: "workspace, channel, and text are required"}, nil
@@ -170,7 +179,7 @@ func RegisterSlackTools(reg *Registry, cfg *config.Config, ts *trust.Store) {
 				body["thread_ts"] = threadTS
 			}
 
-			resp, err := c.apiPost(ctx, "chat.postMessage", body)
+			resp, err := c.apiPost(ctx, "chat.postMessage", body, asUser)
 			if err != nil {
 				return nil, fmt.Errorf("slack_post: %w", err)
 			}
@@ -215,7 +224,7 @@ func RegisterSlackTools(reg *Registry, cfg *config.Config, ts *trust.Store) {
 					"query": {query},
 					"count": {fmt.Sprintf("%d", limit)},
 				}
-				resp, err := c.apiGet(ctx, "search.messages", v)
+				resp, err := c.apiGet(ctx, "search.messages", v, true)
 				if err != nil {
 					slog.Warn("slack_search error", "workspace", wsName, "err", err)
 					errs = append(errs, fmt.Sprintf("%s: %s", wsName, err))
@@ -239,26 +248,39 @@ func RegisterSlackTools(reg *Registry, cfg *config.Config, ts *trust.Store) {
 }
 
 type slackClient struct {
-	token     string
-	cookie    string // xoxd- session cookie, empty for bot tokens
+	botToken  string // xoxb- bot token, or session token (xoxc-)
+	userToken string // xoxp- user token for posting as user and search
+	cookie    string // xoxd- session cookie, empty for bot/user tokens
 	workspace string
 	mu        sync.Mutex
 	channels  map[string]string // name -> ID cache
 }
 
-func (c *slackClient) setAuth(req *http.Request) {
-	req.Header.Set("Authorization", "Bearer "+c.token)
+// activeToken returns the user token when preferUser is true and one is set,
+// otherwise falls back to the bot token (or user token if that's all we have).
+func (c *slackClient) activeToken(preferUser bool) string {
+	if preferUser && c.userToken != "" {
+		return c.userToken
+	}
+	if c.botToken != "" {
+		return c.botToken
+	}
+	return c.userToken
+}
+
+func (c *slackClient) setAuth(req *http.Request, token string) {
+	req.Header.Set("Authorization", "Bearer "+token)
 	if c.cookie != "" {
 		req.Header.Set("Cookie", "d="+c.cookie)
 	}
 }
 
-func (c *slackClient) apiGet(ctx context.Context, method string, params url.Values) (map[string]any, error) {
+func (c *slackClient) apiGet(ctx context.Context, method string, params url.Values, preferUser bool) (map[string]any, error) {
 	req, err := http.NewRequestWithContext(ctx, "GET", "https://slack.com/api/"+method+"?"+params.Encode(), nil)
 	if err != nil {
 		return nil, err
 	}
-	c.setAuth(req)
+	c.setAuth(req, c.activeToken(preferUser))
 
 	result, err := httpJSON(req)
 	if err != nil {
@@ -271,7 +293,7 @@ func (c *slackClient) apiGet(ctx context.Context, method string, params url.Valu
 	return result, nil
 }
 
-func (c *slackClient) apiPost(ctx context.Context, method string, body map[string]any) (map[string]any, error) {
+func (c *slackClient) apiPost(ctx context.Context, method string, body map[string]any, preferUser bool) (map[string]any, error) {
 	data, err := json.Marshal(body)
 	if err != nil {
 		return nil, err
@@ -281,7 +303,7 @@ func (c *slackClient) apiPost(ctx context.Context, method string, body map[strin
 	if err != nil {
 		return nil, err
 	}
-	c.setAuth(req)
+	c.setAuth(req, c.activeToken(preferUser))
 	req.Header.Set("Content-Type", "application/json")
 
 	result, err := httpJSON(req)
@@ -332,7 +354,7 @@ func (c *slackClient) resolveChannel(ctx context.Context, channel string) (strin
 	resp, err := c.apiGet(ctx, "conversations.list", url.Values{
 		"types": {"public_channel,private_channel"},
 		"limit": {"200"},
-	})
+	}, true)
 	if err != nil {
 		return "", err
 	}

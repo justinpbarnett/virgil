@@ -79,8 +79,9 @@ type SlackConfig struct {
 }
 
 type SlackWorkspaceConfig struct {
-	TokenEnv      string   `yaml:"token_env"`
-	TokenPath     string   `yaml:"token_path"`
+	TokenEnv      string   `yaml:"token_env"`      // bot token env var (xoxb-)
+	TokenPath     string   `yaml:"token_path"`     // session token file (xoxd- / xoxc-)
+	UserTokenEnv  string   `yaml:"user_token_env"` // user token env var (xoxp-) for posting as user + search
 	UserID        string   `yaml:"user_id"`
 	WatchChannels []string `yaml:"watch_channels"`
 	Bridge        string   `yaml:"bridge"`
@@ -178,8 +179,8 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("guide.data_dir is required")
 	}
 	for name, ws := range c.Channels.Slack.Workspaces {
-		if ws.TokenEnv == "" && ws.TokenPath == "" {
-			return fmt.Errorf("slack workspace %q has neither token_env nor token_path", name)
+		if ws.TokenEnv == "" && ws.TokenPath == "" && ws.UserTokenEnv == "" {
+			return fmt.Errorf("slack workspace %q has no token configured (set token_env, token_path, or user_token_env)", name)
 		}
 	}
 	for _, acctName := range c.Channels.Drive.Accounts {
