@@ -1,4 +1,4 @@
 schedule: "0 7 * * *"  # daily at 7am
 model: anthropic/sonnet
 fallback: [anthropic/haiku]
-enabled: true
+enabled: false

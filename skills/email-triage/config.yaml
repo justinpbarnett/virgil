@@ -1,4 +1,4 @@
-schedule: "0 */2 * * *"  # every 2 hours
+schedule: "0 8 * * *"  # once daily at 8am
 model: anthropic/haiku
 fallback: [anthropic/sonnet]
-enabled: true
+enabled: false

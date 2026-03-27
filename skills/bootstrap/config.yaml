@@ -1,4 +1,4 @@
-enabled: true
+enabled: false
 model: anthropic/sonnet
 fallback: [anthropic/haiku]
 # No schedule -- run once manually with: virgil run bootstrap
